@@ -20,7 +20,7 @@ def dumps(value):
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version(version INTEGER PRIMARY KEY);
 INSERT OR IGNORE INTO schema_version VALUES(1);
-CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1,role TEXT NOT NULL DEFAULT 'manager' CHECK(role IN ('manager','logistics')));
 CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,username TEXT,admin INTEGER NOT NULL,csrf TEXT NOT NULL,expires REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS login_attempts(ip TEXT PRIMARY KEY,failures INTEGER NOT NULL,until REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS suppliers(id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,merged_into TEXT REFERENCES suppliers(id));
@@ -80,6 +80,11 @@ class Store:
                 r[1] for r in db.execute("PRAGMA table_info(documents)")
             }:
                 db.execute("ALTER TABLE documents ADD COLUMN last_error TEXT")
+            if "role" not in {r[1] for r in db.execute("PRAGMA table_info(users)")}:
+                db.execute(
+                    "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'manager' CHECK(role IN ('manager','logistics'))"
+                )
+            db.execute("INSERT OR IGNORE INTO schema_version VALUES(2)")
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=30)
@@ -99,6 +104,18 @@ class Store:
             db.rollback()
             raise
         finally:
+            db.close()
+
+    @contextmanager
+    def read(self):
+        """Consistent read snapshot without locking competing writers in WAL mode."""
+        db = self.connect()
+        try:
+            db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN")
+            yield db
+        finally:
+            db.rollback()
             db.close()
 
     def all(self, sql, args=()):

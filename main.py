@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote
 import base64
 import hmac
@@ -101,6 +102,17 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             req.headers.get("X-CSRF-Token", ""), s["csrf"]
         ):
             raise HTTPException(403, "Обновите страницу и повторите действие")
+        s["role"] = "admin" if s["admin"] else user["role"]
+        return s
+
+    def manager(s=Depends(session)):
+        if not s["admin"] and s["role"] != "manager":
+            raise HTTPException(403, "Раздел доступен бренд-менеджерам")
+        return s
+
+    def logistics(s=Depends(session)):
+        if not s["admin"] and s["role"] != "logistics":
+            raise HTTPException(403, "Раздел доступен логистам")
         return s
 
     def admin(s=Depends(session)):
@@ -193,7 +205,10 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                 "Вход администратора" if body.admin else "Вход по username",
                 username,
             )
-        r = JSONResponse({"username": username, "admin": body.admin, "csrf": csrf})
+        role = "admin" if body.admin else u["role"]
+        r = JSONResponse(
+            {"username": username, "admin": body.admin, "role": role, "csrf": csrf}
+        )
         r.set_cookie(
             "bm_session",
             token,
@@ -206,7 +221,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
 
     @app.get("/api/session")
     def who(s=Depends(session)):
-        return {k: s[k] for k in ("username", "admin", "csrf")}
+        return {k: s[k] for k in ("username", "admin", "role", "csrf")}
 
     @app.delete("/api/session")
     def logout(s=Depends(session)):
@@ -223,7 +238,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         )
 
     @app.get("/api/template")
-    def excel_template(s=Depends(session)):
+    def excel_template(s=Depends(manager)):
         return download(
             template(),
             "Шаблон.xlsx",
@@ -238,7 +253,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         date_from: str = "",
         date_to: str = "",
         archive: bool = False,
-        s=Depends(session),
+        s=Depends(manager),
     ):
         sql = "SELECT d.*,p.name supplier,(SELECT SUM(quantity*labels) FROM lines WHERE doc_id=d.id) units FROM documents d JOIN suppliers p ON p.id=d.supplier_id WHERE 1=1"
         args = []
@@ -264,7 +279,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         parent_id: str | None = None
 
     @app.post("/api/documents")
-    def create(body: Create, s=Depends(session)):
+    def create(body: Create, s=Depends(manager)):
         return {
             "id": service.create(
                 s["username"], body.number, body.supplier, body.parent_id, s["admin"]
@@ -272,7 +287,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         }
 
     @app.get("/api/documents/{doc_id}")
-    def get(doc_id: str, s=Depends(session)):
+    def get(doc_id: str, s=Depends(manager)):
         return service.get(doc_id, s["username"], s["admin"])
 
     class Lines(BaseModel):
@@ -281,11 +296,11 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         confirmation: str | None = None
 
     @app.post("/api/documents/{doc_id}/preview")
-    def preview(doc_id: str, body: Lines, s=Depends(session)):
+    def preview(doc_id: str, body: Lines, s=Depends(manager)):
         return service.preview(doc_id, s["username"], body.rows, s["admin"])
 
     @app.post("/api/documents/{doc_id}/lines")
-    def save(doc_id: str, body: Lines, s=Depends(session)):
+    def save(doc_id: str, body: Lines, s=Depends(manager)):
         return service.save_lines(
             doc_id,
             s["username"],
@@ -297,7 +312,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
 
     @app.post("/api/documents/{doc_id}/import")
     async def excel_import(
-        doc_id: str, file: UploadFile = File(...), s=Depends(session)
+        doc_id: str, file: UploadFile = File(...), s=Depends(manager)
     ):
         doc = service.get(doc_id, s["username"], s["admin"])
         if doc["status"] not in ("draft", "ready", "transferred", "label_error"):
@@ -341,14 +356,14 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         return result
 
     @app.post("/api/documents/{doc_id}/order")
-    def order(doc_id: str, s=Depends(session)):
+    def order(doc_id: str, s=Depends(manager)):
         return service.order(doc_id, s["username"], s["admin"])
 
     class Transfer(BaseModel):
         version: int
 
     @app.post("/api/documents/{doc_id}/transferred")
-    def transferred(doc_id: str, body: Transfer, s=Depends(session)):
+    def transferred(doc_id: str, body: Transfer, s=Depends(manager)):
         service.transferred(doc_id, s["username"], body.version, s["admin"])
         return {"ok": True}
 
@@ -359,7 +374,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         fias_id: str = ""
 
     @app.post("/api/batches")
-    def batch(body: Batch, s=Depends(session)):
+    def batch(body: Batch, s=Depends(manager)):
         return {
             "id": service.batch(
                 s["username"],
@@ -377,7 +392,21 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         if not a:
             raise HTTPException(404, "Файл не найден")
         with store.transaction() as db:
-            if a["doc_id"]:
+            if s["role"] == "logistics":
+                if (
+                    a["doc_id"]
+                    or a["kind"] not in ("atk", "result")
+                    or not a["group_id"]
+                ):
+                    raise PermissionError("Логисту доступны только файлы АТК и RESULT")
+                batch_id, supplier_id = a["group_id"].split(":")
+                if not one(
+                    db,
+                    "SELECT id FROM atks WHERE batch_id=? AND supplier_id=?",
+                    (batch_id, supplier_id),
+                ):
+                    raise PermissionError("Файл не относится к АТК")
+            elif a["doc_id"]:
                 service.document(db, a["doc_id"], s["username"], s["admin"])
             elif not s["admin"]:
                 batch_id, supplier = a["group_id"].split(":")
@@ -406,11 +435,11 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         )
 
     @app.get("/api/atks/{atk_id}/candidates")
-    def candidates(atk_id: str, s=Depends(session)):
+    def candidates(atk_id: str, s=Depends(manager)):
         return service.candidate_codes(atk_id, s["username"], s["admin"])
 
     @app.get("/api/atks/{atk_id}")
-    def atk_detail(atk_id: str, s=Depends(session)):
+    def atk_detail(atk_id: str, s=Depends(manager)):
         with store.transaction() as db:
             a = service.atk_access(db, atk_id, s["username"], s["admin"])
             a["codes"] = rows(
@@ -430,12 +459,54 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         codes: list[str]
 
     @app.post("/api/atks/{atk_id}/transform")
-    def transform(atk_id: str, body: Transform, s=Depends(session)):
+    def transform(atk_id: str, body: Transform, s=Depends(manager)):
         return {
             "id": service.transform(
                 atk_id, body.kind, body.codes, s["username"], s["admin"]
             )
         }
+
+    @app.get("/api/logistics/atks")
+    def logistics_atks(
+        q: str = "",
+        supplier: str = "",
+        status: str = "",
+        tnved: str = "",
+        date_from: str = "",
+        date_to: str = "",
+        archive: bool = False,
+        s=Depends(logistics),
+    ):
+        return service.logistics_atks(
+            q=q,
+            supplier=supplier,
+            status=status,
+            tnved=tnved,
+            date_from=date_from,
+            date_to=date_to,
+            archive=archive,
+        )
+
+    @app.get("/api/logistics/atks/{atk_id}")
+    def logistics_atk(atk_id: str, s=Depends(logistics)):
+        return service.logistics_atk(atk_id)
+
+    class LogisticsDownload(BaseModel):
+        atks: list[str] = Field(min_length=1, max_length=200)
+
+    @app.post("/api/logistics/download")
+    def logistics_download(body: LogisticsDownload, s=Depends(logistics)):
+        # This POST only reads files and creates an in-memory archive. No GIS mutation.
+        data = service.logistics_download(body.atks)
+        with store.transaction() as db:
+            audit(
+                db,
+                s["username"],
+                "Скачан комплект АТК",
+                "logistics",
+                {"atks": sorted(set(body.atks))},
+            )
+        return download(data, "АТК-и-RESULT.zip", "application/zip")
 
     @app.get("/api/admin/overview")
     def overview(s=Depends(admin)):
@@ -478,17 +549,20 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
     class UserBody(BaseModel):
         username: str
         enabled: bool = True
+        role: Literal["manager", "logistics"] | None = None
 
     @app.post("/api/admin/users")
     def users(body: UserBody, s=Depends(admin)):
         if not re.fullmatch(r"[A-Za-zА-Яа-яЁё0-9_.@-]{1,80}", body.username):
             raise ValueError("Username: буквы, цифры и _.@-")
         with store.transaction() as db:
+            previous = one(db, "SELECT * FROM users WHERE username=?", (body.username,))
+            role = body.role or (previous["role"] if previous else "manager")
             db.execute(
-                "INSERT INTO users VALUES(?,?) ON CONFLICT(username) DO UPDATE SET enabled=excluded.enabled",
-                (body.username, int(body.enabled)),
+                "INSERT INTO users(username,enabled,role) VALUES(?,?,?) ON CONFLICT(username) DO UPDATE SET enabled=excluded.enabled,role=excluded.role",
+                (body.username, int(body.enabled), role),
             )
-            if not body.enabled:
+            if not body.enabled or (previous and previous["role"] != role):
                 db.execute(
                     "DELETE FROM sessions WHERE username=? AND admin=0",
                     (body.username,),
@@ -498,7 +572,11 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                 s["username"],
                 "Изменён пользователь",
                 body.username,
-                {"enabled": body.enabled},
+                {
+                    "enabled": body.enabled,
+                    "role": role,
+                    "previous_role": previous["role"] if previous else None,
+                },
             )
         return {"ok": True}
 

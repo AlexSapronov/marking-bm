@@ -426,6 +426,11 @@ def test_two_full_tnved_create_distinct_atks_even_same_prefix(env):
     d = s.get(a, "alice")
     assert d["status"] == "done" and len(d["atks"]) == 2
     assert {x["tnved"] for x in d["atks"]} == {TN, other_tn}
+    # Two ATKs in the same supplier group share one ATK/RESULT workbook pair.
+    with zipfile.ZipFile(
+        BytesIO(s.logistics_download([a["id"] for a in d["atks"]]))
+    ) as bundle:
+        assert len(bundle.namelist()) == 2
 
 
 def test_supplier_merge_preserves_finished_atks_and_files(env):
