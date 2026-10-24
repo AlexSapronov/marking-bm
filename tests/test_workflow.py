@@ -19,7 +19,8 @@ def test_import_merges_and_preserves_text():
     assert validate_rows([["P", GTIN, 5, 2, TN], ["Q", GTIN, 5, 1, "1234567890"]])[
         "errors"
     ]
-    assert validate_rows([["P", int(GTIN), 5, 2, TN]])["errors"]
+    numeric = validate_rows([["P", int(GTIN), 5, 2, int(TN)]])
+    assert not numeric["errors"] and numeric["lines"][0]["gtin"] == GTIN
     assert import_file(template())["errors"]
     result = import_file(xlsx({"Товары": [HEADERS, ["P", GTIN, 5, 3, TN]]}))
     assert not result["errors"]

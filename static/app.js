@@ -317,27 +317,166 @@ async function doSave(raw, confirmation) {
     toast(err.message);
   }
 }
+let excelImportVersion = 0;
 async function importExcel() {
-  const file = $("#excel-file").files[0];
+  const input = $("#excel-file");
+  const file = input.files[0];
   if (!file) return;
-  const form = new FormData();
-  form.append("file", file);
+  input.value = ""; // Selecting the same file again must fire change as well.
+  const context = { file, docId: doc.id, version: ++excelImportVersion };
   try {
-    const p = await api(`/documents/${doc.id}/import`, form);
-    if (p.errors.length) {
-      modal(
-        `<h2>Ошибки Excel</h2>${p.errors.map((x) => `<p class="error">Строка ${x.row}: ${e(x.message)}</p>`).join("")}<button data-action="close">Закрыть</button>`,
-      );
-      return;
-    }
-    $("#edit-rows").innerHTML = p.lines.map(lineRow).join("");
-    toast(
-      "Excel загружен в предпросмотр. Проверьте строки и сохраните состав.",
-    );
+    await runExcelImport(context);
   } catch (err) {
     toast(err.message);
   }
 }
+async function runExcelImport(context, options = {}) {
+  const form = new FormData();
+  form.append("file", context.file);
+  if (options.mapping) form.append("mapping", JSON.stringify(options.mapping));
+  if (options.sheet !== undefined) form.append("sheet", options.sheet);
+  if (options.headerRow !== undefined)
+    form.append("header_row", String(options.headerRow));
+  const result = await api(`/documents/${context.docId}/import`, form);
+  if (
+    !doc ||
+    doc.id !== context.docId ||
+    context.version !== excelImportVersion
+  )
+    return;
+  if (result.requires_mapping) {
+    excelMapping(context, result);
+    return;
+  }
+  if (result.errors.length) {
+    modal(
+      `<h2>Ошибки Excel</h2>${result.errors.map((x) => `<p class="error">Строка ${x.row || "—"}: ${e(x.message)}</p>`).join("")}<div class="actions">${options.mapping ? '<button id="excel-correct-mapping">Исправить сопоставление</button>' : ""}<button data-action="close">Закрыть</button></div>`,
+    );
+    if (options.mapping)
+      $("#excel-correct-mapping").onclick = () =>
+        excelMapping(context, context.inspection, options);
+    return;
+  }
+  if ($("#modal").open) $("#modal").close();
+  $("#edit-rows").innerHTML = result.lines.map(lineRow).join("");
+  if (result.warnings.length) {
+    modal(
+      `<h2>Excel загружен</h2>${result.warnings.map((w) => `<p class="notice">${e(w)}</p>`).join("")}<p>Проверьте значения в таблице накладной и сохраните состав.</p><button data-action="close">Продолжить</button>`,
+    );
+  }
+  toast("Excel загружен в предпросмотр. Проверьте строки и сохраните состав.");
+}
+function excelMapping(context, inspection, previous = {}) {
+  context.inspection = inspection;
+  let sheet =
+    inspection.sheets.find(
+      (s) => s.name === (previous.sheet || inspection.selected_sheet),
+    ) || inspection.sheets[0];
+  let headerRow = previous.headerRow ?? sheet.suggested_header_row;
+  let chosen = { ...(previous.mapping || sheet.suggested_mapping) };
+  function valueAt(row, index) {
+    return row?.values[index] ?? "";
+  }
+  function draw() {
+    const header = sheet.preview.find((r) => r.row === Number(headerRow));
+    const sampleRows = sheet.preview
+      .filter((r) => r.row > Number(headerRow))
+      .slice(0, 3);
+    const content = `<div class="eyebrow">Импорт Excel</div><h2>Сопоставление столбцов</h2><p class="muted">Не удалось однозначно определить все поля. Проверьте лист и укажите, какой столбец содержит каждое значение. Формат ячеек менять не нужно.</p><form id="excel-mapping-form"><div class="fields"><label>Лист<select id="excel-sheet">${inspection.sheets.map((s) => `<option value="${e(s.name)}" ${s.name === sheet.name ? "selected" : ""}>${e(s.name)}</option>`).join("")}</select></label><label>Строка заголовков<input id="excel-header-row" type="number" min="0" max="${sheet.row_count}" value="${headerRow}" required><span class="muted">0 — файл без заголовков</span></label></div><div class="table-wrap mapping-table"><table><thead><tr><th>Поле в приложении</th><th>Столбец Excel</th><th>Примеры значений</th></tr></thead><tbody>${Object.entries(
+      inspection.fields,
+    )
+      .map(
+        ([field, title]) =>
+          `<tr><td>${e(title)}</td><td><select data-excel-field="${e(field)}" aria-label="Столбец для ${e(title)}" required><option value="">Выберите столбец</option>${sheet.columns.map((c) => `<option value="${c.index}" ${chosen[field] === c.index ? "selected" : ""}>${c.letter}${valueAt(header, c.index) ? " — " + e(valueAt(header, c.index)) : ""}</option>`).join("")}</select></td><td class="mapping-sample" data-sample="${e(field)}">${
+            chosen[field] !== null && chosen[field] !== undefined
+              ? e(
+                  sampleRows
+                    .map((r) => valueAt(r, chosen[field]))
+                    .filter(Boolean)
+                    .join(" · "),
+                )
+              : "—"
+          }</td></tr>`,
+      )
+      .join(
+        "",
+      )}</tbody></table></div><div id="excel-mapping-error" class="error" role="alert" hidden></div><details><summary>Фрагмент файла</summary><p class="muted">Предпросмотр первых ${sheet.preview.length} строк листа. Номера ошибок соответствуют исходному Excel.</p><div class="table-wrap"><table><thead><tr><th>Строка</th>${sheet.columns.map((c) => `<th>${c.letter}</th>`).join("")}</tr></thead><tbody>${sheet.preview
+      .filter((r) => r.row >= Math.max(1, Number(headerRow)))
+      .slice(0, 8)
+      .map(
+        (r) =>
+          `<tr><th>${r.row}</th>${sheet.columns.map((c) => `<td class="mapping-cell">${e(valueAt(r, c.index))}</td>`).join("")}</tr>`,
+      )
+      .join(
+        "",
+      )}</tbody></table></div></details><div class="actions mapping-actions"><button class="primary" id="excel-mapping-apply" type="submit">Применить сопоставление</button><button type="button" data-action="close">Отмена</button></div></form>`;
+    if ($("#modal").open) $("#modal").innerHTML = content;
+    else modal(content);
+    $("#excel-sheet").onchange = () => {
+      sheet = inspection.sheets.find((s) => s.name === $("#excel-sheet").value);
+      headerRow = sheet.suggested_header_row;
+      chosen = { ...sheet.suggested_mapping };
+      draw();
+    };
+    $("#excel-header-row").onchange = () => {
+      headerRow = Number($("#excel-header-row").value);
+      const newHeader = sheet.preview.find((r) => r.row === headerRow);
+      chosen = {
+        ...(newHeader?.mapping ||
+          Object.fromEntries(
+            Object.keys(inspection.fields).map((k) => [k, null]),
+          )),
+      };
+      draw();
+    };
+    $$("[data-excel-field]").forEach(
+      (select) =>
+        (select.onchange = () => {
+          const field = select.dataset.excelField;
+          chosen[field] = select.value === "" ? null : Number(select.value);
+          $(`[data-sample="${field}"]`).textContent =
+            chosen[field] === null
+              ? "—"
+              : sampleRows
+                  .map((r) => valueAt(r, chosen[field]))
+                  .filter(Boolean)
+                  .join(" · ") || "—";
+        }),
+    );
+    $("#excel-mapping-form").onsubmit = async (event) => {
+      event.preventDefault();
+      const error = $("#excel-mapping-error");
+      const values = Object.values(chosen);
+      if (
+        values.some((v) => v === null || v === undefined) ||
+        new Set(values).size !== Object.keys(inspection.fields).length
+      ) {
+        error.hidden = false;
+        error.textContent =
+          "Выберите пять разных столбцов: отдельный для каждого поля.";
+        return;
+      }
+      const button = $("#excel-mapping-apply");
+      button.disabled = true;
+      try {
+        await runExcelImport(context, {
+          sheet: sheet.name,
+          headerRow: Number(headerRow),
+          mapping: chosen,
+        });
+      } catch (err) {
+        if ($("#excel-mapping-error")) {
+          error.hidden = false;
+          error.textContent = err.message;
+        } else toast(err.message);
+      } finally {
+        button.disabled = false;
+      }
+    };
+  }
+  draw();
+}
+
 async function batchModal(ids) {
   if (!ids.length) throw new Error("Выберите накладные");
   modal(
@@ -528,6 +667,7 @@ async function action(name, id, b) {
       else await list();
       break;
     case "close":
+      if ($("#excel-mapping-form")) excelImportVersion++;
       $("#modal").close();
       break;
     case "admin-login":
@@ -827,6 +967,9 @@ async function downloadRegistry(ids) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+$("#modal").addEventListener("cancel", () => {
+  if ($("#excel-mapping-form")) excelImportVersion++;
+});
 bind();
 (async () => {
   try {

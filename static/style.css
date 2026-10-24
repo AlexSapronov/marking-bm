@@ -697,3 +697,39 @@ input,
 select {
   font-weight: 400;
 }
+
+.mapping-table {
+  margin-top: 20px;
+}
+.mapping-table td:first-child {
+  white-space: normal;
+  min-width: 130px;
+}
+.mapping-table select {
+  width: 100%;
+  min-width: 190px;
+  max-width: 370px;
+}
+.mapping-sample {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: 220px;
+  color: var(--muted);
+}
+.mapping-cell {
+  max-width: 220px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+#excel-mapping-error[hidden] {
+  display: none;
+}
+
+.mapping-actions {
+  position: sticky;
+  bottom: -26px;
+  background: var(--surface);
+  padding: 12px 0 14px;
+  border-top: 1px solid var(--border);
+  z-index: 1;
+}
