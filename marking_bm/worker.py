@@ -11,6 +11,13 @@ from .codes import parse
 from .gateway import RemoteError
 
 
+# The 25-character ATK comprises 20 decimal digits and five characters
+# in [0-9A-Za-z]. The final five preserve case (e.g. "K0KvG").
+# Never coerce ATK to int or assume a digits-only identifier.
+def valid_atk_code(value):
+    return isinstance(value, str) and re.fullmatch(r"[0-9]{20}[0-9A-Za-z]{5}", value) is not None
+
+
 class Worker:
     def __init__(self, service):
         self.s = service
@@ -387,11 +394,9 @@ class Worker:
                 )
             elif kind == "atk":
                 parents = {ci.get("parent") for ci in registry.values()}
-                if len(parents) != 1 or not re.fullmatch(
-                    "[0-9]{25}", next(iter(parents)) or ""
-                ):
+                if len(parents) != 1 or not valid_atk_code(next(iter(parents))):
                     raise ValueError(
-                        "ЧЗ не подтвердил единый 25-значный АТК для всех КМ"
+                        "ЧЗ не подтвердил единый 25-символьный буквенно-цифровой АТК для всех КМ"
                     )
                 code = next(iter(parents))
                 a = one(db, "SELECT * FROM atks WHERE op_id=?", (op["id"],))

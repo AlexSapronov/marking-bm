@@ -158,7 +158,8 @@ class Registry:
             payload = json.loads(base64.b64decode(body["product_document"]))
             ext = str(uuid4())
             if body["type"] == "ATK_AGGREGATION":
-                atk = "1" + str(len(self.atks) + 1).zfill(24)
+                # Use realistic ATK: 20 digits + 5 case-sensitive letters/digits.
+                atk = "1" + str(len(self.atks) + 1).zfill(19) + "K0KvG"
                 self.atks[atk] = payload["products_list"]
                 for item in payload["products_list"]:
                     self.codes[item["ki"]]["parent"] = atk
