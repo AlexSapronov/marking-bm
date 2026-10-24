@@ -11,6 +11,7 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from marking_bm.auth import hash_password
+from marking_bm.excel import xlsx, HEADERS
 from playwright.sync_api import sync_playwright, expect
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -89,7 +90,7 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("heading", name="Накладная SMOKE-001").wait_for()
             assert page.locator(".pn-input").input_value() == "L-132XYD"
             assert page.locator(".qty-input").input_value() == "5"
-            out = Path("docs/screenshots")
+            out = Path(os.getenv("BM_SCREENSHOT_DIR", "docs/screenshots"))
             out.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(out / "invoice.png"), full_page=True)
             page.get_by_role("button", name="Тёмная тема", exact=True).click()
@@ -99,6 +100,94 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("heading", name="Накладная SMOKE-001").wait_for()
             assert page.locator("html").get_attribute("data-theme") == "dark"
             page.get_by_role("button", name="Светлая тема", exact=True).click()
+            # Non-standard headers trigger explicit mapping; raw numbers/text normalize.
+            unknown = xlsx(
+                {
+                    "Supplier": [
+                        ["Export"],
+                        [
+                            "Model code",
+                            "Product",
+                            "Amount",
+                            "Labels",
+                            "Customs",
+                            "Notes",
+                        ],
+                        [
+                            "MAPPED-PN",
+                            "04640638349704",
+                            "1000",
+                            "2",
+                            8536699008,
+                            "extra",
+                        ],
+                    ]
+                }
+            )
+            page.locator("#excel-file").set_input_files(
+                {
+                    "name": "supplier.xlsx",
+                    "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "buffer": unknown,
+                }
+            )
+            page.get_by_role(
+                "heading", name="Сопоставление столбцов", exact=True
+            ).wait_for()
+            expect(page.locator("#excel-header-row")).to_have_value("2")
+            page.screenshot(path=str(out / "excel-mapping.png"), full_page=True)
+            for field, index in {
+                "pn": 0,
+                "gtin": 1,
+                "quantity": 2,
+                "labels": 2,
+                "tnved": 4,
+            }.items():
+                page.locator(f'[data-excel-field="{field}"]').select_option(str(index))
+            page.get_by_role(
+                "button", name="Применить сопоставление", exact=True
+            ).click()
+            expect(page.locator("#excel-mapping-error")).to_contain_text(
+                "пять разных столбцов"
+            )
+            page.locator('[data-excel-field="labels"]').select_option("3")
+            page.get_by_role(
+                "button", name="Применить сопоставление", exact=True
+            ).click()
+            page.get_by_role("heading", name="Excel загружен", exact=True).wait_for()
+            page.get_by_role("button", name="Продолжить", exact=True).click()
+            expect(page.locator("#modal")).not_to_be_visible()
+            expect(page.locator(".pn-input")).to_have_value("MAPPED-PN")
+            expect(page.locator(".qty-input")).to_have_value("1000")
+            page.get_by_role(
+                "button", name="Проверить и сохранить состав", exact=True
+            ).click()
+            page.locator("#confirm-save").click()
+            expect(page.locator("#modal")).not_to_be_visible()
+            page.reload()
+            page.get_by_role("heading", name="Накладная SMOKE-001").wait_for()
+            expect(page.locator(".pn-input")).to_have_value("MAPPED-PN")
+            expect(page.locator(".qty-input")).to_have_value("1000")
+            # Standard recognized headers import without showing the mapping form.
+            ordinary = xlsx(
+                {
+                    "Товары": [
+                        HEADERS,
+                        ["MAPPED-PN", "04640638349704", "1000", "2", 8536699008],
+                    ]
+                }
+            )
+            page.locator("#excel-file").set_input_files(
+                {
+                    "name": "ordinary.xlsx",
+                    "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "buffer": ordinary,
+                }
+            )
+            expect(page.locator("#toast")).to_contain_text(
+                "Excel загружен в предпросмотр"
+            )
+            expect(page.locator("#modal")).not_to_be_visible()
             page.get_by_role("button", name="Накладные", exact=True).click()
             page.get_by_role("heading", name="Накладные", exact=True).wait_for()
             page.screenshot(path=str(out / "documents.png"), full_page=True)
@@ -146,7 +235,7 @@ with tempfile.TemporaryDirectory() as tmp:
             assert not errors, errors
             browser.close()
         print(
-            "Browser smoke: managers and logistics roles, read-only registry, shared light/dark themes, saved preference, invoice editing, persistence, filters and mobile layout OK. External writes disabled."
+            "Browser smoke: managers and logistics roles, read-only registry, shared light/dark themes, saved preference, invoice editing, Excel automatic detection and mapping, persistence, filters and mobile layout OK. External writes disabled."
         )
     finally:
         process.terminate()
