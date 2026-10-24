@@ -19,24 +19,39 @@ $script:ComType = [System.__ComObject]
 
 function Invoke-CadesMethod {
     param([object]$Object, [string]$Name, [object[]]$Arguments = @())
-    $script:ComType.InvokeMember(
-        $Name, [System.Reflection.BindingFlags]::InvokeMethod,
-        $null, $Object, $Arguments
-    )
+    try {
+        $script:ComType.InvokeMember(
+            $Name, [System.Reflection.BindingFlags]::InvokeMethod,
+            $null, $Object, $Arguments
+        )
+    }
+    catch {
+        throw "CAdESCOM method '$Name' failed: $($_.Exception.Message)"
+    }
 }
 function Get-CadesProperty {
-    param([object]$Object, [string]$Name)
-    $script:ComType.InvokeMember(
-        $Name, [System.Reflection.BindingFlags]::GetProperty,
-        $null, $Object, $null
-    )
+    param([object]$Object, [string]$Name, [object[]]$Arguments = @())
+    try {
+        $script:ComType.InvokeMember(
+            $Name, [System.Reflection.BindingFlags]::GetProperty,
+            $null, $Object, $Arguments
+        )
+    }
+    catch {
+        throw "CAdESCOM property '$Name' failed: $($_.Exception.Message)"
+    }
 }
 function Set-CadesProperty {
     param([object]$Object, [string]$Name, [object]$Value)
-    [void]$script:ComType.InvokeMember(
-        $Name, [System.Reflection.BindingFlags]::SetProperty,
-        $null, $Object, @($Value)
-    )
+    try {
+        [void]$script:ComType.InvokeMember(
+            $Name, [System.Reflection.BindingFlags]::SetProperty,
+            $null, $Object, @($Value)
+        )
+    }
+    catch {
+        throw "CAdESCOM property '$Name' (set) failed: $($_.Exception.Message)"
+    }
 }
 
 $allowed = @('auth_true','auth_oms','order','report','atk','transform')
@@ -54,7 +69,7 @@ try {
     $certCount = [int](Get-CadesProperty $certificates 'Count')
     $cert = $null
     for ($i=1; $i -le $certCount; $i++) {
-        $candidate = Invoke-CadesMethod $certificates 'Item' @($i)
+        $candidate = Get-CadesProperty $certificates 'Item' @($i)
         if (((Get-CadesProperty $candidate 'Thumbprint') -replace '\s','').ToUpperInvariant() -eq $Thumbprint) {
             $cert = $candidate
             break
