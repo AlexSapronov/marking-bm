@@ -283,6 +283,7 @@ with tempfile.TemporaryDirectory() as tmp:
             assert page.locator("#atk-table").count() == 1
             expect(page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
             expect(page.get_by_role("button", name="Завершить накладную", exact=True)).to_be_visible()
+            expect(page.get_by_role("button", name="Завершить накладную", exact=True)).to_be_in_viewport(ratio=1)
             page.locator("#atk-search").fill("UNAVAILABLE")
             page.get_by_role("button", name="Применить фильтры", exact=True).click()
             page.get_by_role("heading", name="Реестр АТК", exact=True).wait_for()
