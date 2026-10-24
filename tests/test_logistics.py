@@ -20,7 +20,7 @@ def prepare_atks(env):
     advance(app)
     for doc, owner in zip(ids, ["alice", "bob"]):
         s.transferred(doc, owner, 1)
-    s.batch("administrator", ids, "2026-01-01", "123456789", admin=True)
+    s.batch("administrator", ids, "2026-01-01", admin=True)
     advance(app)
     admin = client(app, "administrator", True)
     response = admin.post(
@@ -193,7 +193,7 @@ def test_registry_archive_and_pending_groups(env):
     s.order(d, "bob")
     advance(app)
     s.transferred(d, "bob", 1)
-    s.batch("bob", [d], "2026-01-01", "123456789")
+    s.batch("bob", [d], "2026-01-01")
     for _ in range(3):
         from conftest import sign_all
 

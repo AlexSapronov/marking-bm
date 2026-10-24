@@ -414,8 +414,6 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
     class Batch(BaseModel):
         documents: list[str]
         production_date: str
-        kpp: str
-        fias_id: str = ""
 
     @app.post("/api/batches")
     def batch(body: Batch, s=Depends(manager)):
@@ -424,9 +422,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                 s["username"],
                 body.documents,
                 body.production_date,
-                body.kpp,
-                body.fias_id,
-                s["admin"],
+                admin=s["admin"],
             )
         }
 

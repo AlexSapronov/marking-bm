@@ -212,6 +212,7 @@ def env(tmp_path):
             "oms_id": str(uuid4()),
             "oms_connection": str(uuid4()),
             "template_id": 37,
+            "kpp": "123456789",
         }.items():
             db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (k, dumps(v)))
         for u in ("alice", "bob"):

@@ -157,8 +157,8 @@ def test_report_atk_and_exports_roundtrip(env):
     advance(app)
     for i, owner in zip(ids, ["alice", "alice", "bob"]):
         s.transferred(i, owner, 1)
-    batch = s.batch("administrator", ids, "2026-01-01", "123456789", admin=True)
-    assert s.batch("administrator", ids, "2026-01-01", "123456789", admin=True) == batch
+    batch = s.batch("administrator", ids, "2026-01-01", admin=True)
+    assert s.batch("administrator", ids, "2026-01-01", admin=True) == batch
     advance(app)
     assert len(r.reports) == 3 and len(r.atks) == 2
     assert all(
@@ -247,7 +247,7 @@ def test_supplier_error_isolation(env):
     advance(app)
     for i, u in [(a, "alice"), (b, "bob")]:
         s.transferred(i, u, 1)
-    s.batch("administrator", [a, b], "2026-01-01", "123456789", admin=True)
+    s.batch("administrator", [a, b], "2026-01-01", admin=True)
     sign_all(s)
     app.state.worker.tick()
     op = s.store.one("SELECT * FROM operations WHERE kind='report' AND doc_id=?", (a,))
@@ -309,7 +309,7 @@ def test_transformation_requires_two_decisions(env):
     s.order(a, "alice")
     advance(app)
     s.transferred(a, "alice", 1)
-    s.batch("alice", [a], "2026-01-01", "123456789")
+    s.batch("alice", [a], "2026-01-01")
     advance(app)
     atk = s.get(a, "alice")["atks"][0]
     code = s.get(a, "alice")["codes"][0]
@@ -360,7 +360,7 @@ def test_archive_and_backup_restore(env, tmp_path):
     s.order(a, "alice")
     advance(app)
     s.transferred(a, "alice", 1)
-    s.batch("alice", [a], "2026-01-01", "123456789")
+    s.batch("alice", [a], "2026-01-01")
     advance(app)
     with s.store.transaction() as db:
         db.execute(
@@ -421,7 +421,7 @@ def test_supplement_report_waits_for_approved_addition(env):
     s.order(a, "alice")
     advance(app)
     s.transferred(a, "alice", 1)
-    s.batch("alice", [a], "2026-01-01", "123456789")
+    s.batch("alice", [a], "2026-01-01")
     advance(app)
     parent = s.get(a, "alice")
     atk = parent["atks"][0]
@@ -431,7 +431,7 @@ def test_supplement_report_waits_for_approved_addition(env):
     s.order(b, "alice")
     advance(app)
     s.transferred(b, "alice", 1)
-    s.batch("alice", [b], "2026-01-01", "123456789")
+    s.batch("alice", [b], "2026-01-01")
     advance(app)
     assert s.get(b, "alice")["status"] == "reported" and len(r.atks) == 1
     candidates = s.candidate_codes(atk["id"], "alice")
@@ -478,7 +478,7 @@ def test_two_full_tnved_create_distinct_atks_even_same_prefix(env):
         if ci["gtin"] == other_gtin:
             ci["tnVedEaes"] = other_tn
     s.transferred(a, "alice", 1)
-    s.batch("alice", [a], "2026-01-01", "123456789")
+    s.batch("alice", [a], "2026-01-01")
     advance(app)
     d = s.get(a, "alice")
     assert d["status"] == "done" and len(d["atks"]) == 2
@@ -496,7 +496,7 @@ def test_supplier_merge_preserves_finished_atks_and_files(env):
     s.order(a, "alice")
     advance(app)
     s.transferred(a, "alice", 1)
-    s.batch("alice", [a], "2026-01-01", "123456789")
+    s.batch("alice", [a], "2026-01-01")
     advance(app)
     b = add_doc(s, "bob", "Supplier B")
     old = s.get(a, "alice")
@@ -549,10 +549,80 @@ def test_applied_code_database_guards_and_filename_collisions(env):
     s.order(a, "alice")
     advance(app)
     s.transferred(a, "alice", 1)
-    s.batch("alice", [a], "2026-01-01", "123456789")
+    s.batch("alice", [a], "2026-01-01")
     advance(app)
     with pytest.raises(Exception):
         with s.store.transaction() as db:
             db.execute("UPDATE codes SET quantity=999 WHERE doc_id=?", (a,))
     assert len(safe_name("я" * 300).encode()) <= 170
     assert "/" not in safe_name("A/B")
+
+
+def test_report_uses_admin_location_and_preserves_snapshot(env):
+    from marking_bm.db import dumps
+
+    app, s, registry = env
+    doc_id = add_doc(s)
+    s.order(doc_id, "alice")
+    advance(app)
+    s.transferred(doc_id, "alice", 1)
+    fias = "11111111-2222-4333-8444-555555555555"
+    with s.store.transaction() as db:
+        for key, value in {"kpp": "987654321", "fias_id": fias}.items():
+            db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (key, dumps(value)))
+    c = client(app)
+    # Old or modified clients cannot override the administrator's location.
+    response = c.post("/api/batches", json={
+        "documents": [doc_id], "production_date": "2026-01-01",
+        "kpp": "111111111", "fias_id": "untrusted-client-value",
+    })
+    assert response.status_code == 200, response.text
+    payload = json.loads(s.store.one("SELECT payload FROM operations WHERE kind='report'")["payload"])
+    assert payload["attributes"] == {
+        "productionDate": "2026-01-01", "kpp": "987654321", "fiasId": fias,
+    }
+    saved = s.get(doc_id, "alice")
+    assert saved["kpp"] == "987654321" and saved["fias_id"] == fias
+    with s.store.transaction() as db:
+        db.execute("UPDATE settings SET value=? WHERE key='kpp'", (dumps("123456789"),))
+    # Retry only needs the date; it does not rebuild the existing signed payload.
+    retry = c.post("/api/batches", json={"documents": [doc_id], "production_date": "2026-01-01"})
+    assert retry.status_code == 200 and retry.json() == response.json()
+    advance(app)
+    assert next(iter(registry.reports.values()))["attributes"] == payload["attributes"]
+
+
+@pytest.mark.parametrize("kpp,fias", [("", ""), ("invalid", ""), ("123456789", "invalid")])
+def test_report_requires_valid_admin_location_without_creating_operations(env, kpp, fias):
+    from marking_bm.db import dumps
+
+    app, s, _ = env
+    doc_id = add_doc(s)
+    s.order(doc_id, "alice")
+    advance(app)
+    s.transferred(doc_id, "alice", 1)
+    with s.store.transaction() as db:
+        for key, value in {"kpp": kpp, "fias_id": fias}.items():
+            db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (key, dumps(value)))
+    response = client(app).post("/api/batches", json={
+        "documents": [doc_id], "production_date": "2026-01-01",
+    })
+    assert response.status_code == 422
+    assert "админ" in response.json()["detail"].lower()
+    assert s.store.one("SELECT COUNT(*) n FROM batches")["n"] == 0
+    assert s.store.one("SELECT COUNT(*) n FROM operations WHERE kind='report'")["n"] == 0
+    assert s.get(doc_id, "alice")["status"] == "transferred"
+
+
+def test_report_date_only_request_allows_optional_fias_to_be_empty(env):
+    app, s, _ = env
+    doc_id = add_doc(s)
+    s.order(doc_id, "alice")
+    advance(app)
+    s.transferred(doc_id, "alice", 1)
+    response = client(app).post("/api/batches", json={
+        "documents": [doc_id], "production_date": "2026-01-01",
+    })
+    assert response.status_code == 200, response.text
+    payload = json.loads(s.store.one("SELECT payload FROM operations WHERE kind='report'")["payload"])
+    assert payload["attributes"] == {"productionDate": "2026-01-01", "kpp": "123456789"}

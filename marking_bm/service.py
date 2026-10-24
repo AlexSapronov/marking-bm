@@ -535,7 +535,7 @@ class Service:
             )
             audit(db, actor, "Передано поставщику", doc_id, {"version": version})
 
-    def batch(self, actor, doc_ids, production_date, kpp, fias_id="", admin=False):
+    def batch(self, actor, doc_ids, production_date, admin=False):
         if not doc_ids or len(doc_ids) != len(set(doc_ids)):
             raise ValueError("Выберите уникальные накладные")
         try:
@@ -543,12 +543,6 @@ class Service:
                 raise ValueError()
         except (ValueError, TypeError):
             raise ValueError("Укажите фактическую дату производства не в будущем")
-        if fias_id:
-            from uuid import UUID
-
-            UUID(fias_id)
-        if not re.fullmatch("[0-9]{9}", kpp or ""):
-            raise ValueError("Укажите КПП места деятельности (9 цифр)")
         with self.store.transaction() as db:
             docs = [self.document(db, i, actor, admin) for i in sorted(doc_ids)]
             if any(d["parent_id"] for d in docs) and not all(
@@ -575,6 +569,29 @@ class Service:
                 raise Conflict(
                     "Отметьте передачу актуальных этикеток для всех накладных"
                 )
+            # Snapshot the administrator's current location in the same transaction
+            # as the immutable report payload. Never accept location overrides from UI.
+            location = {
+                r["key"]: json.loads(r["value"])
+                for r in rows(db, "SELECT key,value FROM settings WHERE key IN ('kpp','fias_id')")
+            }
+            kpp = location.get("kpp", "")
+            fias_id = location.get("fias_id", "")
+            if not isinstance(kpp, str) or not re.fullmatch("[0-9]{9}", kpp):
+                raise ValueError(
+                    "Администратор должен указать КПП места деятельности (9 цифр) "
+                    "в разделе «Организация» админки"
+                )
+            if fias_id:
+                from uuid import UUID
+
+                try:
+                    UUID(fias_id)
+                except (ValueError, TypeError, AttributeError):
+                    raise ValueError(
+                        "Администратор должен исправить ФИАС места деятельности "
+                        "в разделе «Организация» админки"
+                    )
             batch = uid()
             db.execute("INSERT INTO batches VALUES(?,?,?)", (batch, now(), actor))
             for d in docs:
