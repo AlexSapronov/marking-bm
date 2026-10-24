@@ -1,0 +1,663 @@
+"use strict";
+const $ = (s) => document.querySelector(s),
+  $$ = (s) => [...document.querySelectorAll(s)],
+  e = (s) =>
+    String(s ?? "").replace(
+      /[&<>"']/g,
+      (c) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        })[c],
+    );
+const states = {
+  draft: "Черновик",
+  label_error: "Ошибка формирования PDF",
+  preflight_blocked: "Проверка перед отправкой не пройдена",
+  repack: "Подготовка новой разбивки",
+  receiving: "Получение КМ",
+  ordering: "Заказ КМ",
+  ready: "Этикетки готовы",
+  transferred: "Ожидает нанесения",
+  reporting: "Отчёт о нанесении",
+  reported: "Отчёт принят",
+  aggregating: "Формирование АТК",
+  done: "Завершён",
+  archive: "Архив",
+  signing: "Ожидает подписи",
+  leased: "Подписывается",
+  queued: "Ожидает отправки",
+  dispatching: "Отправляется",
+  submitted: "Обрабатывается в ЧЗ",
+  unknown: "Неизвестный результат",
+  blocked: "Требует проверки",
+  approval: "На согласовании",
+  approved: "Согласована",
+  rejected: "Отклонена",
+  processing: "Обрабатывается",
+  free: "Свободен",
+  reserved: "Зарезервирован",
+  applied: "Нанесён",
+  aggregated: "В АТК",
+  removed_review: "Изъят из АТК. Требует проверки",
+};
+const kinds = {
+  order: "Заказ КМ",
+  fetch: "Получение КМ",
+  report: "Отчёт о нанесении",
+  atk: "Создание АТК",
+  transform: "Трансформация АТК",
+  auth_true: "Авторизация ГИС МТ",
+  auth_oms: "Авторизация СУЗ",
+};
+const badge = (s) => `<span class="badge ${e(s)}">${e(states[s] || s)}</span>`,
+  fmt = (n) => Number(n || 0).toLocaleString("ru-RU"),
+  date = (s) => (s ? new Date(s).toLocaleString("ru-RU") : "—");
+let user,
+  docs = [],
+  doc,
+  archive = false,
+  adminMode = location.pathname === "/admin",
+  overview,
+  refreshTimer;
+async function api(url, body, method) {
+  const headers = { "X-Requested-With": "marking-bm" };
+  if (user?.csrf) headers["X-CSRF-Token"] = user.csrf;
+  if (body && !(body instanceof FormData))
+    headers["Content-Type"] = "application/json";
+  const r = await fetch("/api" + url, {
+    method: method || (body ? "POST" : "GET"),
+    headers,
+    body: body
+      ? body instanceof FormData
+        ? body
+        : JSON.stringify(body)
+      : undefined,
+  });
+  let data = r.status === 204 ? {} : await r.json();
+  if (!r.ok) {
+    let ex = new Error(
+      typeof data.detail === "string"
+        ? data.detail
+        : JSON.stringify(data.detail),
+    );
+    ex.data = data;
+    throw ex;
+  }
+  return data;
+}
+function toast(message) {
+  $("#toast").textContent = message;
+  $("#toast").style.display = "block";
+  setTimeout(() => ($("#toast").style.display = "none"), 6500);
+}
+function bind() {
+  document.onclick = async (ev) => {
+    const b = ev.target.closest("[data-action]");
+    if (!b) return;
+    try {
+      b.disabled = true;
+      await action(b.dataset.action, b.dataset.id, b);
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      b.disabled = false;
+    }
+  };
+}
+function shell(content) {
+  $("#app").innerHTML =
+    `<div class="layout"><aside><div class="brand"><span>М</span>аркировка</div><div class="muted">Рабочее место<br>бренд-менеджера</div><nav><button data-action="list" class="${!adminMode && !archive ? "active" : ""}">Накладные</button><button data-action="archive" class="${archive ? "active" : ""}">Архив</button><button data-action="admin" class="${adminMode ? "active" : ""}">Администрирование</button></nav><footer>Радиоэлектроника<br>Честный ЗНАК / СУЗ<div class="user">${e(user.username)}<br><button data-action="logout">Выйти</button></div></footer></aside><main>${content}</main></div>`;
+}
+function login(admin = false) {
+  $("#app").innerHTML =
+    `<div class="login"><div class="brand"><span>М</span>аркировка</div><h1>${admin ? "Вход администратора" : "Рабочее место"}</h1><p class="muted">${admin ? "Отдельный пароль для управления системой" : "Введите свой username, чтобы открыть накладные"}</p><form id="login-form"><label>${admin ? "Пароль администратора" : "Username"}<input id="login-value" autocomplete="${admin ? "current-password" : "username"}" type="${admin ? "password" : "text"}" required autofocus></label><button class="primary">Войти</button></form><small>${admin ? "Подпись и настройки доступны только администратору." : "Вход без пароля. Действия фиксируются от имени выбранного username."}</small><p><button class="linkbutton" data-action="${admin ? "user-login" : "admin-login"}">${admin ? "Вход сотрудника" : "Вход администратора"}</button></p></div>`;
+  $("#login-form").onsubmit = async (ev) => {
+    ev.preventDefault();
+    try {
+      user = await api(
+        "/session",
+        admin
+          ? { admin: true, password: $("#login-value").value }
+          : { username: $("#login-value").value },
+      );
+      adminMode = admin;
+      admin ? await adminPage() : await list();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+}
+async function list() {
+  history.replaceState(null, "", location.pathname);
+  adminMode = false;
+  doc = null;
+  docs = await api("/documents?archive=" + archive);
+  renderList();
+}
+function renderList() {
+  shell(
+    `<div class="topbar"><div><div class="muted">РАБОЧИЕ ДОКУМЕНТЫ</div><h1>${archive ? "Архив" : "Накладные"}</h1><p class="muted">От подготовки этикеток до таможенного кода</p></div><button class="primary" data-action="new">+ Новая накладная</button></div><div class="stats"><div class="stat"><span class="muted">Документов</span><b>${docs.length}</b></div><div class="stat"><span class="muted">Ожидают нанесения</span><b>${docs.filter((d) => d.status === "transferred").length}</b></div><div class="stat"><span class="muted">Завершено</span><b>${docs.filter((d) => ["done", "archive"].includes(d.status)).length}</b></div></div><div class="card"><div class="toolbar"><input id="search" placeholder="Номер накладной"><select id="status"><option value="">Все статусы</option>${[...new Set(docs.map((d) => d.status))].map((s) => `<option value="${e(s)}">${e(states[s])}</option>`).join("")}</select><select id="supplier"><option value="">Все поставщики</option>${[...new Set(docs.map((d) => d.supplier))].map((s) => `<option>${e(s)}</option>`).join("")}</select><input type="date" id="from" aria-label="Дата от"><input type="date" id="to" aria-label="Дата до"><button data-action="refresh">Обновить</button></div><div class="table-wrap"><table><thead><tr><th><input id="select-all" type="checkbox" aria-label="Выбрать все"></th><th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Штук</th><th>Создана</th>${user.admin ? "<th>Владелец</th>" : ""}</tr></thead><tbody id="doc-rows"></tbody></table></div><div class="actions"><button data-action="batch">Подтвердить нанесение и сформировать АТК</button><span class="muted">Для выбранных накладных</span></div></div>`,
+  );
+  filterRows();
+  for (const s of ["#search", "#status", "#supplier", "#from", "#to"])
+    $(s).oninput = filterRows;
+  $("#select-all").onchange = () =>
+    $$(".doc-select").forEach((x) => (x.checked = $("#select-all").checked));
+}
+function filterRows() {
+  let ds = docs.filter(
+    (d) =>
+      (!$("#search").value ||
+        d.number.toLowerCase().includes($("#search").value.toLowerCase())) &&
+      (!$("#status").value || d.status === $("#status").value) &&
+      (!$("#supplier").value || d.supplier === $("#supplier").value) &&
+      (!$("#from").value || d.created.slice(0, 10) >= $("#from").value) &&
+      (!$("#to").value || d.created.slice(0, 10) <= $("#to").value),
+  );
+  $("#doc-rows").innerHTML = ds.length
+    ? ds
+        .map(
+          (d) =>
+            `<tr><td><input type="checkbox" class="doc-select" value="${e(d.id)}" aria-label="Выбрать ${e(d.number)}"></td><td><button class="linkbutton" data-action="open" data-id="${e(d.id)}"><b>${e(d.number)}</b></button></td><td>${e(d.supplier)}</td><td>${badge(d.status)}</td><td>${fmt(d.units)}</td><td>${date(d.created)}</td>${user.admin ? `<td>${e(d.owner)}</td>` : ""}</tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="8"><div class="empty"><b>Накладных пока нет</b>Создайте документ и загрузите Excel по шаблону.</div></td></tr>`;
+}
+function modal(content) {
+  $("#modal").innerHTML = content;
+  $("#modal").showModal();
+}
+function fields() {
+  return `<div class="fields"><label>Дата производства<input id="production-date" type="date" required></label><label>КПП места деятельности<input id="kpp" inputmode="numeric" maxlength="9" required></label><label class="full">ФИАС места деятельности (если используется)<input id="fias"></label></div>`;
+}
+async function newDoc(parent) {
+  const suppliers = await api("/suppliers");
+  modal(
+    `<h2>${parent ? "Дополнение к накладной " + e(doc.number) : "Новая накладная"}</h2><form id="new-form"><div class="fields"><label>Номер накладной<input id="number" required maxlength="120"></label><label>Поставщик<input id="new-supplier" list="supplier-list" value="${parent ? e(doc.supplier) : ""}" required maxlength="160" ${parent ? "readonly" : ""}><datalist id="supplier-list">${suppliers.map((s) => `<option value="${e(s.name)}">`).join("")}</datalist></label></div><div class="actions"><button class="primary">Создать черновик</button><button type="button" data-action="close">Отмена</button></div></form>`,
+  );
+  $("#new-form").onsubmit = async (ev) => {
+    ev.preventDefault();
+    try {
+      const r = await api("/documents", {
+        number: $("#number").value,
+        supplier: $("#new-supplier").value,
+        parent_id: parent || null,
+      });
+      $("#modal").close();
+      await open(r.id);
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+}
+function lineRow(l = {}) {
+  return `<tr><td class="pn"><input class="pn-input" aria-label="PN" value="${e(l.pn)}" maxlength="120"></td><td class="gtin"><input class="gtin-input" aria-label="GTIN" value="${e(l.gtin)}" maxlength="14"></td><td><input class="qty-input" aria-label="Штук в этикетке" type="number" min="1" max="99999999" value="${e(l.quantity || 1)}"></td><td><input class="labels-input" aria-label="Этикеток" type="number" min="1" value="${e(l.labels || 1)}"></td><td class="tnved"><input class="tnved-input" aria-label="ТН ВЭД" value="${e(l.tnved)}" maxlength="10"></td><td><button data-action="remove-line" class="danger" aria-label="Удалить строку">×</button></td></tr>`;
+}
+function gatherRows() {
+  return $$("#edit-rows tr").map((tr) => {
+    const values = [...tr.querySelectorAll("input")].map((x) => x.value);
+    return [
+      values[0],
+      values[1],
+      Number(values[2]),
+      Number(values[3]),
+      values[4],
+    ];
+  });
+}
+async function open(id) {
+  history.replaceState(
+    null,
+    "",
+    location.pathname + "#document/" + encodeURIComponent(id),
+  );
+  doc = await api("/documents/" + id);
+  adminMode = false;
+  renderDoc();
+}
+function renderDoc() {
+  const editable = ["draft", "ready", "transferred", "label_error"].includes(
+    doc.status,
+  );
+  const steps = [
+    ["draft", "Подготовка"],
+    ["receiving", "Коды"],
+    ["ready", "Этикетки"],
+    ["transferred", "Нанесение"],
+    ["reporting", "Отчёт"],
+    ["aggregating", "АТК"],
+    ["done", "Готово"],
+  ];
+  const current =
+    doc.status === "reported"
+      ? "reporting"
+      : doc.status === "archive"
+        ? "done"
+        : doc.status;
+  const currentFile = doc.artifacts.find(
+    (a) => a.kind === "labels" && a.version === doc.current_version,
+  );
+  shell(
+    `<div class="topbar"><div><button class="linkbutton" data-action="list">← Накладные</button><h1>Накладная ${e(doc.number)}</h1><span class="muted">${e(doc.supplier)} · ${e(doc.owner)} · ${date(doc.created)}</span></div>${badge(doc.status)}</div><div class="steps">${steps.map(([s, l]) => `<span class="step ${s === current ? "current" : ""}">${l}</span>`).join("")}</div><div class="stats"><div class="stat"><span class="muted">Единиц товара</span><b>${fmt(doc.units)}</b></div><div class="stat"><span class="muted">Получено КМ</span><b>${fmt(doc.codes.length)} / ${fmt(doc.required)}</b></div><div class="stat"><span class="muted">Версия этикеток</span><b>${doc.current_version || "—"}</b></div></div>${doc.last_error ? `<div class="error">Этикетки не сформированы: ${e(doc.last_error)}. Полученные КМ сохранены. Исправьте состав накладной.</div>` : ""}${doc.operations
+      .filter((o) => o.error)
+      .map(
+        (o) =>
+          `<div class="error">${e(kinds[o.kind])}: ${e(o.error)} · ${e(states[o.state] || o.state)}</div>`,
+      )
+      .join(
+        "",
+      )}${doc.status === "receiving" ? '<div class="notice">PDF станет доступен после получения полного комплекта КМ. Повторный заказ не требуется.</div>' : ""}<div class="card"><div class="topbar"><h2>Состав накладной</h2>${editable ? '<div class="actions"><a href="/api/template">Скачать шаблон Excel</a><button data-action="import">Загрузить Excel</button><input type="file" id="excel-file" accept=".xlsx" hidden></div>' : ""}</div><div class="table-wrap"><table><thead><tr><th>PN</th><th>GTIN</th><th>Штук в этикетке</th><th>Этикеток</th><th>ТН ВЭД</th>${editable ? "<th></th>" : ""}</tr></thead><tbody id="edit-rows">${editable ? doc.lines.map(lineRow).join("") : doc.lines.map((l) => `<tr><td>${e(l.pn)}</td><td>${e(l.gtin)}</td><td>${fmt(l.quantity)}</td><td>${fmt(l.labels)}</td><td>${e(l.tnved)}</td></tr>`).join("")}</tbody></table></div>${editable ? '<div class="actions"><button data-action="add-line">+ Добавить строку</button><button data-action="save-lines">Проверить и сохранить состав</button></div>' : ""}<div class="actions">${doc.status === "draft" ? '<button class="primary" data-action="order">Заказать КМ</button>' : ""}${currentFile && doc.codes.length === doc.required && !["repack", "receiving"].includes(doc.status) ? `<a href="/api/files/${e(currentFile.id)}">Скачать актуальные этикетки · ZIP v${doc.current_version}</a>` : ""}${["ready", "transferred"].includes(doc.status) ? `<button class="primary" data-action="transfer">${doc.status === "transferred" ? "Повторно отметить передачу" : "Передано поставщику"}</button>` : ""}${doc.status === "transferred" ? '<button class="primary" data-action="report">Подтвердить нанесение и сформировать АТК</button>' : ""}${["done", "archive", "reported"].includes(doc.status) ? '<button data-action="supplement">Создать дополнение</button>' : ""}<button data-action="refresh-doc">Обновить состояние</button></div></div>${doc.atks.length ? `<div class="card"><h2>Таможенные коды</h2>${doc.atks.map((a) => `<div class="toolbar"><span>ТН ВЭД <b>${e(a.tnved)}</b> · ${a.code ? e(a.code) : "Ожидает формирования"}</span>${a.state === "done" ? `<button data-action="atk" data-id="${e(a.id)}">Состав и трансформации</button>` : badge(a.state)}</div>`).join("")}<div class="files">${doc.exports.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div></div>` : ""}<div class="split"><div class="card"><h2>Обработка</h2>${doc.operations.length ? doc.operations.map((o) => `<div class="history"><b>${e(kinds[o.kind])}</b>${badge(o.state)} <span class="muted">${date(o.updated)}</span></div>`).join("") : '<p class="muted">Внешние операции ещё не запускались.</p>'}<details><summary>История файлов и прежние версии</summary><p class="muted">Скачанные поставщиком старые этикетки технически отозвать нельзя.</p><div class="files">${doc.artifacts.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · ${e(f.kind === "source" ? "Исходный Excel" : "v" + f.version)}</a>`).join("")}</div></details></div><div class="card"><h2>История документа</h2>${doc.history.map((h) => `<div class="history"><b>${e(h.action)}</b><span class="muted">${date(h.created)} · ${e(h.actor)}</span></div>`).join("")}</div></div>`,
+  );
+  if (editable) $("#excel-file").onchange = importExcel;
+}
+async function saveRows(raw) {
+  const preview = await api(`/documents/${doc.id}/preview`, {
+    rows: raw,
+    revision: doc.revision,
+  });
+  if (preview.errors.length) {
+    modal(
+      `<h2>Исправьте состав</h2>${preview.errors.map((x) => `<p class="error">Строка ${x.row}: ${e(x.message)}</p>`).join("")}<button data-action="close">Закрыть</button>`,
+    );
+    return;
+  }
+  if (preview.changes.length || preview.warnings.length) {
+    modal(
+      `<h2>Проверьте изменения</h2>${preview.changes.length ? `<table><tr><th>PN</th><th>Было</th><th>Стало</th><th>Разница</th></tr>${preview.changes.map((c) => `<tr><td>${e(c.pn)}</td><td>${fmt(c.before)}</td><td>${fmt(c.after)}</td><td>${fmt(c.difference)}</td></tr>`).join("")}</table>` : ""}${preview.warnings.map((w) => `<p class="notice">${e(w)}</p>`).join("")}<div class="actions"><button id="confirm-save" class="primary">Подтвердить и сохранить</button><button data-action="close">Отмена</button></div>`,
+    );
+    $("#confirm-save").onclick = () => doSave(raw, preview.fingerprint);
+  } else await doSave(raw);
+}
+async function doSave(raw, confirmation) {
+  try {
+    doc = await api(`/documents/${doc.id}/lines`, {
+      rows: raw,
+      revision: doc.revision,
+      confirmation,
+    });
+    $("#modal").close();
+    renderDoc();
+    toast("Состав сохранён");
+  } catch (err) {
+    toast(err.message);
+  }
+}
+async function importExcel() {
+  const file = $("#excel-file").files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const p = await api(`/documents/${doc.id}/import`, form);
+    if (p.errors.length) {
+      modal(
+        `<h2>Ошибки Excel</h2>${p.errors.map((x) => `<p class="error">Строка ${x.row}: ${e(x.message)}</p>`).join("")}<button data-action="close">Закрыть</button>`,
+      );
+      return;
+    }
+    $("#edit-rows").innerHTML = p.lines.map(lineRow).join("");
+    toast(
+      "Excel загружен в предпросмотр. Проверьте строки и сохраните состав.",
+    );
+  } catch (err) {
+    toast(err.message);
+  }
+}
+async function batchModal(ids) {
+  if (!ids.length) throw new Error("Выберите накладные");
+  modal(
+    `<h2>Подтверждение нанесения</h2><p>Поставщик подтвердил нанесение актуальных этикеток по выбранным накладным (${ids.length}). По каждой накладной будет отправлен отдельный отчёт, затем сформированы АТК.</p><p class="notice">Указывайте фактические данные производства и места деятельности.</p><form id="report-form">${fields()}<div class="actions"><button class="primary">Подтвердить и начать обработку</button><button type="button" data-action="close">Отмена</button></div></form>`,
+  );
+  $("#report-form").onsubmit = async (ev) => {
+    ev.preventDefault();
+    try {
+      await api("/batches", {
+        documents: ids,
+        production_date: $("#production-date").value,
+        kpp: $("#kpp").value,
+        fias_id: $("#fias").value,
+      });
+      $("#modal").close();
+      doc ? await open(doc.id) : await list();
+      toast("Отчёты поставлены в очередь подписи");
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+}
+async function atkModal(id) {
+  const a = await api("/atks/" + id);
+  modal(
+    `<h2>АТК ${e(a.code)}</h2><p class="muted">ТН ВЭД ${e(a.tnved)} · версия ${a.version}</p><div class="toolbar"><button data-action="transform-add" data-id="${e(id)}">Добавить КМ</button><button data-action="transform-remove" data-id="${e(id)}">Изъять КМ</button></div><p>Вложено КМ: ${a.codes.length}, штук: ${fmt(a.codes.reduce((n, c) => n + c.quantity, 0))}</p><div class="table-wrap"><table><tr><th>КИ</th><th>PN</th><th>Штук</th></tr>${a.codes.map((c) => `<tr><td class="mono">${e(c.cis)}</td><td>${e(c.pn)}</td><td>${fmt(c.quantity)}</td></tr>`).join("")}</table></div><h3>Заявки на трансформацию</h3>${a.transformations.map((t) => `<p>${t.kind === "ADDING" ? "Добавление" : "Изъятие"} · ${badge(t.state)} · ${date(t.created)} ${e(t.reason || "")}</p>`).join("")}<button data-action="close">Закрыть</button>`,
+  );
+}
+async function transformModal(id, kind) {
+  const codes =
+    kind === "ADDING"
+      ? await api("/atks/" + id + "/candidates")
+      : (await api("/atks/" + id)).codes;
+  $("#modal").innerHTML =
+    `<h2>${kind === "ADDING" ? "Добавление" : "Изъятие"} КМ</h2><p class="muted">Заявка будет отправлена на согласование администратору.</p><div class="table-wrap"><table><tr><th></th><th>КИ</th><th>PN</th><th>Штук</th></tr>${codes.map((c) => `<tr><td><input class="code-select" type="checkbox" value="${e(c.id)}"></td><td class="mono">${e(c.cis)}</td><td>${e(c.pn)}</td><td>${c.quantity}</td></tr>`).join("")}</table></div>${codes.length ? "" : '<p class="notice">Подходящих КМ нет. Изъятые ранее КМ требуют отдельного разрешения администратора.</p>'}<div class="actions"><button id="transform-submit" class="primary">Отправить на согласование</button><button data-action="close">Отмена</button></div>`;
+  $("#transform-submit").onclick = async () => {
+    try {
+      await api("/atks/" + id + "/transform", {
+        kind,
+        codes: $$(".code-select:checked").map((x) => x.value),
+      });
+      $("#modal").close();
+      toast("Заявка отправлена администратору");
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+}
+async function adminPage() {
+  history.replaceState(null, "", location.pathname);
+  if (!user.admin) {
+    login(true);
+    return;
+  }
+  adminMode = true;
+  doc = null;
+  overview = await api("/admin/overview");
+  const c = overview.config;
+  let hb;
+  try {
+    hb = JSON.parse(overview.heartbeat?.value || "null");
+  } catch {}
+  shell(
+    `<div class="topbar"><div><div class="muted">УПРАВЛЕНИЕ СИСТЕМОЙ</div><h1>Администрирование</h1></div><button data-action="admin-refresh">Обновить</button></div>${!overview.writes_enabled ? '<div class="notice">Внешняя отправка отключена в конфигурации сервера. Подготовленные задания сохраняются в очереди.</div>' : ""}<div class="stats"><div class="stat"><span class="muted">Свободно на диске</span><b>${(overview.disk.free / 1024 ** 3).toFixed(1)} ГБ</b></div><div class="stat"><span class="muted">Windows-подписант</span><b>${hb && Date.now() - new Date(hb.time) < 90000 ? "На связи" : "Нет связи"}</b><span class="muted">${hb ? e(hb.status) + " · " + date(hb.time) : "Подключите подписант"}</span></div><div class="stat"><span class="muted">Резервная копия</span><b>${overview.last_backup ? date(JSON.parse(overview.last_backup.value).created) : "Нет данных"}</b></div></div><div class="split"><div class="card"><h2>Пользователи</h2><div class="table-wrap"><table>${overview.users.map((u) => `<tr><td>${e(u.username)}</td><td>${u.enabled ? "Активен" : "Отключён"}</td><td><button data-action="user-toggle" data-id="${e(u.username)}" data-enabled="${u.enabled ? "0" : "1"}">${u.enabled ? "Отключить" : "Включить"}</button></td></tr>`).join("")}</table></div><form id="user-form"><div class="toolbar"><input id="username" placeholder="Новый username" required><button>Добавить</button></div></form></div><div class="card"><h2>Подключения и подпись</h2><p>Сертификат: ${overview.signer_configured ? "Настроен" : "Нужны токен подписанта и отпечаток сертификата в конфигурации сервера"}</p>${["true", "oms"].map((k) => `<p>${k === "true" ? "ГИС МТ" : "СУЗ"}: ${overview.tokens[k] ? "Токен получен · срок " + e(overview.tokens[k].expires || "не указан ЧЗ") : "Требуется авторизация"} <button data-action="auth" data-id="${k}">Обновить доступ</button></p>`).join("")}<p class="muted">Физический Рутокен остаётся на Windows-ПК. При запросе PIN задания ждут его ввода на этом ПК.</p><a href="https://docs.crpt.ru/gismt/True_API/" target="_blank" rel="noreferrer">Документация True API</a></div></div><div class="card"><h2>Наша организация</h2><form id="config-form"><div class="fields">${[
+      ["organization", "Наименование"],
+      ["inn", "ИНН"],
+      ["oms_id", "OMS ID"],
+      ["oms_connection", "omsConnection"],
+      ["kpp", "КПП места деятельности"],
+      ["fias_id", "ФИАС места деятельности"],
+    ]
+      .map(
+        ([key, label]) =>
+          `<label>${label}<input name="${key}" value="${e(c[key])}" ${["organization", "inn", "oms_id", "oms_connection"].includes(key) ? "required" : ""}></label>`,
+      )
+      .join(
+        "",
+      )}<label>Шаблон кода<select name="template_id"><option value="36" ${c.template_id === 36 ? "selected" : ""}>36 · стандартный</option><option value="37" ${c.template_id === 37 ? "selected" : ""}>37 · укороченный</option></select></label></div><div class="actions"><button class="primary">Сохранить настройки</button></div></form></div><div class="card"><h2>Очередь подписи и внешних операций</h2><div class="table-wrap"><table><tr><th>Операция</th><th>Состояние</th><th>Внешний ID</th><th>Пояснение</th><th></th></tr>${overview.operations.map((o) => `<tr><td>${e(kinds[o.kind])}<br><span class="muted">${date(o.created)}</span></td><td>${badge(o.state)}</td><td class="mono">${e(o.external_id || "—")}</td><td class="filename">${e(o.error || "")}</td><td>${(o.external_id && ["unknown", "blocked", "submitted"].includes(o.state)) || o.state === "preflight_blocked" ? `<button data-action="check-op" data-id="${e(o.id)}">Проверить состояние</button>` : ""}${o.state === "unknown" && o.kind === "fetch" ? `<button data-action="recover-block" data-id="${e(o.id)}">Восстановить конкретный блок</button>` : ""}${!o.external_id && o.state === "unknown" && o.kind !== "fetch" ? `<button data-action="reconcile-op" data-id="${e(o.id)}">Указать ID после сверки ЛК</button>` : ""}</td></tr>`).join("")}</table></div></div><div class="card"><h2>Заявки на трансформацию АТК</h2>${overview.transformations.length ? overview.transformations.map((t) => `<div class="history"><b>${t.kind === "ADDING" ? "Добавить" : "Изъять"} КМ · ${e(t.actor)}</b>${badge(t.state)} · ${date(t.created)}<div class="mono">ID заявки: ${e(t.id)}<br>КМ: ${e(JSON.parse(t.code_ids).join(", "))}</div>${t.state === "approval" ? `<div class="actions"><button data-action="review" data-id="${e(t.id)}">Рассмотреть состав и принять решение</button></div>` : ""}</div>`).join("") : '<p class="muted">Нет заявок.</p>'}</div><div class="split"><div class="card"><h2>Общий пул кодов</h2><table><tr><th>GTIN</th><th>Статус ЧЗ</th><th>Состояние</th><th>КМ</th></tr>${overview.pool.map((p) => `<tr><td>${e(p.gtin)}</td><td>${e(p.external_status)}</td><td>${e(states[p.local_state] || p.local_state)}</td><td>${fmt(p.count)}</td></tr>`).join("")}</table><details><summary>Исправить привязку ТН ВЭД</summary><form id="catalog-form"><div class="fields"><label>GTIN<input name="gtin" required></label><label>ТН ВЭД<input name="tnved" required></label><label class="full">Причина<input name="reason" required></label></div><div class="actions"><button>Исправить справочник</button></div></form><p class="muted">Исторические документы остаются без изменений.</p></details>${overview.removed.map((c) => `<p class="mono">${e(c.cis)} <button data-action="allow-reuse" data-id="${e(c.id)}">Разрешить подбор в новый АТК</button></p>`).join("")}</div><div class="card"><h2>Поставщики</h2>${overview.suppliers
+      .filter((s) => !s.merged_into)
+      .map(
+        (s) =>
+          `<div class="toolbar"><span>${e(s.name)}</span><button data-action="supplier-edit" data-id="${e(s.id)}">Изменить</button></div>`,
+      )
+      .join(
+        "",
+      )}<p class="muted">Объединение сохраняет исходные партии, АТК и версии файлов. Новые документы используют единый справочник.</p></div></div><div class="card"><h2>Журнал действий</h2><div class="table-wrap"><table><tr><th>Когда</th><th>Username</th><th>Действие</th></tr>${overview.audit.map((a) => `<tr><td>${date(a.created)}</td><td>${e(a.actor)}</td><td>${e(a.action)}</td></tr>`).join("")}</table></div></div>`,
+  );
+  $("#user-form").onsubmit = async (ev) => {
+    ev.preventDefault();
+    try {
+      await api("/admin/users", {
+        username: $("#username").value,
+        enabled: true,
+      });
+      await adminPage();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  $("#config-form").onsubmit = async (ev) => {
+    ev.preventDefault();
+    const body = Object.fromEntries(new FormData(ev.target));
+    body.template_id = Number(body.template_id);
+    try {
+      await api("/admin/config", body, "PUT");
+      toast("Настройки сохранены");
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  $("#catalog-form").onsubmit = async (ev) => {
+    ev.preventDefault();
+    try {
+      await api("/admin/catalog", Object.fromEntries(new FormData(ev.target)));
+      toast("Справочник исправлен");
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+}
+function reasonModal(title, callback) {
+  modal(
+    `<h2>${e(title)}</h2><form id="reason-form"><label>Причина<input id="reason" required maxlength="1000"></label><div class="actions"><button class="primary">Подтвердить</button><button type="button" data-action="close">Отмена</button></div></form>`,
+  );
+  $("#reason-form").onsubmit = async (ev) => {
+    ev.preventDefault();
+    try {
+      await callback($("#reason").value);
+      $("#modal").close();
+      await adminPage();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+}
+async function action(name, id, b) {
+  switch (name) {
+    case "close":
+      $("#modal").close();
+      break;
+    case "admin-login":
+      login(true);
+      break;
+    case "user-login":
+      login();
+      break;
+    case "logout":
+      await api("/session", null, "DELETE");
+      user = null;
+      login();
+      break;
+    case "list":
+      archive = false;
+      await list();
+      break;
+    case "archive":
+      archive = true;
+      await list();
+      break;
+    case "refresh":
+      await list();
+      break;
+    case "admin":
+      user.admin ? await adminPage() : login(true);
+      break;
+    case "admin-refresh":
+      await adminPage();
+      break;
+    case "new":
+      await newDoc();
+      break;
+    case "supplement":
+      await newDoc(doc.id);
+      break;
+    case "open":
+      await open(id);
+      break;
+    case "refresh-doc":
+      await open(doc.id);
+      break;
+    case "add-line":
+      $("#edit-rows").insertAdjacentHTML("beforeend", lineRow());
+      break;
+    case "remove-line":
+      b.closest("tr").remove();
+      break;
+    case "save-lines":
+      await saveRows(gatherRows());
+      break;
+    case "import":
+      $("#excel-file").click();
+      break;
+    case "order":
+      modal(
+        `<h2>Заказать коды маркировки?</h2><p>Будут использованы свободные КМ из общего пула. В СУЗ отправится заказ только на недостающее количество. Новые КМ оплачиваются по эмиссии.</p><p class="notice">Заказ использует сохранённый состав. Проверьте, что все изменения сохранены.</p><div class="actions"><button class="primary" data-action="confirm-order">Заказать КМ</button><button data-action="close">Отмена</button></div>`,
+      );
+      break;
+    case "confirm-order":
+      doc = await api("/documents/" + doc.id + "/order", {});
+      $("#modal").close();
+      renderDoc();
+      break;
+    case "transfer":
+      await api("/documents/" + doc.id + "/transferred", {
+        version: doc.current_version,
+      });
+      await open(doc.id);
+      break;
+    case "report":
+      await batchModal([doc.id]);
+      break;
+    case "batch":
+      await batchModal($$(".doc-select:checked").map((x) => x.value));
+      break;
+    case "atk":
+      await atkModal(id);
+      break;
+    case "transform-add":
+      await transformModal(id, "ADDING");
+      break;
+    case "transform-remove":
+      await transformModal(id, "REMOVING");
+      break;
+    case "user-toggle":
+      await api("/admin/users", {
+        username: id,
+        enabled: b.dataset.enabled === "1",
+      });
+      await adminPage();
+      break;
+    case "auth":
+      await api("/admin/auth/" + id, {});
+      await adminPage();
+      toast("Авторизация ожидает подписи на Windows-ПК");
+      break;
+    case "check-op":
+      await api("/admin/operations/" + id + "/check", {});
+      await adminPage();
+      break;
+    case "recover-block": {
+      const blocks = await api("/admin/operations/" + id + "/blocks");
+      modal(
+        `<h2>Восстановление блока СУЗ</h2><p>Выберите блок, появившийся после прерванного получения. Исходный запрос получения не повторяется. Если заказ уже закрыт СУЗ, восстановление может быть недоступно.</p><form id="block-form"><label>Блок<select name="block_id" required>${blocks.map((b) => `<option value="${e(b.blockId)}">${e(b.blockId)} · ${b.quantity} КМ</option>`).join("")}</select></label><label>Основание сверки<input name="reason" required></label><div class="actions"><button class="primary">Восстановить выбранный блок</button><button type="button" data-action="close">Отмена</button></div></form>`,
+      );
+      $("#block-form").onsubmit = async (ev) => {
+        ev.preventDefault();
+        try {
+          await api(
+            "/admin/operations/" + id + "/recover-block",
+            Object.fromEntries(new FormData(ev.target)),
+          );
+          $("#modal").close();
+          await adminPage();
+        } catch (err) {
+          toast(err.message);
+        }
+      };
+      break;
+    }
+    case "reconcile-op":
+      modal(
+        `<h2>Сверка неизвестного результата</h2><p>Найдите операцию в ЛК ЧЗ и сверьте точный состав, количество и время. Это действие связывает запись с найденной операцией; повторная отправка не выполняется.</p><form id="reconcile-form"><label>Внешний ID<input name="external_id" required></label><label>Основание сверки<input name="reason" required></label><div class="actions"><button class="primary">Привязать и проверить</button><button type="button" data-action="close">Отмена</button></div></form>`,
+      );
+      $("#reconcile-form").onsubmit = async (ev) => {
+        ev.preventDefault();
+        try {
+          await api(
+            "/admin/operations/" + id + "/reconcile",
+            Object.fromEntries(new FormData(ev.target)),
+          );
+          $("#modal").close();
+          await adminPage();
+        } catch (err) {
+          toast(err.message);
+        }
+      };
+      break;
+    case "allow-reuse":
+      reasonModal("Разрешить повторное включение изъятого КМ", (reason) =>
+        api("/admin/codes/" + id + "/allow-reuse", { approve: true, reason }),
+      );
+      break;
+    case "review": {
+      const t = overview.transformations.find((t) => t.id === id);
+      const a = await api("/atks/" + t.atk_id);
+      const current = new Map(a.codes.map((c) => [c.id, c]));
+      if (t.kind === "ADDING")
+        for (const c of await api("/atks/" + t.atk_id + "/candidates"))
+          current.set(c.id, c);
+      modal(
+        `<h2>Согласование трансформации</h2><p>АТК: ${e(a.code)} · ${t.kind === "ADDING" ? "Добавить" : "Изъять"} КМ</p><table><tr><th>КИ</th><th>PN</th><th>Штук</th></tr>${JSON.parse(
+          t.code_ids,
+        )
+          .map((i) => {
+            const c = current.get(i);
+            return `<tr><td class="mono">${e(c?.cis || i)}</td><td>${e(c?.pn || "Недоступен для операции")}</td><td>${e(c?.quantity || "—")}</td></tr>`;
+          })
+          .join(
+            "",
+          )}</table><form id="decision-form"><label>Решение<select id="decision"><option value="1">Одобрить</option><option value="0">Отклонить</option></select></label><label>Причина<input id="decision-reason" required></label><div class="actions"><button class="primary">Сохранить решение</button><button type="button" data-action="close">Отмена</button></div></form>`,
+      );
+      $("#decision-form").onsubmit = async (ev) => {
+        ev.preventDefault();
+        try {
+          await api("/admin/transformations/" + id, {
+            approve: $("#decision").value === "1",
+            reason: $("#decision-reason").value,
+          });
+          $("#modal").close();
+          await adminPage();
+        } catch (err) {
+          toast(err.message);
+        }
+      };
+      break;
+    }
+    case "supplier-edit": {
+      const s = overview.suppliers.find((s) => s.id === id);
+      modal(
+        `<h2>Поставщик</h2><form id="supplier-form"><label>Наименование<input name="name" value="${e(s.name)}" required maxlength="160"></label><label>Объединить с поставщиком<select name="merge_into"><option value="">Не объединять</option>${overview.suppliers
+          .filter((x) => x.id !== id && !x.merged_into)
+          .map((x) => `<option value="${e(x.id)}">${e(x.name)}</option>`)
+          .join(
+            "",
+          )}</select></label><div class="actions"><button class="primary">Сохранить</button><button type="button" data-action="close">Отмена</button></div></form>`,
+      );
+      $("#supplier-form").onsubmit = async (ev) => {
+        ev.preventDefault();
+        const body = Object.fromEntries(new FormData(ev.target));
+        body.id = id;
+        body.merge_into = body.merge_into || null;
+        try {
+          await api("/admin/suppliers", body);
+          $("#modal").close();
+          await adminPage();
+        } catch (err) {
+          toast(err.message);
+        }
+      };
+      break;
+    }
+  }
+}
+bind();
+(async () => {
+  try {
+    user = await api("/session");
+    if (location.hash.startsWith("#document/"))
+      await open(decodeURIComponent(location.hash.slice(10)));
+    else adminMode && user.admin ? await adminPage() : await list();
+  } catch {
+    login(adminMode);
+  }
+})();

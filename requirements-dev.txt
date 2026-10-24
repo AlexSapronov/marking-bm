@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest>=8,<10
+zxing-cpp>=2.3,<4
+pymupdf>=1.24,<2
+playwright>=1.48,<2
