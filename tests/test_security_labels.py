@@ -9,7 +9,7 @@ from PIL import Image
 from pypdf import PdfReader
 from conftest import client, add_doc, GTIN, advance
 from marking_bm.codes import parse, with_quantity
-from marking_bm.labels import render_label
+from marking_bm.labels import GS1Matrix, render_label
 from marking_bm.auth import hash_password, verify_password
 
 
@@ -115,6 +115,40 @@ def test_vector_label_real_decode_and_dimensions(crypto):
     assert decoded[0].bytes == full.encode()
     assert decoded[0].symbology_identifier == "]d2"
     assert raw[-10:] in full
+
+
+
+@pytest.mark.parametrize(
+    "crypto",
+    ["\x1d91EE12\x1d92" + "aB/+=" * 11, "\x1d93AB12"],
+)
+def test_gs1_dm_has_single_leading_fnc1_and_real_ascii_gs_separators(crypto):
+    # Regression: the old generator used codeword 232 *for every internal GS*.
+    # Official CHZ Business warns about FNC1 where an ASCII 29 separator is
+    # expected. Only the initial GS1 position should be FNC1 (232).
+    if crypto.startswith("\x1d91"):
+        crypto = "\x1d91EE12\x1d92" + ("aB/+=" * 9)[:44]
+    raw = "01" + GTIN + "21" + '5pZpV1RbL3/uSA&!*"FB' + crypto
+    full = with_quantity(raw, 100)
+    dm = GS1Matrix(full)
+    codewords = dm._encode_c40(full)
+    # Padding starts at 129. No printable input can encode to 129 in our
+    # ASCII encoder, so everything before this point is the actual barcode.
+    data_words = codewords[:codewords.index(129)]
+    assert data_words[0] == 232  # GS1 initial FNC1 only
+    assert data_words.count(232) == 1
+    assert data_words.count(30) == full.count("\x1d")
+    assert data_words.count(30) == (3 if "\x1d91" in crypto else 2)
+
+    pdf = fitz.open(stream=render_label(full, "PART-100", 100), filetype="pdf")
+    bitmap = pdf[0].get_pixmap(matrix=fitz.Matrix(4, 4), alpha=False)
+    barcode = zxingcpp.read_barcodes(
+        Image.frombytes("RGB", [bitmap.width, bitmap.height], bitmap.samples)
+    )
+    assert len(barcode) == 1
+    assert barcode[0].symbology_identifier == "]d2"
+    assert barcode[0].bytes == full.encode()
+    assert barcode[0].bytes.endswith(b"\x1d30100")
 
 
 def test_auth_hashes_and_history_immutable(env):
