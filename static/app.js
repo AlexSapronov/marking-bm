@@ -64,7 +64,11 @@ let user,
   archive = false,
   adminMode = location.pathname === "/admin",
   overview,
-  refreshTimer;
+  refreshTimer,
+  adminSection = "overview",
+  documentTab = "content",
+  documentDirty = false,
+  documentFilters = {search: "", status: "", supplier: "", from: "", to: "", stage: "all"};
 async function api(url, body, method) {
   const headers = { "X-Requested-With": "marking-bm" };
   if (user?.csrf) headers["X-CSRF-Token"] = user.csrf;
@@ -101,6 +105,7 @@ function bind() {
     const b = ev.target.closest("[data-action]");
     if (!b) return;
     try {
+      if (documentDirty && ["list", "archive", "logistics", "admin", "refresh-page", "refresh-doc", "logout"].includes(b.dataset.action) && !confirm("В составе есть несохранённые изменения. Покинуть документ?")) return;
       b.disabled = true;
       await action(b.dataset.action, b.dataset.id, b);
     } catch (err) {
@@ -135,6 +140,7 @@ function shell(content) {
   window.GisTheme.refresh();
 }
 function login(admin = false) {
+  documentDirty = false;
   registryMode = false;
   $("#app").innerHTML =
     `<div class="login"><div class="login-heading"><span class="eyebrow">Честный ЗНАК · Радиоэлектроника</span><button class="icon-btn" data-theme-toggle aria-label="Тема">☾</button></div><h1>${admin ? "Вход администратора" : "Рабочее место"}</h1><p class="muted">${admin ? "Отдельный пароль для управления системой" : "Введите свой username, чтобы открыть рабочее место"}</p><form id="login-form"><label>${admin ? "Пароль администратора" : "Username"}<input id="login-value" autocomplete="${admin ? "current-password" : "username"}" type="${admin ? "password" : "text"}" required autofocus></label><button class="primary">Войти</button></form><small>${admin ? "Подпись и настройки доступны только администратору." : "Вход без пароля. Действия фиксируются от имени выбранного username."}</small><p><button class="linkbutton" data-action="${admin ? "user-login" : "admin-login"}">${admin ? "Вход сотрудника" : "Вход администратора"}</button></p></div>`;
@@ -165,37 +171,52 @@ async function list() {
   history.replaceState(null, "", location.pathname);
   adminMode = false;
   doc = null;
+  documentDirty = false;
   docs = await api("/documents?archive=" + archive);
   renderList();
 }
 function renderList() {
-  shell(
-    `<div class="topbar"><div><div class="muted">РАБОЧИЕ ДОКУМЕНТЫ</div><h1>${archive ? "Архив" : "Накладные"}</h1><p class="muted">От подготовки этикеток до таможенного кода</p></div><button class="primary" data-action="new">+ Новая накладная</button></div><div class="stats"><div class="stat"><span class="muted">Документов</span><b>${docs.length}</b></div><div class="stat"><span class="muted">Ожидают нанесения</span><b>${docs.filter((d) => d.status === "transferred").length}</b></div><div class="stat"><span class="muted">Завершено</span><b>${docs.filter((d) => ["done", "archive"].includes(d.status)).length}</b></div></div><div class="card"><div class="toolbar"><input id="search" placeholder="Номер накладной"><select id="status"><option value="">Все статусы</option>${[...new Set(docs.map((d) => d.status))].map((s) => `<option value="${e(s)}">${e(states[s])}</option>`).join("")}</select><select id="supplier"><option value="">Все поставщики</option>${[...new Set(docs.map((d) => d.supplier))].map((s) => `<option>${e(s)}</option>`).join("")}</select><input type="date" id="from" aria-label="Дата от"><input type="date" id="to" aria-label="Дата до"><button data-action="refresh">Обновить</button></div><div class="table-wrap"><table><thead><tr><th><input id="select-all" type="checkbox" aria-label="Выбрать все"></th><th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Штук</th><th>Создана</th>${user.admin ? "<th>Владелец</th>" : ""}</tr></thead><tbody id="doc-rows"></tbody></table></div><div class="actions"><button data-action="batch">Подтвердить нанесение и сформировать АТК</button><span class="muted">Для выбранных накладных</span></div></div>`,
-  );
+  const stages = documentStages;
+  shell(`<div class="topbar"><div><div class="eyebrow">${user.admin ? "Все сотрудники" : "Мои документы"}</div><h1>${archive ? "Архив накладных" : "Накладные"}</h1><p class="muted">${archive ? "Завершённые документы и сохранённые файлы" : "Подготовьте этикетки, передайте поставщику и подтвердите нанесение"}</p></div>${archive ? "" : '<button class="primary" data-action="new">+ Новая накладная</button>'}</div>
+  <div class="stage-filters" aria-label="Этапы накладных">${Object.entries(stages).map(([key, stage]) => `<button data-stage="${key}" aria-pressed="${documentFilters.stage === key}">${stage.title}<b>${docs.filter(d => stage.matches(d)).length}</b></button>`).join("")}</div>
+  <section class="card document-list"><h2>${archive ? "Архивные документы" : "Рабочие документы"}</h2><div class="document-filters"><label>Номер накладной<input id="search" placeholder="Поиск по номеру" value="${e(documentFilters.search)}"></label><label>Поставщик<select id="supplier"><option value="">Все поставщики</option>${[...new Set(docs.map(d => d.supplier))].sort().map(v => `<option ${v === documentFilters.supplier ? "selected" : ""}>${e(v)}</option>`).join("")}</select></label><label>Статус<select id="status"><option value="">Все статусы</option>${[...new Set(docs.map(d => d.status))].map(v => `<option value="${e(v)}" ${v === documentFilters.status ? "selected" : ""}>${e(states[v] || v)}</option>`).join("")}</select></label><label>Создана с<input type="date" id="from" value="${e(documentFilters.from)}"></label><label>Создана по<input type="date" id="to" value="${e(documentFilters.to)}"></label></div>
+  <div class="list-caption"><span id="document-count" class="muted" role="status"></span><button class="linkbutton" data-action="reset-doc-filters">Сбросить фильтры</button></div>
+  <div class="table-wrap"><table><thead><tr><th><input id="select-all" type="checkbox" aria-label="Выбрать все доступные для нанесения"></th><th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Штук</th><th>Создана</th>${user.admin ? "<th>Владелец</th>" : ""}</tr></thead><tbody id="doc-rows"></tbody></table></div>
+  ${archive ? "" : '<div class="selection-bar"><div><b id="selected-count">Накладные не выбраны</b><span class="cell-sub">Выберите документы со статусом «Ожидает нанесения».</span></div><button class="primary" data-action="batch" disabled>Подтвердить нанесение и сформировать АТК</button></div>'}</section>`);
   filterRows();
-  for (const s of ["#search", "#status", "#supplier", "#from", "#to"])
-    $(s).oninput = filterRows;
-  $("#select-all").onchange = () =>
-    $$(".doc-select").forEach((x) => (x.checked = $("#select-all").checked));
+  for (const key of ["search", "status", "supplier", "from", "to"])
+    $("#" + key).oninput = () => {
+      documentFilters[key] = $("#" + key).value;
+      filterRows();
+    };
+  $$("[data-stage]").forEach(button => button.onclick = () => {
+    documentFilters.stage = button.dataset.stage;
+    $$("[data-stage]").forEach(b => b.setAttribute("aria-pressed", b === button));
+    filterRows();
+  });
+  $("#select-all").onchange = () => {
+    $$(".doc-select:not(:disabled)").forEach(x => x.checked = $("#select-all").checked);
+    updateDocumentSelection();
+  };
 }
 function filterRows() {
-  let ds = docs.filter(
-    (d) =>
-      (!$("#search").value ||
-        d.number.toLowerCase().includes($("#search").value.toLowerCase())) &&
-      (!$("#status").value || d.status === $("#status").value) &&
-      (!$("#supplier").value || d.supplier === $("#supplier").value) &&
-      (!$("#from").value || d.created.slice(0, 10) >= $("#from").value) &&
-      (!$("#to").value || d.created.slice(0, 10) <= $("#to").value),
-  );
-  $("#doc-rows").innerHTML = ds.length
-    ? ds
-        .map(
-          (d) =>
-            `<tr><td><input type="checkbox" class="doc-select" value="${e(d.id)}" aria-label="Выбрать ${e(d.number)}"></td><td><button class="linkbutton" data-action="open" data-id="${e(d.id)}"><b>${e(d.number)}</b></button></td><td>${e(d.supplier)}</td><td>${badge(d.status)}</td><td>${fmt(d.units)}</td><td>${date(d.created)}</td>${user.admin ? `<td>${e(d.owner)}</td>` : ""}</tr>`,
-        )
-        .join("")
-    : `<tr><td colspan="8"><div class="empty"><b>Накладных пока нет</b>Создайте документ и загрузите Excel по шаблону.</div></td></tr>`;
+  const f = documentFilters;
+  const ds = docs.filter(d => documentStages[f.stage].matches(d) &&
+    (!f.search || d.number.toLowerCase().includes(f.search.toLowerCase())) &&
+    (!f.status || d.status === f.status) && (!f.supplier || d.supplier === f.supplier) &&
+    (!f.from || d.created.slice(0, 10) >= f.from) && (!f.to || d.created.slice(0, 10) <= f.to));
+  $("#document-count").textContent = `Показано ${ds.length} из ${docs.length}`;
+  $("#doc-rows").innerHTML = ds.length ? ds.map(d => `<tr><td><input type="checkbox" class="doc-select" value="${e(d.id)}" ${d.status === "transferred" && !archive ? "" : 'disabled title="Доступно после передачи этикеток поставщику"'} aria-label="Выбрать ${e(d.number)}"></td><td><button class="linkbutton" data-action="open" data-id="${e(d.id)}"><b>${e(d.number)}</b></button></td><td>${e(d.supplier)}</td><td>${badge(d.status)}</td><td>${fmt(d.units)}</td><td>${date(d.created)}</td>${user.admin ? `<td>${e(d.owner)}</td>` : ""}</tr>`).join("") : `<tr><td colspan="${user.admin ? 7 : 6}"><div class="empty"><b>${docs.length ? "По выбранным условиям ничего не найдено" : archive ? "Архив пока пуст" : "Накладных пока нет"}</b>${docs.length ? "Сбросьте фильтры или выберите другой этап." : archive ? "Здесь появятся завершённые документы." : "Создайте накладную и загрузите состав из Excel."}</div></td></tr>`;
+  $$(".doc-select").forEach(x => x.onchange = updateDocumentSelection);
+  updateDocumentSelection();
+}
+function updateDocumentSelection() {
+  const eligible = $$(".doc-select:not(:disabled)"), count = $$(".doc-select:checked").length;
+  $("#select-all").disabled = !eligible.length;
+  $("#select-all").checked = !!eligible.length && count === eligible.length;
+  $("#select-all").indeterminate = count > 0 && count < eligible.length;
+  if ($("#selected-count")) $("#selected-count").textContent = count ? `Выбрано накладных: ${count}` : "Накладные не выбраны";
+  if ($('[data-action="batch"]')) $('[data-action="batch"]').disabled = !count;
 }
 function modal(content) {
   $("#modal").innerHTML = content;
@@ -246,6 +267,8 @@ async function open(id) {
     "",
     location.pathname + "#document/" + encodeURIComponent(id),
   );
+  if (doc?.id !== id) documentTab = "content";
+  documentDirty = false;
   doc = await api("/documents/" + id);
   adminMode = false;
   renderDoc();
@@ -283,7 +306,11 @@ function renderDoc() {
         "",
       )}${doc.status === "receiving" ? '<div class="notice">PDF станет доступен после получения полного комплекта КМ. Повторный заказ не требуется.</div>' : ""}<div class="card"><div class="topbar"><h2>Состав накладной</h2>${editable ? '<div class="actions"><a href="/api/template">Скачать шаблон Excel</a><button data-action="import">Загрузить Excel</button><input type="file" id="excel-file" accept=".xlsx" hidden></div>' : ""}</div><div class="table-wrap"><table><thead><tr><th>PN</th><th>GTIN</th><th>Штук в этикетке</th><th>Этикеток</th><th>ТН ВЭД</th>${editable ? "<th></th>" : ""}</tr></thead><tbody id="edit-rows">${editable ? doc.lines.map(lineRow).join("") : doc.lines.map((l) => `<tr><td>${e(l.pn)}</td><td>${e(l.gtin)}</td><td>${fmt(l.quantity)}</td><td>${fmt(l.labels)}</td><td>${e(l.tnved)}</td></tr>`).join("")}</tbody></table></div>${editable ? '<div class="actions"><button data-action="add-line">+ Добавить строку</button><button data-action="save-lines">Проверить и сохранить состав</button></div>' : ""}<div class="actions">${doc.status === "draft" ? '<button class="primary" data-action="order">Заказать КМ</button>' : ""}${currentFile && doc.codes.length === doc.required && !["repack", "receiving"].includes(doc.status) ? `<a href="/api/files/${e(currentFile.id)}">Скачать актуальные этикетки · ZIP v${doc.current_version}</a>` : ""}${["ready", "transferred"].includes(doc.status) ? `<button class="primary" data-action="transfer">${doc.status === "transferred" ? "Повторно отметить передачу" : "Передано поставщику"}</button>` : ""}${doc.status === "transferred" ? '<button class="primary" data-action="report">Подтвердить нанесение и сформировать АТК</button>' : ""}${["done", "archive", "reported"].includes(doc.status) ? '<button data-action="supplement">Создать дополнение</button>' : ""}<button data-action="refresh-doc">Обновить состояние</button></div></div>${doc.atks.length ? `<div class="card"><h2>Таможенные коды</h2>${doc.atks.map((a) => `<div class="toolbar"><span>ТН ВЭД <b>${e(a.tnved)}</b> · ${a.code ? e(a.code) : "Ожидает формирования"}</span>${a.state === "done" ? `<button data-action="atk" data-id="${e(a.id)}">Состав и трансформации</button>` : badge(a.state)}</div>`).join("")}<div class="files">${doc.exports.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div></div>` : ""}<div class="split"><div class="card"><h2>Обработка</h2>${doc.operations.length ? doc.operations.map((o) => `<div class="history"><b>${e(kinds[o.kind])}</b>${badge(o.state)} <span class="muted">${date(o.updated)}</span></div>`).join("") : '<p class="muted">Внешние операции ещё не запускались.</p>'}<details><summary>История файлов и прежние версии</summary><p class="muted">Скачанные поставщиком старые этикетки технически отозвать нельзя.</p><div class="files">${doc.artifacts.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · ${e(f.kind === "source" ? "Исходный Excel" : "v" + f.version)}</a>`).join("")}</div></details></div><div class="card"><h2>История документа</h2>${doc.history.map((h) => `<div class="history"><b>${e(h.action)}</b><span class="muted">${date(h.created)} · ${e(h.actor)}</span></div>`).join("")}</div></div>`,
   );
-  if (editable) $("#excel-file").onchange = importExcel;
+  organizeDocument(editable);
+  if (editable) {
+    $("#excel-file").onchange = importExcel;
+    $("#edit-rows").oninput = markDocumentDirty;
+  }
 }
 async function saveRows(raw) {
   const preview = await api(`/documents/${doc.id}/preview`, {
@@ -311,6 +338,7 @@ async function doSave(raw, confirmation) {
       confirmation,
     });
     $("#modal").close();
+    documentDirty = false;
     renderDoc();
     toast("Состав сохранён");
   } catch (err) {
@@ -359,6 +387,7 @@ async function runExcelImport(context, options = {}) {
   }
   if ($("#modal").open) $("#modal").close();
   $("#edit-rows").innerHTML = result.lines.map(lineRow).join("");
+  markDocumentDirty();
   if (result.warnings.length) {
     modal(
       `<h2>Excel загружен</h2>${result.warnings.map((w) => `<p class="notice">${e(w)}</p>`).join("")}<p>Проверьте значения в таблице накладной и сохраните состав.</p><button data-action="close">Продолжить</button>`,
@@ -527,12 +556,13 @@ async function transformModal(id, kind) {
 }
 async function adminPage() {
   registryMode = false;
-  history.replaceState(null, "", location.pathname);
+
   if (!user.admin) {
     login(true);
     return;
   }
   adminMode = true;
+  documentDirty = false;
   doc = null;
   overview = await api("/admin/overview");
   const c = overview.config;
@@ -541,7 +571,7 @@ async function adminPage() {
     hb = JSON.parse(overview.heartbeat?.value || "null");
   } catch {}
   shell(
-    `<div class="topbar"><div><div class="muted">УПРАВЛЕНИЕ СИСТЕМОЙ</div><h1>Администрирование</h1></div><button data-action="admin-refresh">Обновить</button></div>${!overview.writes_enabled ? '<div class="notice">Внешняя отправка отключена в конфигурации сервера. Подготовленные задания сохраняются в очереди.</div>' : ""}<div class="stats"><div class="stat"><span class="muted">Свободно на диске</span><b>${(overview.disk.free / 1024 ** 3).toFixed(1)} ГБ</b></div><div class="stat"><span class="muted">Windows-подписант</span><b>${hb && Date.now() - new Date(hb.time) < 90000 ? "На связи" : "Нет связи"}</b><span class="muted">${hb ? e(hb.status) + " · " + date(hb.time) : "Подключите подписант"}</span></div><div class="stat"><span class="muted">Резервная копия</span><b>${overview.last_backup ? date(JSON.parse(overview.last_backup.value).created) : "Нет данных"}</b></div></div><div class="split"><div class="card"><h2>Пользователи</h2><div class="table-wrap"><table>${overview.users.map((u) => `<tr><td>${e(u.username)}</td><td><select class="user-role" data-user="${e(u.username)}" aria-label="Роль ${e(u.username)}"><option value="manager" ${u.role === "manager" ? "selected" : ""}>Бренд-менеджер</option><option value="logistics" ${u.role === "logistics" ? "selected" : ""}>Логист</option></select></td><td>${u.enabled ? "Активен" : "Отключён"}</td><td><button data-action="user-toggle" data-id="${e(u.username)}" data-enabled="${u.enabled ? "0" : "1"}">${u.enabled ? "Отключить" : "Включить"}</button></td></tr>`).join("")}</table></div><form id="user-form"><div class="toolbar"><input id="username" placeholder="Новый username" required><select id="new-user-role" aria-label="Роль нового пользователя"><option value="manager">Бренд-менеджер</option><option value="logistics">Логист</option></select><button>Добавить</button></div></form></div><div class="card"><h2>Подключения и подпись</h2><p>Сертификат: ${overview.signer_configured ? "Настроен" : "Нужны токен подписанта и отпечаток сертификата в конфигурации сервера"}</p>${["true", "oms"].map((k) => `<p>${k === "true" ? "ГИС МТ" : "СУЗ"}: ${overview.tokens[k] ? "Токен получен · срок " + e(overview.tokens[k].expires || "не указан ЧЗ") : "Требуется авторизация"} <button data-action="auth" data-id="${k}">Обновить доступ</button></p>`).join("")}<p class="muted">Физический Рутокен остаётся на Windows-ПК. При запросе PIN задания ждут его ввода на этом ПК.</p><a href="https://docs.crpt.ru/gismt/True_API/" target="_blank" rel="noreferrer">Документация True API</a></div></div><div class="card"><h2>Наша организация</h2><form id="config-form"><div class="fields">${[
+    `<div class="topbar"><div><div class="muted">УПРАВЛЕНИЕ СИСТЕМОЙ</div><h1>Администрирование</h1></div><button data-action="admin-refresh">Обновить</button></div>${!overview.writes_enabled ? '<div class="notice">Внешняя отправка отключена в конфигурации сервера. Подготовленные задания сохраняются в очереди.</div>' : ""}<div class="stats"><div class="stat"><span class="muted">Свободно на диске</span><b>${(overview.disk.free / 1024 ** 3).toFixed(1)} ГБ</b></div><div class="stat"><span class="muted">Windows-подписант</span><b>${hb && Date.now() - new Date(hb.time) < 90000 ? "На связи" : "Нет связи"}</b><span class="muted">${hb ? e(hb.status) + " · " + date(hb.time) : "Подключите подписант"}</span></div><div class="stat"><span class="muted">Резервная копия</span><b>${overview.last_backup ? date(JSON.parse(overview.last_backup.value).created) : "Нет данных"}</b></div></div><div class="split"><div class="card" data-admin-panel="users"><h2>Пользователи</h2><div class="table-wrap"><table>${overview.users.map((u) => `<tr><td>${e(u.username)}</td><td><select class="user-role" data-user="${e(u.username)}" aria-label="Роль ${e(u.username)}"><option value="manager" ${u.role === "manager" ? "selected" : ""}>Бренд-менеджер</option><option value="logistics" ${u.role === "logistics" ? "selected" : ""}>Логист</option></select></td><td>${u.enabled ? "Активен" : "Отключён"}</td><td><button data-action="user-toggle" data-id="${e(u.username)}" data-enabled="${u.enabled ? "0" : "1"}">${u.enabled ? "Отключить" : "Включить"}</button></td></tr>`).join("")}</table></div><form id="user-form"><div class="toolbar"><input id="username" placeholder="Новый username" required><select id="new-user-role" aria-label="Роль нового пользователя"><option value="manager">Бренд-менеджер</option><option value="logistics">Логист</option></select><button>Добавить</button></div></form></div><div class="card" data-admin-panel="connections"><h2>Подключения и подпись</h2><p>Сертификат: ${overview.signer_configured ? "Настроен" : "Нужны токен подписанта и отпечаток сертификата в конфигурации сервера"}</p>${["true", "oms"].map((k) => `<p>${k === "true" ? "ГИС МТ" : "СУЗ"}: ${overview.tokens[k] ? "Токен получен · срок " + e(overview.tokens[k].expires || "не указан ЧЗ") : "Требуется авторизация"} <button data-action="auth" data-id="${k}">Обновить доступ</button></p>`).join("")}<p class="muted">Физический Рутокен остаётся на Windows-ПК. При запросе PIN задания ждут его ввода на этом ПК.</p><a href="https://docs.crpt.ru/gismt/True_API/" target="_blank" rel="noreferrer">Документация True API</a></div></div><div class="card" data-admin-panel="organization"><h2>Наша организация</h2><form id="config-form"><div class="fields">${[
       ["organization", "Наименование"],
       ["inn", "ИНН"],
       ["oms_id", "OMS ID"],
@@ -555,7 +585,7 @@ async function adminPage() {
       )
       .join(
         "",
-      )}<label>Шаблон кода<select name="template_id"><option value="36" ${c.template_id === 36 ? "selected" : ""}>36 · стандартный</option><option value="37" ${c.template_id === 37 ? "selected" : ""}>37 · укороченный</option></select></label></div><div class="actions"><button class="primary">Сохранить настройки</button></div></form></div><div class="card"><h2>Очередь подписи и внешних операций</h2><div class="table-wrap"><table><tr><th>Операция</th><th>Состояние</th><th>Внешний ID</th><th>Пояснение</th><th></th></tr>${overview.operations.map((o) => `<tr><td>${e(kinds[o.kind])}<br><span class="muted">${date(o.created)}</span></td><td>${badge(o.state)}</td><td class="mono">${e(o.external_id || "—")}</td><td class="filename">${e(o.error || "")}</td><td>${(o.external_id && ["unknown", "blocked", "submitted"].includes(o.state)) || o.state === "preflight_blocked" ? `<button data-action="check-op" data-id="${e(o.id)}">Проверить состояние</button>` : ""}${o.state === "unknown" && o.kind === "fetch" ? `<button data-action="recover-block" data-id="${e(o.id)}">Восстановить конкретный блок</button>` : ""}${!o.external_id && o.state === "unknown" && o.kind !== "fetch" ? `<button data-action="reconcile-op" data-id="${e(o.id)}">Указать ID после сверки ЛК</button>` : ""}</td></tr>`).join("")}</table></div></div><div class="card"><h2>Заявки на трансформацию АТК</h2>${overview.transformations.length ? overview.transformations.map((t) => `<div class="history"><b>${t.kind === "ADDING" ? "Добавить" : "Изъять"} КМ · ${e(t.actor)}</b>${badge(t.state)} · ${date(t.created)}<div class="mono">ID заявки: ${e(t.id)}<br>КМ: ${e(JSON.parse(t.code_ids).join(", "))}</div>${t.state === "approval" ? `<div class="actions"><button data-action="review" data-id="${e(t.id)}">Рассмотреть состав и принять решение</button></div>` : ""}</div>`).join("") : '<p class="muted">Нет заявок.</p>'}</div><div class="split"><div class="card"><h2>Общий пул кодов</h2><table><tr><th>GTIN</th><th>Статус ЧЗ</th><th>Состояние</th><th>КМ</th></tr>${overview.pool.map((p) => `<tr><td>${e(p.gtin)}</td><td>${e(p.external_status)}</td><td>${e(states[p.local_state] || p.local_state)}</td><td>${fmt(p.count)}</td></tr>`).join("")}</table><details><summary>Исправить привязку ТН ВЭД</summary><form id="catalog-form"><div class="fields"><label>GTIN<input name="gtin" required></label><label>ТН ВЭД<input name="tnved" required></label><label class="full">Причина<input name="reason" required></label></div><div class="actions"><button>Исправить справочник</button></div></form><p class="muted">Исторические документы остаются без изменений.</p></details>${overview.removed.map((c) => `<p class="mono">${e(c.cis)} <button data-action="allow-reuse" data-id="${e(c.id)}">Разрешить подбор в новый АТК</button></p>`).join("")}</div><div class="card"><h2>Поставщики</h2>${overview.suppliers
+      )}<label>Шаблон кода<select name="template_id"><option value="36" ${c.template_id === 36 ? "selected" : ""}>36 · стандартный</option><option value="37" ${c.template_id === 37 ? "selected" : ""}>37 · укороченный</option></select></label></div><div class="actions"><button class="primary">Сохранить настройки</button></div></form></div><div class="card" data-admin-panel="operations"><h2>Очередь подписи и внешних операций</h2><div class="table-wrap"><table><tr><th>Операция</th><th>Состояние</th><th>Внешний ID</th><th>Пояснение</th><th></th></tr>${overview.operations.map((o) => `<tr><td>${e(kinds[o.kind])}<br><span class="muted">${date(o.created)}</span></td><td>${badge(o.state)}</td><td class="mono">${e(o.external_id || "—")}</td><td class="filename">${e(o.error || "")}</td><td>${(o.external_id && ["unknown", "blocked", "submitted"].includes(o.state)) || o.state === "preflight_blocked" ? `<button data-action="check-op" data-id="${e(o.id)}">Проверить состояние</button>` : ""}${o.state === "unknown" && o.kind === "fetch" ? `<button data-action="recover-block" data-id="${e(o.id)}">Восстановить конкретный блок</button>` : ""}${!o.external_id && o.state === "unknown" && o.kind !== "fetch" ? `<button data-action="reconcile-op" data-id="${e(o.id)}">Указать ID после сверки ЛК</button>` : ""}</td></tr>`).join("")}</table></div></div><div class="card" data-admin-panel="approvals"><h2>Заявки на трансформацию АТК</h2>${overview.transformations.length ? overview.transformations.map((t) => `<div class="history"><b>${t.kind === "ADDING" ? "Добавить" : "Изъять"} КМ · ${e(t.actor)}</b>${badge(t.state)} · ${date(t.created)}<div class="mono">ID заявки: ${e(t.id)}<br>КМ: ${e(JSON.parse(t.code_ids).join(", "))}</div>${t.state === "approval" ? `<div class="actions"><button data-action="review" data-id="${e(t.id)}">Рассмотреть состав и принять решение</button></div>` : ""}</div>`).join("") : '<p class="muted">Нет заявок.</p>'}</div><div class="split"><div class="card" data-admin-panel="catalog"><h2>Общий пул кодов</h2><table><tr><th>GTIN</th><th>Статус ЧЗ</th><th>Состояние</th><th>КМ</th></tr>${overview.pool.map((p) => `<tr><td>${e(p.gtin)}</td><td>${e(p.external_status)}</td><td>${e(states[p.local_state] || p.local_state)}</td><td>${fmt(p.count)}</td></tr>`).join("")}</table><details><summary>Исправить привязку ТН ВЭД</summary><form id="catalog-form"><div class="fields"><label>GTIN<input name="gtin" required></label><label>ТН ВЭД<input name="tnved" required></label><label class="full">Причина<input name="reason" required></label></div><div class="actions"><button>Исправить справочник</button></div></form><p class="muted">Исторические документы остаются без изменений.</p></details>${overview.removed.map((c) => `<p class="mono">${e(c.cis)} <button data-action="allow-reuse" data-id="${e(c.id)}">Разрешить подбор в новый АТК</button></p>`).join("")}</div><div class="card" data-admin-panel="suppliers"><h2>Поставщики</h2>${overview.suppliers
       .filter((s) => !s.merged_into)
       .map(
         (s) =>
@@ -563,8 +593,9 @@ async function adminPage() {
       )
       .join(
         "",
-      )}<p class="muted">Объединение сохраняет исходные партии, АТК и версии файлов. Новые документы используют единый справочник.</p></div></div><div class="card"><h2>Журнал действий</h2><div class="table-wrap"><table><tr><th>Когда</th><th>Username</th><th>Действие</th></tr>${overview.audit.map((a) => `<tr><td>${date(a.created)}</td><td>${e(a.actor)}</td><td>${e(a.action)}</td></tr>`).join("")}</table></div></div>`,
+      )}<p class="muted">Объединение сохраняет исходные партии, АТК и версии файлов. Новые документы используют единый справочник.</p></div></div><div class="card" data-admin-panel="audit"><h2>Журнал действий</h2><div class="table-wrap"><table><tr><th>Когда</th><th>Username</th><th>Действие</th></tr>${overview.audit.map((a) => `<tr><td>${date(a.created)}</td><td>${e(a.actor)}</td><td>${e(a.action)}</td></tr>`).join("")}</table></div></div>`,
   );
+  organizeAdmin(hb);
   $$(".user-role").forEach(
     (select) =>
       (select.onchange = async () => {
@@ -636,6 +667,16 @@ function reasonModal(title, callback) {
 }
 async function action(name, id, b) {
   switch (name) {
+    case "admin-section":
+      selectAdminSection(id, b.dataset.operationFilter);
+      break;
+    case "document-tab":
+      selectDocumentTab(id);
+      break;
+    case "reset-doc-filters":
+      documentFilters = {search: "", status: "", supplier: "", from: "", to: "", stage: "all"};
+      renderList();
+      break;
     case "logistics":
       await logisticsPage();
       break;
@@ -712,9 +753,11 @@ async function action(name, id, b) {
       break;
     case "add-line":
       $("#edit-rows").insertAdjacentHTML("beforeend", lineRow());
+      markDocumentDirty();
       break;
     case "remove-line":
       b.closest("tr").remove();
+      markDocumentDirty();
       break;
     case "save-lines":
       await saveRows(gatherRows());
@@ -723,6 +766,7 @@ async function action(name, id, b) {
       $("#excel-file").click();
       break;
     case "order":
+      if (documentDirty) throw new Error("Сначала проверьте и сохраните состав");
       modal(
         `<h2>Заказать коды маркировки?</h2><p>Будут использованы свободные КМ из общего пула. В СУЗ отправится заказ только на недостающее количество. Новые КМ оплачиваются по эмиссии.</p><p class="notice">Заказ использует сохранённый состав. Проверьте, что все изменения сохранены.</p><div class="actions"><button class="primary" data-action="confirm-order">Заказать КМ</button><button data-action="close">Отмена</button></div>`,
       );
@@ -875,6 +919,7 @@ async function action(name, id, b) {
 }
 async function logisticsPage() {
   if (!user.admin && user.role !== "logistics") return list();
+  documentDirty = false;
   registryMode = true;
   adminMode = false;
   archive = false;
@@ -976,6 +1021,10 @@ bind();
     user = await api("/session");
     if (user.role === "logistics" && !user.admin) await logisticsPage();
     else if (location.hash.startsWith("#logistics")) await logisticsPage();
+    else if (location.hash.startsWith("#admin/") && user.admin) {
+      adminSection = location.hash.slice(7);
+      await adminPage();
+    }
     else if (location.hash.startsWith("#document/"))
       await open(decodeURIComponent(location.hash.slice(10)));
     else adminMode && user.admin ? await adminPage() : await list();
