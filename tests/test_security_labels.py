@@ -151,6 +151,48 @@ def test_gs1_dm_has_single_leading_fnc1_and_real_ascii_gs_separators(crypto):
     assert barcode[0].bytes.endswith(b"\x1d30100")
 
 
+
+def test_reprint_saved_label_snapshot_does_not_mutate_db_or_buy_codes(env):
+    from scripts.reprint_labels import open_readonly, get_snapshot, render_snapshot_zip
+
+    app, service, remote = env
+    doc_id = add_doc(service, labels=2, quantity=100)
+    service.order(doc_id, "alice")
+    advance(app)
+    original = service.store.one(
+        "SELECT sha256, content, snapshot FROM artifacts "
+        "WHERE doc_id=? AND kind='labels' ORDER BY version DESC LIMIT 1",
+        (doc_id,),
+    )
+    assert original is not None
+    calls_before = len(remote.calls)
+    database = service.settings.data_dir / "marking-bm.sqlite3"
+    with open_readonly(database) as db:
+        document, records = get_snapshot(db, doc_id)
+    assert document["id"] == doc_id and len(records) == 2
+    archive = render_snapshot_zip(records)
+
+    with zipfile.ZipFile(BytesIO(archive)) as z:
+        names = z.namelist()
+        assert len(names) == 1
+        pdf = fitz.open(stream=z.read(names[0]), filetype="pdf")
+        assert len(pdf) == 2
+        for page in pdf:
+            pixels = page.get_pixmap(matrix=fitz.Matrix(4, 4), alpha=False)
+            image = Image.frombytes("RGB", [pixels.width, pixels.height], pixels.samples)
+            decoded = zxingcpp.read_barcodes(image)
+            assert len(decoded) == 1
+            assert decoded[0].bytes.endswith(b"\x1d30100")
+
+    assert len(remote.calls) == calls_before
+    assert service.store.one(
+        "SELECT sha256 FROM artifacts "
+        "WHERE doc_id=? AND kind='labels' ORDER BY version DESC LIMIT 1",
+        (doc_id,),
+    )["sha256"] == original["sha256"]
+
+
+
 def test_auth_hashes_and_history_immutable(env):
     _, s, _ = env
     h = hash_password("secret password")
