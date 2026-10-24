@@ -11,7 +11,7 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from marking_bm.auth import hash_password
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, expect
 
 with tempfile.TemporaryDirectory() as tmp:
     with socket.socket() as sock:
@@ -63,6 +63,14 @@ with tempfile.TemporaryDirectory() as tmp:
             page.locator("#username").fill("smoke-user")
             page.locator("#user-form button").click()
             page.get_by_text("smoke-user", exact=True).wait_for()
+            page.locator("#username").fill("smoke-logist")
+            page.locator("#new-user-role").select_option("logistics")
+            page.locator("#user-form button").click()
+            page.get_by_text("smoke-logist", exact=True).wait_for()
+            assert (
+                page.locator('.user-role[data-user="smoke-logist"]').input_value()
+                == "logistics"
+            )
             page.get_by_role("button", name="Накладные", exact=True).click()
             page.get_by_role("button", name="+ Новая накладная").click()
             page.locator("#number").fill("SMOKE-001")
@@ -84,11 +92,20 @@ with tempfile.TemporaryDirectory() as tmp:
             out = Path("docs/screenshots")
             out.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(out / "invoice.png"), full_page=True)
+            page.get_by_role("button", name="Тёмная тема", exact=True).click()
+            assert page.locator("html").get_attribute("data-theme") == "dark"
+            page.screenshot(path=str(out / "invoice-dark.png"), full_page=True)
+            page.reload()
+            page.get_by_role("heading", name="Накладная SMOKE-001").wait_for()
+            assert page.locator("html").get_attribute("data-theme") == "dark"
+            page.get_by_role("button", name="Светлая тема", exact=True).click()
             page.get_by_role("button", name="Накладные", exact=True).click()
+            page.get_by_role("heading", name="Накладные", exact=True).wait_for()
             page.screenshot(path=str(out / "documents.png"), full_page=True)
             page.locator("#search").fill("nonexistent")
             assert page.locator(".doc-select").count() == 0
             page.get_by_role("button", name="Администрирование", exact=True).click()
+            page.locator("#config-form").wait_for()
             page.screenshot(path=str(out / "admin.png"), full_page=True)
             assert not errors, errors
             # 390px viewport: layout and form stay inside the viewport.
@@ -101,9 +118,35 @@ with tempfile.TemporaryDirectory() as tmp:
             ), page.evaluate(
                 '[...document.querySelectorAll("body *")].filter(x=>x.getBoundingClientRect().right>innerWidth+1).map(x=>[x.tagName,x.className,x.getBoundingClientRect().right]).slice(0,12)'
             )
+            page.set_viewport_size({"width": 1440, "height": 1000})
+            page.get_by_role("button", name="Выйти", exact=True).click()
+            page.locator("#login-value").fill("smoke-logist")
+            page.locator("#login-form button").click()
+            page.get_by_role("heading", name="Реестр АТК", exact=True).wait_for()
+            assert page.get_by_role("button", name="Накладные", exact=True).count() == 0
+            assert page.get_by_role("button", name="+ Новая накладная").count() == 0
+            assert page.locator("#atk-table").count() == 1
+            page.locator("#atk-search").fill("UNAVAILABLE")
+            page.get_by_role("button", name="Применить фильтры", exact=True).click()
+            page.get_by_role("heading", name="Реестр АТК", exact=True).wait_for()
+            assert page.locator("#atk-search").input_value() == "UNAVAILABLE"
+            page.get_by_role("button", name="Сбросить", exact=True).click()
+            expect(page.locator("#atk-search")).to_have_value("")
+            page.screenshot(path=str(out / "logistics.png"), full_page=True)
+            page.get_by_role("button", name="Тёмная тема", exact=True).click()
+            page.screenshot(path=str(out / "logistics-dark.png"), full_page=True)
+            page.reload()
+            page.get_by_role("heading", name="Реестр АТК", exact=True).wait_for()
+            assert page.locator("html").get_attribute("data-theme") == "dark"
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.screenshot(path=str(out / "logistics-mobile.png"), full_page=True)
+            assert page.evaluate(
+                "document.documentElement.scrollWidth<=window.innerWidth"
+            )
+            assert not errors, errors
             browser.close()
         print(
-            "Browser smoke: admin login, user creation, invoice editing, persistence, filters, mobile layout OK. External writes disabled."
+            "Browser smoke: managers and logistics roles, read-only registry, shared light/dark themes, saved preference, invoice editing, persistence, filters and mobile layout OK. External writes disabled."
         )
     finally:
         process.terminate()

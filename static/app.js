@@ -14,6 +14,8 @@ const $ = (s) => document.querySelector(s),
         })[c],
     );
 const states = {
+  attention: "Требует проверки",
+  transforming: "Трансформация",
   draft: "Черновик",
   label_error: "Ошибка формирования PDF",
   preflight_blocked: "Проверка перед отправкой не пройдена",
@@ -108,13 +110,35 @@ function bind() {
     }
   };
 }
+const roleNames = {
+  manager: "Бренд-менеджер",
+  logistics: "Логист",
+  admin: "Администратор",
+};
+let registryRequest = 0;
+let registryMode = false,
+  registryRows = [],
+  registryFilters = {
+    q: "",
+    supplier: "",
+    status: "",
+    tnved: "",
+    date_from: "",
+    date_to: "",
+    archive: false,
+  };
 function shell(content) {
+  const canManage = user.admin || user.role === "manager";
+  const canReadRegistry = user.admin || user.role === "logistics";
   $("#app").innerHTML =
-    `<div class="layout"><aside><div class="brand"><span>М</span>аркировка</div><div class="muted">Рабочее место<br>бренд-менеджера</div><nav><button data-action="list" class="${!adminMode && !archive ? "active" : ""}">Накладные</button><button data-action="archive" class="${archive ? "active" : ""}">Архив</button><button data-action="admin" class="${adminMode ? "active" : ""}">Администрирование</button></nav><footer>Радиоэлектроника<br>Честный ЗНАК / СУЗ<div class="user">${e(user.username)}<br><button data-action="logout">Выйти</button></div></footer></aside><main>${content}</main></div>`;
+    `<div class="layout"><header class="app-header"><div class="header-inner"><div><div class="eyebrow">Честный ЗНАК · Радиоэлектроника</div><div class="app-title">Маркировка импортных товаров</div><div class="header-meta">${e(roleNames[user.role] || roleNames.manager)} · ${e(user.username)}</div></div><div class="header-actions"><span class="muted user-label">${e(user.username)}</span><button class="icon-btn" data-action="refresh-page" aria-label="Обновить страницу" title="Обновить">↻</button><button class="icon-btn" data-theme-toggle aria-label="Тема">☾</button><button data-action="logout">Выйти</button></div></div></header><nav class="app-nav" aria-label="Разделы приложения"><div class="nav-inner">${canManage ? `<button data-action="list" class="${!adminMode && !archive && !registryMode ? "active" : ""}">Накладные</button><button data-action="archive" class="${archive && !registryMode ? "active" : ""}">Архив</button>` : ""}${canReadRegistry ? `<button data-action="logistics" class="${registryMode ? "active" : ""}">Реестр АТК</button>` : ""}<button data-action="admin" class="${adminMode ? "active" : ""}">Администрирование</button></div></nav><main>${content}</main><footer class="app-footer">Честный ЗНАК · ${user.role === "logistics" ? "Просмотр АТК и скачивание итоговых файлов" : "PDF 58 × 40 мм · печатайте в масштабе 100%"}</footer></div>`;
+  window.GisTheme.refresh();
 }
 function login(admin = false) {
+  registryMode = false;
   $("#app").innerHTML =
-    `<div class="login"><div class="brand"><span>М</span>аркировка</div><h1>${admin ? "Вход администратора" : "Рабочее место"}</h1><p class="muted">${admin ? "Отдельный пароль для управления системой" : "Введите свой username, чтобы открыть накладные"}</p><form id="login-form"><label>${admin ? "Пароль администратора" : "Username"}<input id="login-value" autocomplete="${admin ? "current-password" : "username"}" type="${admin ? "password" : "text"}" required autofocus></label><button class="primary">Войти</button></form><small>${admin ? "Подпись и настройки доступны только администратору." : "Вход без пароля. Действия фиксируются от имени выбранного username."}</small><p><button class="linkbutton" data-action="${admin ? "user-login" : "admin-login"}">${admin ? "Вход сотрудника" : "Вход администратора"}</button></p></div>`;
+    `<div class="login"><div class="login-heading"><span class="eyebrow">Честный ЗНАК · Радиоэлектроника</span><button class="icon-btn" data-theme-toggle aria-label="Тема">☾</button></div><h1>${admin ? "Вход администратора" : "Рабочее место"}</h1><p class="muted">${admin ? "Отдельный пароль для управления системой" : "Введите свой username, чтобы открыть рабочее место"}</p><form id="login-form"><label>${admin ? "Пароль администратора" : "Username"}<input id="login-value" autocomplete="${admin ? "current-password" : "username"}" type="${admin ? "password" : "text"}" required autofocus></label><button class="primary">Войти</button></form><small>${admin ? "Подпись и настройки доступны только администратору." : "Вход без пароля. Действия фиксируются от имени выбранного username."}</small><p><button class="linkbutton" data-action="${admin ? "user-login" : "admin-login"}">${admin ? "Вход сотрудника" : "Вход администратора"}</button></p></div>`;
+  window.GisTheme.refresh();
   $("#login-form").onsubmit = async (ev) => {
     ev.preventDefault();
     try {
@@ -125,13 +149,19 @@ function login(admin = false) {
           : { username: $("#login-value").value },
       );
       adminMode = admin;
-      admin ? await adminPage() : await list();
+      admin
+        ? await adminPage()
+        : user.role === "logistics"
+          ? await logisticsPage()
+          : await list();
     } catch (err) {
       toast(err.message);
     }
   };
 }
 async function list() {
+  if (user.role === "logistics" && !user.admin) return logisticsPage();
+  registryMode = false;
   history.replaceState(null, "", location.pathname);
   adminMode = false;
   doc = null;
@@ -210,6 +240,7 @@ function gatherRows() {
   });
 }
 async function open(id) {
+  registryMode = false;
   history.replaceState(
     null,
     "",
@@ -356,6 +387,7 @@ async function transformModal(id, kind) {
   };
 }
 async function adminPage() {
+  registryMode = false;
   history.replaceState(null, "", location.pathname);
   if (!user.admin) {
     login(true);
@@ -370,7 +402,7 @@ async function adminPage() {
     hb = JSON.parse(overview.heartbeat?.value || "null");
   } catch {}
   shell(
-    `<div class="topbar"><div><div class="muted">УПРАВЛЕНИЕ СИСТЕМОЙ</div><h1>Администрирование</h1></div><button data-action="admin-refresh">Обновить</button></div>${!overview.writes_enabled ? '<div class="notice">Внешняя отправка отключена в конфигурации сервера. Подготовленные задания сохраняются в очереди.</div>' : ""}<div class="stats"><div class="stat"><span class="muted">Свободно на диске</span><b>${(overview.disk.free / 1024 ** 3).toFixed(1)} ГБ</b></div><div class="stat"><span class="muted">Windows-подписант</span><b>${hb && Date.now() - new Date(hb.time) < 90000 ? "На связи" : "Нет связи"}</b><span class="muted">${hb ? e(hb.status) + " · " + date(hb.time) : "Подключите подписант"}</span></div><div class="stat"><span class="muted">Резервная копия</span><b>${overview.last_backup ? date(JSON.parse(overview.last_backup.value).created) : "Нет данных"}</b></div></div><div class="split"><div class="card"><h2>Пользователи</h2><div class="table-wrap"><table>${overview.users.map((u) => `<tr><td>${e(u.username)}</td><td>${u.enabled ? "Активен" : "Отключён"}</td><td><button data-action="user-toggle" data-id="${e(u.username)}" data-enabled="${u.enabled ? "0" : "1"}">${u.enabled ? "Отключить" : "Включить"}</button></td></tr>`).join("")}</table></div><form id="user-form"><div class="toolbar"><input id="username" placeholder="Новый username" required><button>Добавить</button></div></form></div><div class="card"><h2>Подключения и подпись</h2><p>Сертификат: ${overview.signer_configured ? "Настроен" : "Нужны токен подписанта и отпечаток сертификата в конфигурации сервера"}</p>${["true", "oms"].map((k) => `<p>${k === "true" ? "ГИС МТ" : "СУЗ"}: ${overview.tokens[k] ? "Токен получен · срок " + e(overview.tokens[k].expires || "не указан ЧЗ") : "Требуется авторизация"} <button data-action="auth" data-id="${k}">Обновить доступ</button></p>`).join("")}<p class="muted">Физический Рутокен остаётся на Windows-ПК. При запросе PIN задания ждут его ввода на этом ПК.</p><a href="https://docs.crpt.ru/gismt/True_API/" target="_blank" rel="noreferrer">Документация True API</a></div></div><div class="card"><h2>Наша организация</h2><form id="config-form"><div class="fields">${[
+    `<div class="topbar"><div><div class="muted">УПРАВЛЕНИЕ СИСТЕМОЙ</div><h1>Администрирование</h1></div><button data-action="admin-refresh">Обновить</button></div>${!overview.writes_enabled ? '<div class="notice">Внешняя отправка отключена в конфигурации сервера. Подготовленные задания сохраняются в очереди.</div>' : ""}<div class="stats"><div class="stat"><span class="muted">Свободно на диске</span><b>${(overview.disk.free / 1024 ** 3).toFixed(1)} ГБ</b></div><div class="stat"><span class="muted">Windows-подписант</span><b>${hb && Date.now() - new Date(hb.time) < 90000 ? "На связи" : "Нет связи"}</b><span class="muted">${hb ? e(hb.status) + " · " + date(hb.time) : "Подключите подписант"}</span></div><div class="stat"><span class="muted">Резервная копия</span><b>${overview.last_backup ? date(JSON.parse(overview.last_backup.value).created) : "Нет данных"}</b></div></div><div class="split"><div class="card"><h2>Пользователи</h2><div class="table-wrap"><table>${overview.users.map((u) => `<tr><td>${e(u.username)}</td><td><select class="user-role" data-user="${e(u.username)}" aria-label="Роль ${e(u.username)}"><option value="manager" ${u.role === "manager" ? "selected" : ""}>Бренд-менеджер</option><option value="logistics" ${u.role === "logistics" ? "selected" : ""}>Логист</option></select></td><td>${u.enabled ? "Активен" : "Отключён"}</td><td><button data-action="user-toggle" data-id="${e(u.username)}" data-enabled="${u.enabled ? "0" : "1"}">${u.enabled ? "Отключить" : "Включить"}</button></td></tr>`).join("")}</table></div><form id="user-form"><div class="toolbar"><input id="username" placeholder="Новый username" required><select id="new-user-role" aria-label="Роль нового пользователя"><option value="manager">Бренд-менеджер</option><option value="logistics">Логист</option></select><button>Добавить</button></div></form></div><div class="card"><h2>Подключения и подпись</h2><p>Сертификат: ${overview.signer_configured ? "Настроен" : "Нужны токен подписанта и отпечаток сертификата в конфигурации сервера"}</p>${["true", "oms"].map((k) => `<p>${k === "true" ? "ГИС МТ" : "СУЗ"}: ${overview.tokens[k] ? "Токен получен · срок " + e(overview.tokens[k].expires || "не указан ЧЗ") : "Требуется авторизация"} <button data-action="auth" data-id="${k}">Обновить доступ</button></p>`).join("")}<p class="muted">Физический Рутокен остаётся на Windows-ПК. При запросе PIN задания ждут его ввода на этом ПК.</p><a href="https://docs.crpt.ru/gismt/True_API/" target="_blank" rel="noreferrer">Документация True API</a></div></div><div class="card"><h2>Наша организация</h2><form id="config-form"><div class="fields">${[
       ["organization", "Наименование"],
       ["inn", "ИНН"],
       ["oms_id", "OMS ID"],
@@ -394,12 +426,33 @@ async function adminPage() {
         "",
       )}<p class="muted">Объединение сохраняет исходные партии, АТК и версии файлов. Новые документы используют единый справочник.</p></div></div><div class="card"><h2>Журнал действий</h2><div class="table-wrap"><table><tr><th>Когда</th><th>Username</th><th>Действие</th></tr>${overview.audit.map((a) => `<tr><td>${date(a.created)}</td><td>${e(a.actor)}</td><td>${e(a.action)}</td></tr>`).join("")}</table></div></div>`,
   );
+  $$(".user-role").forEach(
+    (select) =>
+      (select.onchange = async () => {
+        const u = overview.users.find(
+          (x) => x.username === select.dataset.user,
+        );
+        try {
+          await api("/admin/users", {
+            username: u.username,
+            enabled: !!u.enabled,
+            role: select.value,
+          });
+          await adminPage();
+          toast("Роль пользователя обновлена");
+        } catch (err) {
+          select.value = u.role;
+          toast(err.message);
+        }
+      }),
+  );
   $("#user-form").onsubmit = async (ev) => {
     ev.preventDefault();
     try {
       await api("/admin/users", {
         username: $("#username").value,
         enabled: true,
+        role: $("#new-user-role").value,
       });
       await adminPage();
     } catch (err) {
@@ -444,6 +497,36 @@ function reasonModal(title, callback) {
 }
 async function action(name, id, b) {
   switch (name) {
+    case "logistics":
+      await logisticsPage();
+      break;
+    case "registry-refresh":
+      await logisticsPage();
+      break;
+    case "registry-detail":
+      await logisticsDetail(id);
+      break;
+    case "registry-reset":
+      registryFilters = {
+        q: "",
+        supplier: "",
+        status: "",
+        tnved: "",
+        date_from: "",
+        date_to: "",
+        archive: false,
+      };
+      await logisticsPage();
+      break;
+    case "registry-download":
+      await downloadRegistry($$(".atk-select:checked").map((x) => x.value));
+      break;
+    case "refresh-page":
+      if (registryMode) await logisticsPage();
+      else if (adminMode) await adminPage();
+      else if (doc) await open(doc.id);
+      else await list();
+      break;
     case "close":
       $("#modal").close();
       break;
@@ -650,11 +733,107 @@ async function action(name, id, b) {
     }
   }
 }
+async function logisticsPage() {
+  if (!user.admin && user.role !== "logistics") return list();
+  registryMode = true;
+  adminMode = false;
+  archive = false;
+  doc = null;
+  history.replaceState(null, "", location.pathname + "#logistics");
+  const generation = ++registryRequest;
+  const params = new URLSearchParams(registryFilters);
+  const [items, suppliers] = await Promise.all([
+    api("/logistics/atks?" + params),
+    api("/suppliers"),
+  ]);
+  if (generation !== registryRequest || !registryMode) return;
+  registryRows = items;
+  const registryLabels = {
+    done: "Готов",
+    processing: "Формируется",
+    attention: "Требует проверки",
+    transforming: "Трансформация",
+  };
+  shell(
+    `<div class="topbar"><div><div class="eyebrow">Логистика · Все сотрудники</div><h1>Реестр АТК</h1><p class="muted">Таможенные коды, состав и итоговые файлы по всем поставщикам</p></div><button data-action="registry-refresh">Обновить реестр</button></div><div class="stats"><div class="stat"><span class="muted">АТК в списке</span><b>${fmt(items.length)}</b></div><div class="stat"><span class="muted">Готовы к скачиванию</span><b>${fmt(items.filter((a) => a.download_ready).length)}</b></div><div class="stat"><span class="muted">Единиц товара</span><b>${fmt(items.reduce((n, a) => n + a.units, 0))}</b></div></div><section class="card"><form id="registry-filters" class="registry-filters"><label>Код АТК или номер накладной<input id="atk-search" name="q" placeholder="Поиск по АТК или накладной" value="${e(registryFilters.q)}"></label><label>Поставщик<select id="atk-supplier" name="supplier"><option value="">Все поставщики</option>${suppliers.map((s) => `<option value="${e(s.id)}" ${s.id === registryFilters.supplier ? "selected" : ""}>${e(s.name)}</option>`).join("")}</select></label><label>Статус<select id="atk-status" name="status"><option value="">Все статусы</option>${Object.entries(
+      registryLabels,
+    )
+      .map(
+        ([value, label]) =>
+          `<option value="${value}" ${value === registryFilters.status ? "selected" : ""}>${label}</option>`,
+      )
+      .join(
+        "",
+      )}</select></label><label>ТН ВЭД<input id="atk-tnved" name="tnved" inputmode="numeric" maxlength="10" value="${e(registryFilters.tnved)}" placeholder="Полный код или часть"></label><div class="filter-row"><label>Создан с<input id="atk-from" type="date" name="date_from" value="${e(registryFilters.date_from)}"></label><label>Создан по<input id="atk-to" type="date" name="date_to" value="${e(registryFilters.date_to)}"></label><label class="check-label"><input id="atk-archive" name="archive" type="checkbox" ${registryFilters.archive ? "checked" : ""}>Архивные АТК</label><button class="primary" type="submit">Применить фильтры</button><button type="button" data-action="registry-reset">Сбросить</button></div></form><div class="table-wrap"><table id="atk-table"><thead><tr><th><input id="atk-select-all" type="checkbox" aria-label="Выбрать готовые АТК"></th><th>АТК / поставщик</th><th>Накладные / сотрудники</th><th>ТН ВЭД</th><th>Штук / КМ</th><th>Статус / создан</th><th>Файлы</th></tr></thead><tbody>${items.length ? items.map((a) => `<tr><td><input type="checkbox" class="atk-select" value="${e(a.id)}" ${a.download_ready ? "" : "disabled"} aria-label="Выбрать АТК ${e(a.code || a.id)}"></td><td><button class="linkbutton registry-code" data-action="registry-detail" data-id="${e(a.id)}">${a.code ? e(a.code) : "АТК формируется"}</button><span class="cell-sub">${e(a.supplier)}</span></td><td>${a.invoices.map(e).join(", ")}<span class="cell-sub">${a.owners.map(e).join(", ")}</span></td><td>${e(a.tnved)}</td><td><b>${fmt(a.units)}</b><span class="cell-sub">${fmt(a.labels)} КМ</span></td><td><span class="badge ${e(a.status)}">${registryLabels[a.status]}</span><span class="cell-sub">${date(a.created)}</span>${a.error ? `<span class="cell-sub">${e(a.error)}</span>` : ""}</td><td><div class="download-actions">${a.files.map((f) => `<a href="/api/files/${e(f.id)}" class="button" title="${e(f.name)}">${f.kind === "atk" ? "АТК" : "RESULT"} · v${f.version}</a>`).join("")}</div>${a.download_ready ? "" : '<span class="cell-sub">Комплект ещё не готов</span>'}</td></tr>`).join("") : ""}</tbody></table></div>${items.length ? "" : '<div class="empty"><b>АТК не найдены</b>Измените фильтры или дождитесь формирования таможенных кодов.</div>'}<div class="actions"><button class="primary" data-action="registry-download" disabled>Скачать выбранные · ZIP</button><span class="muted">Комплект АТК + RESULT на поставщика. Общие файлы включаются один раз.</span></div></section>`,
+  );
+  $("#registry-filters").onsubmit = async (ev) => {
+    ev.preventDefault();
+    registryFilters = {
+      q: $("#atk-search").value.trim(),
+      supplier: $("#atk-supplier").value,
+      status: $("#atk-status").value,
+      tnved: $("#atk-tnved").value.trim(),
+      date_from: $("#atk-from").value,
+      date_to: $("#atk-to").value,
+      archive: $("#atk-archive").checked,
+    };
+    try {
+      await logisticsPage();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  for (const selector of ["#atk-supplier", "#atk-status", "#atk-archive"])
+    $(selector).onchange = () => $("#registry-filters").requestSubmit();
+  function updateSelection() {
+    $('[data-action="registry-download"]').disabled = !$(".atk-select:checked");
+  }
+  $$(".atk-select").forEach((input) => (input.onchange = updateSelection));
+  $("#atk-select-all").onchange = () => {
+    $$(".atk-select:not(:disabled)").forEach(
+      (input) => (input.checked = $("#atk-select-all").checked),
+    );
+    updateSelection();
+  };
+}
+async function logisticsDetail(id) {
+  const a = await api("/logistics/atks/" + encodeURIComponent(id));
+  modal(
+    `<div class="eyebrow">Логистика · Просмотр</div><h2>${a.code ? "АТК " + e(a.code) : "АТК формируется"}</h2><p>${e(a.supplier)} · ТН ВЭД ${e(a.tnved)} · версия состава ${a.version}</p><p class="muted">Накладные: ${a.invoices.map(e).join(", ")}<br>Сотрудники: ${a.owners.map(e).join(", ")}</p><div class="files">${a.files.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div><h3>Состав: ${fmt(a.labels)} КМ, ${fmt(a.units)} шт.</h3><div class="table-wrap"><table><thead><tr><th>КИ</th><th>PN</th><th>Штук</th></tr></thead><tbody>${a.codes.map((c) => `<tr><td class="mono">${e(c.cis)}</td><td>${e(c.pn)}</td><td>${fmt(c.quantity)}</td></tr>`).join("")}</tbody></table></div><details><summary>Предыдущие версии файлов</summary><div class="files">${a.history_files.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div></details><div class="actions"><button data-action="close">Закрыть</button></div>`,
+  );
+}
+async function downloadRegistry(ids) {
+  if (!ids.length) throw new Error("Выберите готовые АТК для скачивания");
+  const response = await fetch("/api/logistics/download", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Requested-With": "marking-bm",
+      "X-CSRF-Token": user.csrf,
+    },
+    body: JSON.stringify({ atks: ids }),
+  });
+  if (!response.ok) {
+    const value = await response.json();
+    throw new Error(value.detail || "Не удалось скачать файлы");
+  }
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "АТК-и-RESULT.zip";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 bind();
 (async () => {
   try {
     user = await api("/session");
-    if (location.hash.startsWith("#document/"))
+    if (user.role === "logistics" && !user.admin) await logisticsPage();
+    else if (location.hash.startsWith("#logistics")) await logisticsPage();
+    else if (location.hash.startsWith("#document/"))
       await open(decodeURIComponent(location.hash.slice(10)));
     else adminMode && user.admin ? await adminPage() : await list();
   } catch {

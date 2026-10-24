@@ -927,3 +927,178 @@ class Service:
                         "UPDATE documents SET status='archive' WHERE id=?", (d["id"],)
                     )
                     audit(db, "system", "Перемещено в архив", d["id"])
+
+    def logistics_atks(
+        self,
+        *,
+        q="",
+        supplier="",
+        status="",
+        tnved="",
+        date_from="",
+        date_to="",
+        archive=False,
+    ):
+        """Cross-owner ATK registry. Deliberately omits invoice payloads and full crypto."""
+        result = []
+        with self.store.read() as db:
+            atks = rows(
+                db,
+                "SELECT a.*,b.created created,o.state operation_state,o.error operation_error,o.updated updated FROM atks a JOIN batches b ON b.id=a.batch_id JOIN operations o ON o.id=a.op_id ORDER BY b.created DESC,a.id",
+            )
+            for a in atks:
+                item = self._logistics_summary(db, a)
+                if item["archived"] != archive:
+                    continue
+                if supplier and item["supplier_id"] != supplier:
+                    continue
+                if status and item["status"] != status:
+                    continue
+                if tnved and tnved not in item["tnved"]:
+                    continue
+                if date_from and item["created"][:10] < date_from:
+                    continue
+                if date_to and item["created"][:10] > date_to:
+                    continue
+                if (
+                    q
+                    and q.casefold()
+                    not in " ".join([item["code"] or "", *item["invoices"]]).casefold()
+                ):
+                    continue
+                result.append(item)
+        return result
+
+    def _logistics_summary(self, db, a):
+        canonical = self.canonical_supplier(db, a["supplier_id"])
+        supplier = one(db, "SELECT name FROM suppliers WHERE id=?", (canonical,))
+        docs = rows(
+            db,
+            "SELECT d.id,d.number,d.owner,d.status FROM documents d JOIN batch_docs b ON b.doc_id=d.id WHERE b.batch_id=? AND b.supplier_id=? ORDER BY d.number,d.id",
+            (a["batch_id"], a["supplier_id"]),
+        )
+        # A supplier export can also contain applied supplements from other batches.
+        group = a["batch_id"] + ":" + a["supplier_id"]
+        files = rows(
+            db,
+            "SELECT id,name,kind,version,created,snapshot FROM artifacts WHERE group_id=? AND kind IN ('atk','result') ORDER BY version DESC,kind",
+            (group,),
+        )
+        latest = max([f["version"] for f in files] or [0])
+        current = [
+            {k: v for k, v in f.items() if k != "snapshot"}
+            for f in files
+            if f["version"] == latest
+        ]
+        known = {d["id"] for d in docs}
+        if files:
+            for i in json.loads(files[0]["snapshot"]).get("documents", []):
+                if i not in known:
+                    d = one(
+                        db,
+                        "SELECT id,number,owner,status FROM documents WHERE id=?",
+                        (i,),
+                    )
+                    if d:
+                        docs.append(d)
+                        known.add(i)
+        stats = one(
+            db,
+            "SELECT COUNT(*) labels,COALESCE(SUM(c.quantity),0) units FROM atk_versions v JOIN json_each(v.composition) j JOIN codes c ON c.id=j.value WHERE v.atk_id=? AND v.version=?",
+            (a["id"], a["version"]),
+        )
+        op = one(
+            db, "SELECT state,error,updated FROM operations WHERE id=?", (a["op_id"],)
+        )
+        transform = one(
+            db,
+            "SELECT t.state,t.created,o.state operation_state,o.error FROM transformations t LEFT JOIN operations o ON o.id=t.op_id WHERE t.atk_id=? AND t.state IN ('approval','approved','processing') ORDER BY t.created DESC LIMIT 1",
+            (a["id"],),
+        )
+        error = (transform["error"] if transform else None) or op["error"]
+        state = (
+            "attention"
+            if error
+            else (
+                "transforming"
+                if transform
+                else ("done" if a["state"] == "done" else "processing")
+            )
+        )
+        batch = one(db, "SELECT created FROM batches WHERE id=?", (a["batch_id"],))
+        return {
+            "id": a["id"],
+            "code": a["code"],
+            "supplier_id": canonical,
+            "supplier": supplier["name"],
+            "tnved": a["tnved"],
+            "version": a["version"],
+            "status": state,
+            "operation_state": (transform["operation_state"] or transform["state"])
+            if transform
+            else op["state"],
+            "error": error,
+            "created": batch["created"],
+            "updated": op["updated"],
+            "labels": stats["labels"],
+            "units": stats["units"],
+            "invoices": [d["number"] for d in docs],
+            "owners": sorted({d["owner"] for d in docs}),
+            "archived": bool(docs) and all(d["status"] == "archive" for d in docs),
+            "files": current,
+            "group_id": group,
+            "download_ready": any(f["kind"] == "atk" for f in current)
+            and any(f["kind"] == "result" for f in current),
+        }
+
+    def logistics_atk(self, atk_id):
+        with self.store.read() as db:
+            a = one(db, "SELECT * FROM atks WHERE id=?", (atk_id,))
+            if not a:
+                raise PermissionError("АТК недоступен")
+            result = self._logistics_summary(db, a)
+            result["codes"] = rows(
+                db,
+                "SELECT c.cis,c.pn,c.quantity,c.tnved FROM atk_versions v JOIN json_each(v.composition) j JOIN codes c ON c.id=j.value WHERE v.atk_id=? AND v.version=? ORDER BY c.pn,c.cis",
+                (atk_id, a["version"]),
+            )
+            result["history_files"] = rows(
+                db,
+                "SELECT id,name,kind,version,created FROM artifacts WHERE group_id=? AND kind IN ('atk','result') ORDER BY version DESC,kind",
+                (result["group_id"],),
+            )
+            return result
+
+    def logistics_download(self, atk_ids):
+        if not atk_ids or len(atk_ids) > 200:
+            raise ValueError("Выберите от 1 до 200 АТК")
+        groups = {}
+        # Capture the complete file selection in one consistent DB snapshot.
+        with self.store.read() as db:
+            for atk_id in sorted(set(atk_ids)):
+                a = one(db, "SELECT * FROM atks WHERE id=?", (atk_id,))
+                if not a:
+                    raise PermissionError("АТК недоступен")
+                summary = self._logistics_summary(db, a)
+                if not summary["download_ready"]:
+                    raise Conflict("Не все выбранные АТК имеют готовый комплект файлов")
+                group = summary["group_id"]
+                if group not in groups:
+                    groups[group] = [
+                        (
+                            f["name"],
+                            one(
+                                db,
+                                "SELECT content FROM artifacts WHERE id=?",
+                                (f["id"],),
+                            )["content"],
+                        )
+                        for f in summary["files"]
+                    ]
+        buf = BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
+            for group, files in groups.items():
+                # One supplier workbook may cover multiple ATKs: include each pair once.
+                for name, content in files:
+                    archive.writestr(safe_name(group) + "/" + name, content)
+        return buf.getvalue()
