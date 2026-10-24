@@ -182,6 +182,62 @@ def test_report_atk_and_exports_roundtrip(env):
     assert len(r.reports) == before
 
 
+def test_atk_code_accepts_real_mixed_case_suffix_and_rejects_bad_formats():
+    from marking_bm.worker import valid_atk_code
+
+    assert valid_atk_code("12345678901226042028K0KvG")
+    assert valid_atk_code("1234567890122604202800000")
+    assert not valid_atk_code("12345678901226042028K0Kv")  # only 24 chars
+    assert not valid_atk_code("12345678901226042028K0KvG0")  # 26 chars
+    assert not valid_atk_code("A2345678901226042028K0KvG")  # prefix must be 20 digits
+    assert not valid_atk_code("12345678901226042028K0K-G")  # punctuation is not valid
+    assert not valid_atk_code(None)
+
+
+def test_atk_existing_blocked_operation_recovers_without_second_document(env):
+    # This matches a real CHECKED_OK document with 11 APPLIED KIs, a shared
+    # mixed-case parent, and a previous local failure to confirm the ATK.
+    app, service, remote = env
+    doc_id = add_doc(service, labels=11)
+    service.order(doc_id, "alice")
+    advance(app)
+    service.transferred(doc_id, "alice", 1)
+    service.batch("alice", [doc_id], "2026-01-01", "123456789")
+
+    for _ in range(24):
+        sign_all(service)
+        app.state.worker.tick()
+        op = service.store.one("SELECT * FROM operations WHERE kind='atk'")
+        if op and op["state"] == "submitted":
+            break
+    assert op is not None and op["state"] == "submitted"
+    atk = next(iter(remote.atks))
+    assert len(atk) == 25 and "K0KvG" in atk
+
+    for ci in remote.codes.values():
+        if ci.get("parent") == atk:
+            ci["parent"] = None
+    app.state.worker.tick()
+    op = service.store.one("SELECT * FROM operations WHERE id=?", (op["id"],))
+    assert op["state"] == "blocked"
+    assert not service.store.one("SELECT code FROM atks WHERE op_id=?", (op["id"],))["code"]
+
+    # The check route must only re-poll the same external document ID.
+    for ci in remote.codes.values():
+        if ci["status"] == "APPLIED":
+            ci["parent"] = atk
+    admin = client(app, "administrator", True)
+    response = admin.post("/api/admin/operations/" + op["id"] + "/check", json={})
+    assert response.status_code == 200, response.text
+    app.state.worker.tick()
+    saved = service.store.one("SELECT * FROM operations WHERE id=?", (op["id"],))
+    assert saved["state"] == "done"
+    assert saved["external_id"] == op["external_id"]
+    assert service.store.one("SELECT code FROM atks WHERE op_id=?", (op["id"],))["code"] == atk
+    assert service.get(doc_id, "alice")["status"] == "done"
+    assert sum(path.endswith("/lk/documents/create") for _, path, _, _ in remote.calls) == 1
+
+
 def test_supplier_error_isolation(env):
     app, s, r = env
     a = add_doc(s)
