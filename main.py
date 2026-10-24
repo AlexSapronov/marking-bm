@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 import base64
+from hashlib import sha256
 import hmac
 import json
 import re
@@ -10,7 +11,7 @@ import secrets
 import shutil
 import threading
 import time
-from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Depends
+from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form, Depends
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict
@@ -312,14 +313,26 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
 
     @app.post("/api/documents/{doc_id}/import")
     async def excel_import(
-        doc_id: str, file: UploadFile = File(...), s=Depends(manager)
+        doc_id: str,
+        file: UploadFile = File(...),
+        mapping: str | None = Form(None),
+        sheet: str | None = Form(None),
+        header_row: int | None = Form(None),
+        s=Depends(manager),
     ):
         doc = service.get(doc_id, s["username"], s["admin"])
         if doc["status"] not in ("draft", "ready", "transferred", "label_error"):
             raise Conflict("Импорт на этой стадии запрещён")
         content = await file.read(10 * 1024 * 1024 + 1)
-        result = import_file(content)
-        if not result["errors"]:
+        try:
+            selected_mapping = json.loads(mapping) if mapping is not None else None
+        except (ValueError, TypeError) as exc:
+            raise ValueError("Некорректное сопоставление столбцов") from exc
+        result = import_file(
+            content, mapping=selected_mapping, sheet_name=sheet, header_row=header_row
+        )
+        if not result["requires_mapping"] and not result["errors"]:
+            imported_warnings = result["warnings"]
             result.update(
                 service.preview(
                     doc_id,
@@ -331,28 +344,59 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                     s["admin"],
                 )
             )
-        # Persist original upload in the document's immutable file history.
+            result["warnings"] = list(
+                dict.fromkeys(imported_warnings + result["warnings"])
+            )
         with store.transaction() as db:
-            version = 1 + max(
-                [
-                    a["version"]
-                    for a in rows(
-                        db,
-                        "SELECT version FROM artifacts WHERE doc_id=? AND kind='source'",
-                        (doc_id,),
-                    )
-                ]
-                or [0]
-            )
-            service.artifact(
+            # Re-uploading the same file while choosing a mapping keeps one source version.
+            source = one(
                 db,
-                "Исходный-Excel.xlsx",
-                content,
-                "source",
-                doc_id=doc_id,
-                version=version,
-                snapshot={"errors": result["errors"]},
+                "SELECT id FROM artifacts WHERE doc_id=? AND kind='source' AND sha256=?",
+                (doc_id, sha256(content).hexdigest()),
             )
+            if not source:
+                version = 1 + max(
+                    [
+                        a["version"]
+                        for a in rows(
+                            db,
+                            "SELECT version FROM artifacts WHERE doc_id=? AND kind='source'",
+                            (doc_id,),
+                        )
+                    ]
+                    or [0]
+                )
+                source = {
+                    "id": service.artifact(
+                        db,
+                        "Исходный-Excel.xlsx",
+                        content,
+                        "source",
+                        doc_id=doc_id,
+                        version=version,
+                        snapshot={
+                            "errors": result["errors"],
+                            "requires_mapping": result["requires_mapping"],
+                            "sheet": result.get("sheet"),
+                            "header_row": result.get("header_row"),
+                            "mapping": result.get("mapping"),
+                        },
+                    )
+                }
+            result["source_id"] = source["id"]
+            if selected_mapping is not None:
+                audit(
+                    db,
+                    s["username"],
+                    "Сопоставлены столбцы Excel",
+                    doc_id,
+                    {
+                        "source_id": source["id"],
+                        "sheet": result.get("sheet"),
+                        "header_row": result.get("header_row"),
+                        "mapping": result.get("mapping"),
+                    },
+                )
         return result
 
     @app.post("/api/documents/{doc_id}/order")
