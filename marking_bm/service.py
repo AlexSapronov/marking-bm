@@ -1042,6 +1042,14 @@ class Service:
                 else ("done" if a["state"] == "done" else "processing")
             )
         )
+        group_pending = one(
+            db,
+            "SELECT x.id FROM atks x JOIN operations o ON o.id=x.op_id "
+            "WHERE x.batch_id=? AND x.supplier_id=? AND (x.state!='done' OR o.state!='done' "
+            "OR COALESCE(o.error,'')!='' OR EXISTS (SELECT 1 FROM transformations t "
+            "WHERE t.atk_id=x.id AND t.state IN ('approval','approved','processing'))) LIMIT 1",
+            (a["batch_id"], a["supplier_id"]),
+        )
         batch = one(db, "SELECT created FROM batches WHERE id=?", (a["batch_id"],))
         return {
             "id": a["id"],
@@ -1059,6 +1067,11 @@ class Service:
             "updated": op["updated"],
             "labels": stats["labels"],
             "units": stats["units"],
+            "documents": [
+                {**d, "can_complete": d["status"] == "done" and state == "done" and not group_pending
+                 and op["state"] == "done" and {"atk", "result"}.issubset({f["kind"] for f in current})}
+                for d in docs
+            ],
             "invoices": [d["number"] for d in docs],
             "owners": sorted({d["owner"] for d in docs}),
             "archived": bool(docs) and all(d["status"] == "archive" for d in docs),
@@ -1067,6 +1080,30 @@ class Service:
             "download_ready": any(f["kind"] == "atk" for f in current)
             and any(f["kind"] == "result" for f in current),
         }
+
+    def logistics_complete(self, doc_id, actor):
+        """Close local logistics work only; never send a new operation to GIS/OMS."""
+        with self.store.transaction() as db:
+            d = one(db, "SELECT * FROM documents WHERE id=?", (doc_id,))
+            if not d:
+                raise PermissionError("Накладная недоступна")
+            if d["status"] == "archive":
+                return {"id": doc_id, "status": "archive"}
+            if d["status"] != "done":
+                raise Conflict("Завершить можно только накладную с готовыми АТК и итоговыми файлами")
+            related = []
+            for a in rows(db, "SELECT * FROM atks"):
+                summary = self._logistics_summary(db, a)
+                if any(item["id"] == doc_id for item in summary["documents"]):
+                    related.append(summary)
+            if not related or any(
+                a["status"] != "done" or a["operation_state"] != "done" or not a["download_ready"]
+                for a in related
+            ):
+                raise Conflict("Дождитесь готовности всех АТК, итоговых файлов и завершения трансформаций накладной")
+            db.execute("UPDATE documents SET status='archive',updated=? WHERE id=?", (now(), doc_id))
+            audit(db, actor, "Накладная завершена логистом и перемещена в архив", doc_id)
+            return {"id": doc_id, "status": "archive"}
 
     def logistics_atk(self, atk_id):
         with self.store.read() as db:
