@@ -55,7 +55,7 @@ CheckResult "Certificate.HasPrivateKey"
 
 Set signer = CreateObject("CAdESCOM.CPSigner")
 CheckResult "CPSigner.CreateObject"
-Set signer.Certificate = cert
+signer.Certificate = cert
 CheckResult "CPSigner.Certificate assignment"
 WScript.Echo "2. CPSigner.Certificate assigned"
 
