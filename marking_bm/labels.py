@@ -33,7 +33,12 @@ class GS1Matrix(ECC200DataMatrix):
                 char = value[pos]
                 if ord(char) > 127:
                     raise ValueError("КМ должен содержать только ASCII")
-                data.append(232 if char == "\x1d" else ord(char) + 1)
+                # ASCII GS (0x1D) is an ordinary data byte, encoded as
+                # codeword 30 in DataMatrix ASCII encodation. Only the
+                # first symbol position is FNC1 (codeword 232).
+                # Encoding separators as FNC1 (232) produces a visually
+                # readable code but triggers the official CHZ validator.
+                data.append(ord(char) + 1)
                 pos += 1
         if len(data) > self.cw_data:
             raise ValueError("КМ слишком длинный для макета этикетки")
