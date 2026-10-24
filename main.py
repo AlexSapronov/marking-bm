@@ -256,7 +256,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         archive: bool = False,
         s=Depends(manager),
     ):
-        sql = "SELECT d.*,p.name supplier,(SELECT SUM(quantity*labels) FROM lines WHERE doc_id=d.id) units FROM documents d JOIN suppliers p ON p.id=d.supplier_id WHERE 1=1"
+        sql = "SELECT d.*,EXISTS(SELECT 1 FROM document_stops h WHERE h.doc_id=d.id AND h.resumed_at IS NULL) stopped,p.name supplier,(SELECT SUM(quantity*labels) FROM lines WHERE doc_id=d.id) units FROM documents d JOIN suppliers p ON p.id=d.supplier_id WHERE 1=1"
         args = []
         if not s["admin"]:
             sql += " AND owner=?"
@@ -348,6 +348,14 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                 dict.fromkeys(imported_warnings + result["warnings"])
             )
         with store.transaction() as db:
+            current = service.document(db, doc_id, s["username"], s["admin"])
+            if service.document_stopped(db, doc_id) or current["status"] not in (
+                "draft",
+                "ready",
+                "transferred",
+                "label_error",
+            ):
+                raise Conflict("Импорт остановлен: состояние накладной изменилось")
             # Re-uploading the same file while choosing a mapping keeps one source version.
             source = one(
                 db,
@@ -426,6 +434,20 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             )
         }
 
+    class StopDocument(BaseModel):
+        number: str = Field(min_length=1, max_length=120)
+
+    @app.post("/api/documents/{doc_id}/stop")
+    def stop_document(doc_id: str, body: StopDocument, s=Depends(manager)):
+        return service.stop_document(doc_id, body.number, s["username"], s["admin"])
+
+    class RestoreDocument(BaseModel):
+        reason: str = Field(min_length=1, max_length=1000)
+
+    @app.post("/api/admin/documents/{doc_id}/restore")
+    def restore_document(doc_id: str, body: RestoreDocument, s=Depends(admin)):
+        return service.restore_document(doc_id, s["username"], body.reason)
+
     @app.get("/api/files/{file_id}")
     def file_get(file_id: str, s=Depends(session)):
         a = store.one("SELECT * FROM artifacts WHERE id=?", (file_id,))
@@ -482,6 +504,9 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
     def atk_detail(atk_id: str, s=Depends(manager)):
         with store.transaction() as db:
             a = service.atk_access(db, atk_id, s["username"], s["admin"])
+            a["stopped"] = bool(
+                service.group_stopped(db, a["batch_id"] + ":" + a["supplier_id"])
+            )
             a["codes"] = rows(
                 db,
                 "SELECT id,cis,pn,quantity,tnved FROM codes WHERE atk_id=?",
@@ -556,6 +581,25 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
     def overview(s=Depends(admin)):
         usage = shutil.disk_usage(settings.data_dir)
         secrets_config = settings.secrets()
+        operations = store.all(
+            "SELECT id,kind,doc_id,group_id,state,external_id,error,created,updated FROM operations ORDER BY created DESC LIMIT 200"
+        )
+        transformations = store.all(
+            "SELECT * FROM transformations ORDER BY created DESC"
+        )
+        with store.read() as db:
+            for operation in operations:
+                operation["stopped"] = service.operation_stopped(db, operation)
+            for request in transformations:
+                a = one(db, "SELECT * FROM atks WHERE id=?", (request["atk_id"],))
+                request["stopped"] = bool(
+                    service.group_stopped(db, a["batch_id"] + ":" + a["supplier_id"])
+                    or one(
+                        db,
+                        "SELECT h.doc_id FROM document_stops h JOIN codes c ON c.doc_id=h.doc_id JOIN json_each(?) j ON j.value=c.id WHERE h.resumed_at IS NULL LIMIT 1",
+                        (request["code_ids"],),
+                    )
+                )
         return {
             "users": store.all("SELECT * FROM users ORDER BY username"),
             "suppliers": store.all("SELECT * FROM suppliers ORDER BY name"),
@@ -569,12 +613,8 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                 for k, v in secrets_config.items()
             },
             "disk": {"used": usage.used, "free": usage.free, "total": usage.total},
-            "operations": store.all(
-                "SELECT id,kind,doc_id,group_id,state,external_id,error,created,updated FROM operations ORDER BY created DESC LIMIT 200"
-            ),
-            "transformations": store.all(
-                "SELECT * FROM transformations ORDER BY created DESC"
-            ),
+            "operations": operations,
+            "transformations": transformations,
             "pool": store.all(
                 "SELECT gtin,external_status,local_state,COUNT(*) count FROM codes GROUP BY gtin,external_status,local_state"
             ),
@@ -659,7 +699,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                 raise Conflict("Нельзя менять организацию при существующих документах")
             if one(
                 db,
-                "SELECT id FROM operations WHERE state NOT IN ('done','rejected') LIMIT 1",
+                "SELECT id FROM operations WHERE state NOT IN ('done','rejected','cancelled') LIMIT 1",
             ) and any(
                 old[k] != body.model_dump()[k]
                 for k in ("inn", "oms_id", "oms_connection")
@@ -785,6 +825,9 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
     @app.post("/api/admin/operations/{op_id}/check")
     def check(op_id: str, s=Depends(admin)):
         op = store.one("SELECT * FROM operations WHERE id=?", (op_id,))
+        if op:
+            with store.read() as db:
+                service.require_operation_active(db, op)
         if op and op["state"] == "preflight_blocked":
             with store.transaction() as db:
                 db.execute(
@@ -810,6 +853,8 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         op = store.one("SELECT * FROM operations WHERE id=?", (op_id,))
         if not op or op["kind"] != "fetch" or op["state"] != "unknown":
             raise Conflict("Операция не ожидает восстановления блока")
+        with store.read() as db:
+            service.require_operation_active(db, op)
         baseline = json.loads(op["result"] or "{}").get("baseline")
         if baseline is None:
             raise Conflict("Нет снимка блоков до запроса. Нужна ручная сверка с ЧЗ")
@@ -839,6 +884,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         recovered = service.gateway.recover_block(body.block_id)
         result = {"id": body.block_id, "complete": True, "receipt": recovered}
         with store.transaction() as db:
+            service.require_operation_active(db, op)
             if not db.execute(
                 "UPDATE operations SET external_id=?,result=?,state='submitted' WHERE id=? AND state='unknown'",
                 (body.block_id, dumps(result), op_id),
@@ -870,6 +916,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                 or op["kind"] not in ("order", "report", "atk", "transform")
             ):
                 raise Conflict("Операция не допускает привязку ID")
+            service.require_operation_active(db, op)
             db.execute(
                 "UPDATE operations SET external_id=?,state='submitted',error=NULL WHERE id=?",
                 (body.external_id, op_id),
@@ -897,7 +944,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                     )
             op = one(
                 db,
-                "SELECT * FROM operations WHERE state='signing' ORDER BY created LIMIT 1",
+                "SELECT o.* FROM operations o WHERE o.state='signing' AND NOT EXISTS (SELECT 1 FROM operation_stops h JOIN document_stops d ON d.doc_id=h.doc_id WHERE h.op_id=o.id AND d.resumed_at IS NULL) ORDER BY o.created LIMIT 1",
             )
             if not op:
                 return Response(status_code=204)
@@ -910,6 +957,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                 "transform",
             ):
                 raise Conflict("Недопустимое задание подписи")
+            service.require_operation_active(db, op)
             lease = secrets.token_urlsafe(32)
             db.execute(
                 "UPDATE operations SET state='leased',lease=? WHERE id=?",
@@ -954,6 +1002,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             op = one(db, "SELECT * FROM operations WHERE id=?", (body.id,))
             if not op or op["state"] != "leased":
                 raise Conflict("Задание уже обработано или отозвано")
+            service.require_operation_active(db, op)
             lease = json.loads(op["lease"])
             if lease["expires"] < time.time() or not hmac.compare_digest(
                 lease["token"], body.lease

@@ -58,6 +58,201 @@ class Service:
         )
         return result
 
+    def document_stopped(self, db, doc_id):
+        return (
+            one(
+                db,
+                "SELECT * FROM document_stops WHERE doc_id=? AND resumed_at IS NULL",
+                (doc_id,),
+            )
+            if doc_id
+            else None
+        )
+
+    def group_stopped(self, db, group_id):
+        return (
+            one(
+                db,
+                "SELECT d.number,s.doc_id FROM group_stops h JOIN document_stops s ON s.doc_id=h.doc_id JOIN documents d ON d.id=s.doc_id WHERE h.group_id=? AND s.resumed_at IS NULL LIMIT 1",
+                (group_id,),
+            )
+            if group_id
+            else None
+        )
+
+    def operation_stopped(self, db, op):
+        return bool(
+            self.document_stopped(db, op.get("doc_id"))
+            or (
+                op.get("kind")
+                not in ("report", "order", "fetch", "auth_true", "auth_oms")
+                and self.group_stopped(db, op.get("group_id"))
+            )
+            or one(
+                db,
+                "SELECT h.op_id FROM operation_stops h JOIN document_stops s ON s.doc_id=h.doc_id WHERE h.op_id=? AND s.resumed_at IS NULL LIMIT 1",
+                (op.get("id"),),
+            )
+        )
+
+    def require_operation_active(self, db, op):
+        if self.operation_stopped(db, op):
+            raise Conflict(
+                "Обработка остановлена. Вернуть накладную из архива может только администратор"
+            )
+
+    def stop_document(self, doc_id, number, actor, admin=False):
+        with self.store.transaction() as db:
+            d = self.document(db, doc_id, actor, admin)
+            if number != d["number"]:
+                raise Conflict("Номер не совпадает. Введите точный номер накладной")
+            if self.document_stopped(db, doc_id):
+                return {"id": doc_id, "status": "archive", "stopped": True}
+            stamp = now()
+            # Holds describe the current pause cycle. Historical dependencies are
+            # retained in audit, not reactivated after later composition changes.
+            db.execute("DELETE FROM operation_stops WHERE doc_id=?", (doc_id,))
+            db.execute("DELETE FROM group_stops WHERE doc_id=?", (doc_id,))
+            db.execute(
+                "INSERT INTO document_stops VALUES(?,?,?,?,NULL,NULL) ON CONFLICT(doc_id) DO UPDATE SET actor=excluded.actor,created=excluded.created,previous_status=excluded.previous_status,resumed_at=NULL,resumed_by=NULL",
+                (doc_id, actor, stamp, d["status"]),
+            )
+            groups = {
+                r["batch_id"] + ":" + r["supplier_id"]
+                for r in rows(
+                    db,
+                    "SELECT batch_id,supplier_id FROM batch_docs WHERE doc_id=?",
+                    (doc_id,),
+                )
+            }
+            groups.update(
+                r["batch_id"] + ":" + r["supplier_id"]
+                for r in rows(
+                    db,
+                    "SELECT DISTINCT a.batch_id,a.supplier_id FROM atks a JOIN codes c ON c.atk_id=a.id WHERE c.doc_id=?",
+                    (doc_id,),
+                )
+            )
+            own_codes = {
+                r["id"]
+                for r in rows(db, "SELECT id FROM codes WHERE doc_id=?", (doc_id,))
+            }
+            for t in rows(
+                db,
+                "SELECT t.code_ids,a.batch_id,a.supplier_id FROM transformations t JOIN atks a ON a.id=t.atk_id WHERE t.state IN ('approval','approved','processing')",
+            ):
+                if own_codes.intersection(json.loads(t["code_ids"])):
+                    groups.add(t["batch_id"] + ":" + t["supplier_id"])
+            for group in groups:
+                db.execute(
+                    "INSERT OR IGNORE INTO group_stops VALUES(?,?,?)",
+                    (group, doc_id, stamp),
+                )
+            affected = []
+            for op in rows(
+                db, "SELECT * FROM operations WHERE state NOT IN ('done','rejected')"
+            ):
+                if op["doc_id"] != doc_id and not (
+                    op["kind"] in ("atk", "transform") and op["group_id"] in groups
+                ):
+                    continue
+                db.execute(
+                    "INSERT OR IGNORE INTO operation_stops VALUES(?,?,?)",
+                    (op["id"], doc_id, stamp),
+                )
+                affected.append(
+                    {
+                        "id": op["id"],
+                        "state": op["state"],
+                        "external_id": op["external_id"],
+                    }
+                )
+                if (
+                    op["state"] in ("signing", "leased", "queued", "preflight_blocked")
+                    and not op["external_id"]
+                ):
+                    db.execute(
+                        "UPDATE operations SET state='cancelled',lease=NULL,error='Накладная остановлена пользователем',updated=? WHERE id=?",
+                        (stamp, op["id"]),
+                    )
+            db.execute(
+                "UPDATE documents SET status='archive',updated=? WHERE id=?",
+                (stamp, doc_id),
+            )
+            audit(
+                db,
+                actor,
+                "Обработка накладной остановлена. Перемещено в архив",
+                doc_id,
+                {
+                    "confirmed_number": number,
+                    "previous_status": d["status"],
+                    "groups": sorted(groups),
+                    "operations": affected,
+                },
+            )
+            return {"id": doc_id, "status": "archive", "stopped": True}
+
+    def restore_document(self, doc_id, actor, reason):
+        if not reason.strip():
+            raise ValueError("Укажите причину возврата")
+        with self.store.transaction() as db:
+            d = self.document(db, doc_id, actor, admin=True)
+            if d["status"] != "archive":
+                raise Conflict("Накладная уже находится вне архива")
+            stopped = self.document_stopped(db, doc_id)
+            operations = (
+                rows(
+                    db,
+                    "SELECT o.* FROM operations o JOIN operation_stops h ON h.op_id=o.id WHERE h.doc_id=?",
+                    (doc_id,),
+                )
+                if stopped
+                else []
+            )
+            if any(o["state"] in ("dispatching", "checking") for o in operations):
+                raise Conflict(
+                    "Дождитесь завершения текущего запроса ЧЗ перед возвратом накладной"
+                )
+            stamp = now()
+            previous = stopped["previous_status"] if stopped else "done"
+            target = "done" if previous == "archive" else previous
+            if stopped:
+                db.execute(
+                    "UPDATE document_stops SET resumed_at=?,resumed_by=? WHERE doc_id=?",
+                    (stamp, actor, doc_id),
+                )
+                for op in operations:
+                    if self.operation_stopped(db, op):
+                        continue  # Another stopped invoice still holds this shared operation.
+                    if op["state"] == "cancelled" and not op["external_id"]:
+                        state = "queued" if op["kind"] == "fetch" else "signing"
+                        db.execute(
+                            "UPDATE operations SET state=?,signature=NULL,lease=NULL,error=NULL,updated=? WHERE id=?",
+                            (state, stamp, op["id"]),
+                        )
+                    elif op["state"] not in ("done", "rejected", "unknown"):
+                        db.execute(
+                            "UPDATE operations SET state='blocked',error='Возврат из архива: проверьте результат ранее отправленной операции',updated=? WHERE id=?",
+                            (stamp, op["id"]),
+                        )
+            db.execute(
+                "UPDATE documents SET status=?,completed=CASE WHEN ?='done' THEN ? ELSE completed END,updated=? WHERE id=?",
+                (target, target, stamp, stamp, doc_id),
+            )
+            audit(
+                db,
+                actor,
+                "Накладная возвращена из архива",
+                doc_id,
+                {
+                    "reason": reason,
+                    "restored_status": target,
+                    "previous_completed": d["completed"],
+                },
+            )
+            return {"id": doc_id, "status": target}
+
     def document(self, db, doc_id, actor, admin=False):
         d = one(
             db,
@@ -71,6 +266,24 @@ class Service:
     def get(self, doc_id, actor, admin=False):
         with self.store.transaction() as db:
             d = self.document(db, doc_id, actor, admin)
+            d["stop"] = self.document_stopped(db, doc_id)
+            d["stopped"] = bool(d["stop"])
+            d["group_stop"] = next(
+                (
+                    held
+                    for r in rows(
+                        db,
+                        "SELECT batch_id,supplier_id FROM batch_docs WHERE doc_id=?",
+                        (doc_id,),
+                    )
+                    if (
+                        held := self.group_stopped(
+                            db, r["batch_id"] + ":" + r["supplier_id"]
+                        )
+                    )
+                ),
+                None,
+            )
             d["lines"] = rows(
                 db, "SELECT * FROM lines WHERE doc_id=? ORDER BY id", (doc_id,)
             )
@@ -84,6 +297,10 @@ class Service:
                 "SELECT id,kind,state,external_id,error,created,updated FROM operations WHERE doc_id=? ORDER BY created",
                 (doc_id,),
             )
+            for operation in d["operations"]:
+                operation["stopped"] = self.operation_stopped(
+                    db, {**operation, "doc_id": doc_id}
+                )
             d["artifacts"] = rows(
                 db,
                 "SELECT id,name,kind,version,created FROM artifacts WHERE doc_id=? ORDER BY version DESC",
@@ -116,6 +333,10 @@ class Service:
         with self.store.transaction() as db:
             if parent_id:
                 parent = self.document(db, parent_id, actor, admin)
+                if self.document_stopped(db, parent_id):
+                    raise Conflict(
+                        "Сначала администратор должен вернуть исходную накладную из архива"
+                    )
                 if parent["status"] not in ("done", "archive", "reported"):
                     raise ValueError("Дополнение создаётся к оформленному документу")
                 supplier = parent["supplier"]
@@ -140,6 +361,8 @@ class Service:
         result = validate_rows(raw_rows)
         with self.store.transaction() as db:
             d = self.document(db, doc_id, actor, admin)
+            if self.document_stopped(db, doc_id):
+                raise Conflict("Обработка накладной остановлена")
             old = Counter()
             for l in rows(db, "SELECT * FROM lines WHERE doc_id=?", (doc_id,)):
                 old[l["pn"]] += l["quantity"] * l["labels"]
@@ -292,6 +515,9 @@ class Service:
         )
 
     def queue(self, db, kind, key, payload, doc_id=None, group_id=None):
+        self.require_operation_active(
+            db, {"kind": kind, "doc_id": doc_id, "group_id": group_id}
+        )
         existing = one(db, "SELECT * FROM operations WHERE op_key=?", (key,))
         if existing:
             return existing["id"]
@@ -316,6 +542,8 @@ class Service:
 
     def order(self, doc_id, actor, admin=False, repack=False):
         existing = self.get(doc_id, actor, admin)
+        if existing["stopped"]:
+            raise Conflict("Обработка накладной остановлена")
         if existing["status"] in ("ordering", "receiving", "ready", "transferred"):
             return existing
         config = self.config()
@@ -443,6 +671,8 @@ class Service:
         return i
 
     def prepare_labels(self, db, doc_id):
+        if self.document_stopped(db, doc_id):
+            return
         d = one(db, "SELECT * FROM documents WHERE id=?", (doc_id,))
         ls = rows(db, "SELECT * FROM lines WHERE doc_id=? ORDER BY id", (doc_id,))
         cs = rows(db, "SELECT * FROM codes WHERE doc_id=? ORDER BY gtin,id", (doc_id,))
@@ -573,7 +803,9 @@ class Service:
             # as the immutable report payload. Never accept location overrides from UI.
             location = {
                 r["key"]: json.loads(r["value"])
-                for r in rows(db, "SELECT key,value FROM settings WHERE key IN ('kpp','fias_id')")
+                for r in rows(
+                    db, "SELECT key,value FROM settings WHERE key IN ('kpp','fias_id')"
+                )
             }
             kpp = location.get("kpp", "")
             fias_id = location.get("fias_id", "")
@@ -640,6 +872,8 @@ class Service:
     def create_atks(self, db):
         groups = rows(db, "SELECT DISTINCT batch_id,supplier_id FROM batch_docs")
         for g in groups:
+            if self.group_stopped(db, g["batch_id"] + ":" + g["supplier_id"]):
+                continue
             ds = rows(
                 db,
                 "SELECT d.* FROM documents d JOIN batch_docs b ON b.doc_id=d.id WHERE b.batch_id=? AND b.supplier_id=?",
@@ -693,6 +927,8 @@ class Service:
                     )
 
     def exports(self, db, batch, supplier):
+        if self.group_stopped(db, batch + ":" + supplier):
+            return
         atks = rows(
             db,
             "SELECT * FROM atks WHERE batch_id=? AND supplier_id=?",
@@ -737,6 +973,8 @@ class Service:
             one(db, "SELECT * FROM documents WHERE id=?", (i,))
             for i in sorted(extra_ids)
         )
+        if any(self.document_stopped(db, d["id"]) for d in docs):
+            return
         docs.sort(key=lambda d: (d["number"], d["id"]))
         title = safe_name(s["name"] + "-" + "-".join(d["number"] for d in docs))
         meta = [
@@ -804,7 +1042,7 @@ class Service:
             canonical = self.canonical_supplier(db, a["supplier_id"])
             return rows(
                 db,
-                "SELECT c.id,c.cis,c.pn,c.quantity,c.tnved FROM codes c JOIN documents d ON d.id=c.doc_id WHERE d.supplier_id=? AND c.tnved=? AND c.external_status='APPLIED' AND c.atk_id IS NULL AND c.reuse_allowed=1 AND d.status IN ('reported','done','archive') AND (? OR d.owner=?)",
+                "SELECT c.id,c.cis,c.pn,c.quantity,c.tnved FROM codes c JOIN documents d ON d.id=c.doc_id WHERE d.supplier_id=? AND c.tnved=? AND c.external_status='APPLIED' AND c.atk_id IS NULL AND c.reuse_allowed=1 AND d.status IN ('reported','done','archive') AND (? OR d.owner=?) AND NOT EXISTS (SELECT 1 FROM document_stops h WHERE h.doc_id=d.id AND h.resumed_at IS NULL)",
                 (canonical, a["tnved"], admin, actor),
             )
 
@@ -823,7 +1061,9 @@ class Service:
                 (a["batch_id"], a["supplier_id"], atk_id, atk_id),
             )
             if not owners or any(d["owner"] != actor for d in owners):
-                raise PermissionError("АТК со смешанным составом доступен администратору группы")
+                raise PermissionError(
+                    "АТК со смешанным составом доступен администратору группы"
+                )
         return a
 
     def transform(self, atk_id, kind, code_ids, actor, admin=False):
@@ -835,6 +1075,9 @@ class Service:
             raise ValueError("Неверная заявка")
         with self.store.transaction() as db:
             a = self.atk_access(db, atk_id, actor, admin)
+            self.require_operation_active(
+                db, {"group_id": a["batch_id"] + ":" + a["supplier_id"]}
+            )
             if a["state"] != "done":
                 raise Conflict("АТК ещё не готов")
             for i in code_ids:
@@ -843,8 +1086,12 @@ class Service:
                     "SELECT c.*,d.supplier_id,d.owner FROM codes c JOIN documents d ON d.id=c.doc_id WHERE c.id=?",
                     (i,),
                 )
+                if c and self.document_stopped(db, c["doc_id"]):
+                    raise Conflict("КМ относится к остановленной накладной")
                 if c and not admin and c["owner"] != actor:
-                    raise PermissionError("Нельзя включать КМ другого сотрудника в заявку")
+                    raise PermissionError(
+                        "Нельзя включать КМ другого сотрудника в заявку"
+                    )
                 if (
                     not c
                     or self.canonical_supplier(db, c["supplier_id"])
@@ -899,10 +1146,15 @@ class Service:
             a = one(db, "SELECT * FROM atks WHERE id=?", (t["atk_id"],))
             op = None
             if approve:
+                self.require_operation_active(
+                    db, {"group_id": a["batch_id"] + ":" + a["supplier_id"]}
+                )
                 items = [
                     one(db, "SELECT * FROM codes WHERE id=?", (i,))
                     for i in json.loads(t["code_ids"])
                 ]
+                if any(self.document_stopped(db, c["doc_id"]) for c in items):
+                    raise Conflict("Заявка содержит КМ остановленной накладной")
                 if any(
                     c["external_status"] != "APPLIED"
                     or (
@@ -1040,9 +1292,16 @@ class Service:
             "SELECT t.state,t.created,o.state operation_state,o.error FROM transformations t LEFT JOIN operations o ON o.id=t.op_id WHERE t.atk_id=? AND t.state IN ('approval','approved','processing') ORDER BY t.created DESC LIMIT 1",
             (a["id"],),
         )
-        error = (transform["error"] if transform else None) or op["error"]
+        held = self.group_stopped(db, group)
+        error = (
+            ("Обработка остановлена: накладная " + held["number"])
+            if held
+            else ((transform["error"] if transform else None) or op["error"])
+        )
         state = (
-            "attention"
+            "stopped"
+            if held
+            else "attention"
             if error
             else (
                 "transforming"
@@ -1076,8 +1335,15 @@ class Service:
             "labels": stats["labels"],
             "units": stats["units"],
             "documents": [
-                {**d, "can_complete": d["status"] == "done" and state == "done" and not group_pending
-                 and op["state"] == "done" and {"atk", "result"}.issubset({f["kind"] for f in current})}
+                {
+                    **d,
+                    "stopped": bool(self.document_stopped(db, d["id"])),
+                    "can_complete": d["status"] == "done"
+                    and state == "done"
+                    and not group_pending
+                    and op["state"] == "done"
+                    and {"atk", "result"}.issubset({f["kind"] for f in current}),
+                }
                 for d in docs
             ],
             "invoices": [d["number"] for d in docs],
@@ -1098,19 +1364,30 @@ class Service:
             if d["status"] == "archive":
                 return {"id": doc_id, "status": "archive"}
             if d["status"] != "done":
-                raise Conflict("Завершить можно только накладную с готовыми АТК и итоговыми файлами")
+                raise Conflict(
+                    "Завершить можно только накладную с готовыми АТК и итоговыми файлами"
+                )
             related = []
             for a in rows(db, "SELECT * FROM atks"):
                 summary = self._logistics_summary(db, a)
                 if any(item["id"] == doc_id for item in summary["documents"]):
                     related.append(summary)
             if not related or any(
-                a["status"] != "done" or a["operation_state"] != "done" or not a["download_ready"]
+                a["status"] != "done"
+                or a["operation_state"] != "done"
+                or not a["download_ready"]
                 for a in related
             ):
-                raise Conflict("Дождитесь готовности всех АТК, итоговых файлов и завершения трансформаций накладной")
-            db.execute("UPDATE documents SET status='archive',updated=? WHERE id=?", (now(), doc_id))
-            audit(db, actor, "Накладная завершена логистом и перемещена в архив", doc_id)
+                raise Conflict(
+                    "Дождитесь готовности всех АТК, итоговых файлов и завершения трансформаций накладной"
+                )
+            db.execute(
+                "UPDATE documents SET status='archive',updated=? WHERE id=?",
+                (now(), doc_id),
+            )
+            audit(
+                db, actor, "Накладная завершена логистом и перемещена в архив", doc_id
+            )
             return {"id": doc_id, "status": "archive"}
 
     def logistics_atk(self, atk_id):

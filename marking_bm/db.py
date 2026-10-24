@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS documents(
  owner TEXT NOT NULL REFERENCES users(username),status TEXT NOT NULL DEFAULT 'draft',revision INTEGER NOT NULL DEFAULT 0,
  created TEXT NOT NULL,updated TEXT NOT NULL,completed TEXT,parent_id TEXT REFERENCES documents(id),
  production_date TEXT,kpp TEXT,fias_id TEXT,last_error TEXT,current_version INTEGER NOT NULL DEFAULT 0,transferred_version INTEGER);
+CREATE TABLE IF NOT EXISTS document_stops(doc_id TEXT PRIMARY KEY REFERENCES documents(id),actor TEXT NOT NULL,created TEXT NOT NULL,previous_status TEXT NOT NULL,resumed_at TEXT,resumed_by TEXT);
+CREATE TABLE IF NOT EXISTS operation_stops(op_id TEXT NOT NULL REFERENCES operations(id),doc_id TEXT NOT NULL REFERENCES document_stops(doc_id),created TEXT NOT NULL,PRIMARY KEY(op_id,doc_id));
+CREATE INDEX IF NOT EXISTS operation_stops_document ON operation_stops(doc_id);
+CREATE TABLE IF NOT EXISTS group_stops(group_id TEXT NOT NULL,doc_id TEXT NOT NULL REFERENCES document_stops(doc_id),created TEXT NOT NULL,PRIMARY KEY(group_id,doc_id));
 CREATE TABLE IF NOT EXISTS lines(id INTEGER PRIMARY KEY,doc_id TEXT NOT NULL REFERENCES documents(id),pn TEXT NOT NULL,
  gtin TEXT NOT NULL,quantity INTEGER NOT NULL CHECK(quantity BETWEEN 1 AND 99999999),labels INTEGER NOT NULL CHECK(labels>0),tnved TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS codes(id TEXT PRIMARY KEY,raw TEXT NOT NULL,cis TEXT NOT NULL UNIQUE,gtin TEXT NOT NULL,serial TEXT NOT NULL,
@@ -85,6 +89,7 @@ class Store:
                     "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'manager' CHECK(role IN ('manager','logistics'))"
                 )
             db.execute("INSERT OR IGNORE INTO schema_version VALUES(2)")
+            db.execute("INSERT OR IGNORE INTO schema_version VALUES(3)")
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=30)
