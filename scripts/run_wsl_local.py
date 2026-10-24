@@ -43,6 +43,11 @@ if not data_dir.is_dir() or not data_dir.is_relative_to(Path.home().resolve()):
     raise SystemExit("Use a data directory inside your WSL Linux home.")
 os.environ.update(settings)
 os.chdir(ROOT)
+# When launched as "python scripts/run_wsl_local.py", sys.path[0] is scripts/.
+# Uvicorn's programmatic runner does not add the current directory automatically.
+# Ensure both main.py and marking_bm/ can be imported from the project root.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import uvicorn  # noqa: E402
 print("marking-bm local: http://localhost:8010 (Windows and WSL only)")
