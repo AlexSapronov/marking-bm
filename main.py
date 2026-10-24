@@ -531,6 +531,10 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
     def logistics_atk(atk_id: str, s=Depends(logistics)):
         return service.logistics_atk(atk_id)
 
+    @app.post("/api/logistics/documents/{doc_id}/complete")
+    def logistics_complete(doc_id: str, s=Depends(logistics)):
+        return service.logistics_complete(doc_id, s["username"])
+
     class LogisticsDownload(BaseModel):
         atks: list[str] = Field(min_length=1, max_length=200)
 

@@ -1,4 +1,4 @@
-"""Logist role is read-only across all owners; runtime has no mock/demo mode."""
+"""Logist registry and local invoice completion; runtime has no mock/demo mode."""
 
 from datetime import date
 from io import BytesIO
@@ -218,3 +218,89 @@ def test_registry_archive_and_pending_groups(env):
             ).status_code
             == 409
         )
+
+
+def test_logist_completes_ready_invoice_without_external_writes(env):
+    app, s, remote = env
+    ids, logist, _ = prepare_atks(env)
+    before_calls = len(remote.calls)
+    before_ops = s.store.one("SELECT COUNT(*) n FROM operations")["n"]
+    before_files = s.store.all("SELECT id,sha256 FROM artifacts ORDER BY id")
+    first = next(a for a in logist.get("/api/logistics/atks").json() if a["invoices"] == ["AL-100"])
+    assert first["documents"][0]["can_complete"]
+    endpoint = "/api/logistics/documents/" + ids[0] + "/complete"
+    response = logist.post(endpoint, json={})
+    assert response.status_code == 200 and response.json()["status"] == "archive"
+    assert logist.post(endpoint, json={}).status_code == 200
+    assert s.get(ids[0], "alice")["status"] == "archive"
+    assert s.get(ids[1], "bob")["status"] == "done"
+    assert len(logist.get("/api/logistics/atks").json()) == 1
+    archived = logist.get("/api/logistics/atks?archive=true").json()
+    assert len(archived) == 1 and archived[0]["id"] == first["id"]
+    assert not archived[0]["documents"][0]["can_complete"]
+    for f in archived[0]["files"]:
+        assert logist.get("/api/files/" + f["id"]).status_code == 200
+    assert s.store.one("SELECT COUNT(*) n FROM operations")["n"] == before_ops
+    assert s.store.all("SELECT id,sha256 FROM artifacts ORDER BY id") == before_files
+    assert len(remote.calls) == before_calls
+    entries = s.store.all("SELECT * FROM audit WHERE entity=? AND action LIKE '%завершена логистом%'", (ids[0],))
+    assert len(entries) == 1 and entries[0]["actor"] == "logist"
+
+
+def test_only_logist_or_admin_can_complete_and_csrf_is_required(env):
+    app, s, _ = env
+    ids, logist, admin = prepare_atks(env)
+    endpoint = "/api/logistics/documents/" + ids[0] + "/complete"
+    assert client(app).post(endpoint, json={}).status_code == 403
+    token = logist.headers.pop("X-CSRF-Token")
+    assert logist.post(endpoint, json={}).status_code == 403
+    logist.headers["X-CSRF-Token"] = token
+    assert admin.post(endpoint, json={}).status_code == 200
+    assert logist.post("/api/logistics/documents/missing/complete", json={}).status_code == 403
+
+
+@pytest.mark.parametrize("block", ["draft", "pending_transform", "missing_files", "unfinished_atk", "unfinished_sibling_atk"])
+def test_completion_rejects_unfinished_or_incomplete_invoice(env, block):
+    app, s, remote = env
+    ids, logist, _ = prepare_atks(env)
+    target = ids[0]
+    atk = s.get(target, "alice")["atks"][0]
+    if block == "draft":
+        target = add_doc(s, number="NOT-READY")
+    elif block == "pending_transform":
+        code = s.store.one("SELECT id FROM codes WHERE atk_id=?", (atk["id"],))
+        s.transform(atk["id"], "REMOVING", [code["id"]], "alice")
+    elif block == "missing_files":
+        # Add a newer incomplete export version; historical files stay immutable.
+        with s.store.transaction() as db:
+            db.execute("INSERT INTO artifacts SELECT 'incomplete',doc_id,group_id,version+1,kind,name,content,sha256,snapshot,created FROM artifacts WHERE group_id=? AND kind='atk' LIMIT 1", (atk["batch_id"] + ":" + atk["supplier_id"],))
+    elif block == "unfinished_sibling_atk":
+        with s.store.transaction() as db:
+            db.execute("INSERT INTO atks SELECT 'pending-sibling',NULL,supplier_id,'1234567890',batch_id,version,op_id,'processing' FROM atks WHERE id=?", (atk["id"],))
+    else:
+        with s.store.transaction() as db:
+            db.execute("UPDATE atks SET state='processing' WHERE id=?", (atk["id"],))
+    calls = len(remote.calls)
+    response = logist.post("/api/logistics/documents/" + target + "/complete", json={})
+    assert response.status_code == 409, response.text
+    assert s.get(target, "alice")["status"] != "archive"
+    assert len(remote.calls) == calls
+
+
+def test_shared_atk_stays_in_work_until_all_invoices_are_closed(env):
+    app, s, _ = env
+    _, logist, _ = prepare_atks(env)
+    ids = [add_doc(s, number="SHARED-1", supplier="Shared"), add_doc(s, owner="bob", number="SHARED-2", supplier="Shared")]
+    for doc_id, owner in zip(ids, ["alice", "bob"]):
+        s.order(doc_id, owner)
+    advance(app)
+    for doc_id, owner in zip(ids, ["alice", "bob"]):
+        s.transferred(doc_id, owner, 1)
+    s.batch("administrator", ids, "2026-01-01", admin=True)
+    advance(app)
+    for index, doc_id in enumerate(ids):
+        assert logist.post("/api/logistics/documents/" + doc_id + "/complete", json={}).status_code == 200
+        active = logist.get("/api/logistics/atks?q=SHARED").json()
+        assert len(active) == (1 if index == 0 else 0)
+    archived = logist.get("/api/logistics/atks?archive=true&q=SHARED").json()
+    assert len(archived) == 1 and set(archived[0]["invoices"]) == {"SHARED-1", "SHARED-2"}

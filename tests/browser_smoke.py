@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from marking_bm.auth import hash_password
 from marking_bm.excel import xlsx, HEADERS
 from playwright.sync_api import sync_playwright, expect
+from conftest import env as workflow_env, add_doc, advance
 
 with tempfile.TemporaryDirectory() as tmp:
     with socket.socket() as sock:
@@ -265,12 +266,24 @@ with tempfile.TemporaryDirectory() as tmp:
             )
             page.set_viewport_size({"width": 1440, "height": 1000})
             page.get_by_role("button", name="Выйти", exact=True).click()
+            # Build a real finished invoice through the service; only external APIs
+            # use the test transport. The browser still talks to the normal server.
+            test_app, test_service, _ = workflow_env.__wrapped__(Path(tmp))
+            logistics_doc = add_doc(test_service, number="LOGISTICS-READY")
+            test_service.order(logistics_doc, "alice")
+            advance(test_app)
+            test_service.transferred(logistics_doc, "alice", 1)
+            test_service.batch("alice", [logistics_doc], "2026-01-01")
+            advance(test_app)
             page.locator("#login-value").fill("smoke-logist")
             page.locator("#login-form button").click()
             page.get_by_role("heading", name="Реестр АТК", exact=True).wait_for()
             assert page.get_by_role("button", name="Накладные", exact=True).count() == 0
             assert page.get_by_role("button", name="+ Новая накладная").count() == 0
             assert page.locator("#atk-table").count() == 1
+            expect(page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
+            expect(page.get_by_role("button", name="Завершить накладную", exact=True)).to_be_visible()
+            expect(page.get_by_role("button", name="Завершить накладную", exact=True)).to_be_in_viewport(ratio=1)
             page.locator("#atk-search").fill("UNAVAILABLE")
             page.get_by_role("button", name="Применить фильтры", exact=True).click()
             page.get_by_role("heading", name="Реестр АТК", exact=True).wait_for()
@@ -290,17 +303,33 @@ with tempfile.TemporaryDirectory() as tmp:
             )
             assert not errors, errors
             page.set_viewport_size({"width": 1440, "height": 1000})
+            page.get_by_role("button", name="Завершить накладную", exact=True).click()
+            page.locator('#modal [data-action="logistics-complete"]').click()
+            page.get_by_role("button", name="Отмена", exact=True).click()
+            expect(page.locator('#atk-table tbody tr')).to_have_count(1)
+            page.get_by_role("button", name="Завершить накладную", exact=True).click()
+            page.locator('#modal [data-action="logistics-complete"]').click()
+            page.locator('#modal [data-action="confirm-logistics-complete"]').click()
+            expect(page.locator('#atk-table tbody tr')).to_have_count(0)
+            page.locator("#atk-archive").check()
+            expect(page.locator('#atk-table tbody tr')).to_have_count(1)
+            expect(page.locator('#atk-table')).to_contain_text("LOGISTICS-READY")
+            expect(page.get_by_role("button", name="Завершить накладную", exact=True)).to_have_count(0)
+            page.reload()
+            # Archive choice is an in-session filter; the completed invoice stays out of work.
+            expect(page.locator('#atk-table tbody tr')).to_have_count(0)
             page.get_by_role("button", name="Выйти", exact=True).click()
             page.locator("#login-value").fill("smoke-user")
             page.locator("#login-form button").click()
             page.get_by_role("heading", name="Накладные", exact=True).wait_for()
             expect(page.locator('[data-stage="preparation"]')).to_be_visible()
+            expect(page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
             expect(page.get_by_role("button", name="Реестр АТК", exact=True)).to_have_count(0)
             expect(page.get_by_role("columnheader", name="Владелец", exact=True)).to_have_count(0)
             assert not errors, errors
             browser.close()
         print(
-            "Browser smoke: managers and logistics roles, read-only registry, shared light/dark themes, saved preference, invoice editing, Excel automatic detection and mapping, persistence, filters and mobile layout OK. External writes disabled."
+            "Browser smoke: managers and logistics roles, registry and local completion, shared light/dark themes, saved preference, invoice editing, Excel automatic detection and mapping, persistence, filters and mobile layout OK. External writes disabled."
         )
     finally:
         process.terminate()

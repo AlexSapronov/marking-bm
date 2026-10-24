@@ -842,3 +842,17 @@ main > .topbar p { margin-bottom: 0; }
   .app-nav .nav-inner { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: visible; }
   .app-nav button { padding: 8px; font-size: 12px; }
 }
+
+#atk-table th,
+#atk-table td {
+  padding: 12px 10px;
+}
+#atk-table td:last-child {
+  white-space: normal;
+  min-width: 120px;
+}
+#atk-table td:last-child button {
+  max-width: 125px;
+  white-space: normal;
+  line-height: 1.3;
+}
