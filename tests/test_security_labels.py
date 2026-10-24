@@ -2,6 +2,7 @@ import base64
 from hashlib import sha256
 from io import BytesIO
 import json
+import zipfile
 import pytest
 import fitz
 import zxingcpp
