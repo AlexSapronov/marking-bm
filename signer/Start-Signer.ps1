@@ -20,10 +20,15 @@ $script:ComType = [System.__ComObject]
 function Invoke-CadesMethod {
     param([object]$Object, [string]$Name, [object[]]$Arguments = @())
     try {
-        $script:ComType.InvokeMember(
+        # Match the proven direct InvokeMember call: no parameters means a null
+        # argument array. Preserve COM collections returned by invoked members.
+        [object[]]$callArgs = $Arguments
+        if ($callArgs.Count -eq 0) { $callArgs = $null }
+        $result = $script:ComType.InvokeMember(
             $Name, [System.Reflection.BindingFlags]::InvokeMethod,
-            $null, $Object, $Arguments
+            $null, $Object, $callArgs
         )
+        Write-Output -NoEnumerate $result
     }
     catch {
         throw "CAdESCOM method '$Name' failed: $($_.Exception.Message)"
@@ -32,10 +37,16 @@ function Invoke-CadesMethod {
 function Get-CadesProperty {
     param([object]$Object, [string]$Name, [object[]]$Arguments = @())
     try {
-        $script:ComType.InvokeMember(
+        # Do not pass an empty array for zero-argument COM properties.
+        # Also do not let PowerShell enumerate the Certificates collection on
+        # return: otherwise Count is called on a Certificate instead.
+        [object[]]$callArgs = $Arguments
+        if ($callArgs.Count -eq 0) { $callArgs = $null }
+        $result = $script:ComType.InvokeMember(
             $Name, [System.Reflection.BindingFlags]::GetProperty,
-            $null, $Object, $Arguments
+            $null, $Object, $callArgs
         )
+        Write-Output -NoEnumerate $result
     }
     catch {
         throw "CAdESCOM property '$Name' failed: $($_.Exception.Message)"
