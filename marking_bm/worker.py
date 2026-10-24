@@ -15,7 +15,10 @@ from .gateway import RemoteError
 # in [0-9A-Za-z]. The final five preserve case (e.g. "K0KvG").
 # Never coerce ATK to int or assume a digits-only identifier.
 def valid_atk_code(value):
-    return isinstance(value, str) and re.fullmatch(r"[0-9]{20}[0-9A-Za-z]{5}", value) is not None
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"[0-9]{20}[0-9A-Za-z]{5}", value) is not None
+    )
 
 
 class Worker:
@@ -27,6 +30,21 @@ class Worker:
         self.stop = threading.Event()
         self.last_token_check = 0
 
+    def held(self, op):
+        with self.db.read() as db:
+            return self.s.operation_stopped(db, op)
+
+    def retain_held_result(self, db, op, result):
+        if not self.s.operation_stopped(db, op):
+            return False
+        # Preserve data returned by a request already in flight, but do not apply
+        # its business transitions, import a block or create any follow-up work.
+        db.execute(
+            "UPDATE operations SET result=?,state='submitted',updated=? WHERE id=? AND state IN ('submitted','checking','dispatching')",
+            (dumps(result), now(), op["id"]),
+        )
+        return True
+
     def recover(self):
         with self.db.transaction() as db:
             db.execute(
@@ -35,6 +53,12 @@ class Worker:
             )
             db.execute(
                 "UPDATE operations SET state='signing',lease=NULL WHERE state='leased'"
+            )
+            # A status check is read-only. After restart it is no longer in flight;
+            # held operations remain excluded until the administrator restores them.
+            db.execute(
+                "UPDATE operations SET state='submitted',updated=? WHERE state='checking'",
+                (now(),),
             )
 
     def run(self):
@@ -76,9 +100,9 @@ class Worker:
             # Reserve capacity for both new dispatches and status checks. A full
             # page of waiting orders must not starve authorization or later polls.
             scheduled = self.db.all(
-                "SELECT * FROM operations WHERE state='queued' ORDER BY created,id LIMIT 25"
+                "SELECT o.* FROM operations o WHERE o.state='queued' AND NOT EXISTS (SELECT 1 FROM operation_stops h JOIN document_stops d ON d.doc_id=h.doc_id WHERE h.op_id=o.id AND d.resumed_at IS NULL) ORDER BY o.created,o.id LIMIT 25"
             ) + self.db.all(
-                "SELECT * FROM operations WHERE state IN ('submitted','checking') ORDER BY updated,created,id LIMIT 25"
+                "SELECT o.* FROM operations o WHERE o.state IN ('submitted','checking') AND NOT EXISTS (SELECT 1 FROM operation_stops h JOIN document_stops d ON d.doc_id=h.doc_id WHERE h.op_id=o.id AND d.resumed_at IS NULL) ORDER BY o.updated,o.created,o.id LIMIT 25"
             )
             for op in scheduled:
                 try:
@@ -91,6 +115,8 @@ class Worker:
                         current = one(
                             db, "SELECT state FROM operations WHERE id=?", (op["id"],)
                         )
+                        if current["state"] == "cancelled":
+                            continue
                         # Read-only transport failures are recoverable; validation failures stop.
                         state = (
                             "submitted"
@@ -107,7 +133,7 @@ class Worker:
                     # Do not log request data or secrets. Preserve uncertainty for a dispatched request.
                     with self.db.transaction() as db:
                         db.execute(
-                            "UPDATE operations SET state=CASE WHEN state='dispatching' THEN 'unknown' ELSE 'blocked' END,error='Внутренняя ошибка. Требуется проверка администратором',updated=? WHERE id=?",
+                            "UPDATE operations SET state=CASE WHEN state='dispatching' THEN 'unknown' ELSE 'blocked' END,error='Внутренняя ошибка. Требуется проверка администратором',updated=? WHERE id=? AND state!='cancelled'",
                             (now(), op["id"]),
                         )
             for d in self.db.all("SELECT id FROM documents WHERE status='receiving'"):
@@ -130,7 +156,7 @@ class Worker:
                 except ValueError as e:
                     with self.db.transaction() as db:
                         db.execute(
-                            "UPDATE documents SET status='label_error',last_error=?,updated=? WHERE id=?",
+                            "UPDATE documents SET status='label_error',last_error=?,updated=? WHERE id=? AND status='receiving'",
                             (str(e), now(), d["id"]),
                         )
             with self.db.transaction() as db:
@@ -217,6 +243,8 @@ class Worker:
                 raise ValueError("Фактическое состояние АТК не допускает трансформацию")
 
     def dispatch(self, op):
+        if self.held(op):
+            return
         if not self.s.settings.send_enabled:
             return  # Queue survives until the deployment administrator enables writes.
         try:
@@ -236,6 +264,8 @@ class Worker:
                 )
             return
         with self.db.transaction() as db:
+            if self.s.operation_stopped(db, op):
+                return
             if not db.execute(
                 "UPDATE operations SET state='dispatching',updated=? WHERE id=? AND state='queued'",
                 (now(), op["id"]),
@@ -270,15 +300,20 @@ class Worker:
 
     def poll(self, op):
         with self.db.transaction() as db:
+            if self.s.operation_stopped(db, op):
+                return
             # Touch even pending orders with empty buffers, so subsequent ticks
             # rotate through the entire queue rather than the first page forever.
             db.execute(
-                "UPDATE operations SET updated=? WHERE id=? AND state IN ('submitted','checking')",
+                "UPDATE operations SET state='checking',updated=? WHERE id=? AND state IN ('submitted','checking')",
                 (now(), op["id"]),
             )
         if op["kind"] in ("fetch", "auth_true", "auth_oms"):
             return self.complete(op, json.loads(op["result"]))
         r = self.g.poll(op)
+        with self.db.transaction() as db:
+            if self.retain_held_result(db, op, r):
+                return
         if op["kind"] == "order":
             return self.order_buffers(op, r)
         if r.get("complete"):
@@ -286,7 +321,7 @@ class Worker:
         else:
             with self.db.transaction() as db:
                 db.execute(
-                    "UPDATE operations SET state='submitted',error=NULL,updated=? WHERE id=?",
+                    "UPDATE operations SET state='submitted',error=NULL,updated=? WHERE id=? AND state='checking'",
                     (now(), op["id"]),
                 )
 
@@ -297,6 +332,15 @@ class Worker:
         total = product["quantity"]
         buffers = result.get("buffers", [])
         with self.db.transaction() as db:
+            if self.retain_held_result(db, op, result):
+                return
+            current = one(db, "SELECT state FROM operations WHERE id=?", (op["id"],))
+            if current["state"] not in ("submitted", "checking"):
+                return
+            db.execute(
+                "UPDATE operations SET state='submitted',updated=? WHERE id=?",
+                (now(), op["id"]),
+            )
             children = rows(
                 db,
                 "SELECT * FROM operations WHERE kind='fetch' AND op_key LIKE ?",
@@ -338,6 +382,12 @@ class Worker:
             )
 
     def complete(self, op, result):
+        with self.db.transaction() as db:
+            if self.retain_held_result(db, op, result):
+                return
+            current = one(db, "SELECT state FROM operations WHERE id=?", (op["id"],))
+            if current["state"] not in ("submitted", "checking"):
+                return
         kind = op["kind"]
         payload = json.loads(op["payload"])
         receipt = result.get("receipt")
@@ -360,7 +410,9 @@ class Worker:
                 )
         with self.db.transaction() as db:
             current = one(db, "SELECT * FROM operations WHERE id=?", (op["id"],))
-            if current["state"] == "done":
+            if self.retain_held_result(db, op, result):
+                return
+            if current["state"] not in ("submitted", "checking"):
                 return
             if receipt is None:
                 raise ValueError("Нет квитанции")

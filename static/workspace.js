@@ -6,7 +6,8 @@ const documentStages = {
   processing: {title: "В обработке", matches: d => ["ordering", "receiving", "reporting", "reported", "aggregating"].includes(d.status)},
   supplier: {title: "Поставщик", matches: d => ["ready", "transferred"].includes(d.status)},
   attention: {title: "Требуют проверки", matches: d => ["attention", "label_error", "preflight_blocked", "unknown", "blocked"].includes(d.status)},
-  done: {title: "Завершены", matches: d => ["done", "archive"].includes(d.status)},
+  done: {title: "Завершены", matches: d => !d.stopped && ["done", "archive"].includes(d.status)},
+  stopped: {title: "Остановлены", matches: d => !!d.stopped},
 };
 const adminSections = {
   overview: ["Обзор", "Состояние системы и задачи, требующие внимания"],
@@ -25,7 +26,7 @@ function organizeAdmin(hb) {
   const notice = main.querySelector(":scope > .notice");
   const attention = overview.operations.filter(o => ["unknown", "blocked", "preflight_blocked"].includes(o.state));
   const approvals = overview.transformations.filter(t => t.state === "approval");
-  const pending = overview.operations.filter(o => !["done", "rejected"].includes(o.state));
+  const pending = overview.operations.filter(o => !["done", "rejected", "cancelled"].includes(o.state) && !o.stopped);
   const overviewPanel = document.createElement("section");
   overviewPanel.dataset.adminPanel = "overview";
   overviewPanel.innerHTML = `<div class="section-heading"><h2>Состояние системы</h2><p class="muted">Начните с задач, требующих решения. Настройки и история доступны в разделах слева.</p></div><div class="overview-tasks">${[
@@ -109,7 +110,7 @@ function organizeDocument(editable) {
     archive: ["Документ в архиве", "Состав и сохранённые версии файлов доступны для просмотра."],
     label_error: ["Исправьте состав для этикеток", "Проверьте сообщение об ошибке и сохраните исправленный состав. Полученные коды сохраняются."],
   };
-  const [title, description] = guidance[doc.status] || ["Документ в обработке", "Проверьте состояние на вкладке «Обработка и файлы». Дополнительные действия выполняются после завершения текущего этапа."];
+  const [title, description] = (doc.stopped ? ["Обработка остановлена", "Документ в архиве. Возврат доступен только администратору; отправленные операции требуют сверки."] : guidance[doc.status]) || ["Документ в обработке", "Проверьте состояние на вкладке «Обработка и файлы». Дополнительные действия выполняются после завершения текущего этапа."];
   const next = document.createElement("section");
   next.className = "next-step";
   next.innerHTML = `<div><span class="eyebrow">Следующий шаг</span><h2>${title}</h2><p>${description}</p><span id="document-save-state" class="muted" role="status">${editable ? "Все изменения состава сохранены" : "Состав доступен для просмотра"}</span></div>`;
@@ -177,7 +178,7 @@ function setupAdminFilters() {
     const panel = $(`[data-admin-panel="${key}"]`);
     const toolbar = document.createElement("div");
     toolbar.className = "admin-filter-bar";
-    toolbar.innerHTML = `<label>Поиск в разделе<input data-section-search="${key}" placeholder="${key === "users" ? "Username или роль" : key === "suppliers" ? "Наименование поставщика" : key === "operations" ? "Операция, ID или пояснение" : "Сотрудник или действие"}"></label>${key === "operations" ? '<label>Показать<select id="operation-filter"><option value="all">Все операции</option><option value="attention">Требуют проверки</option><option value="pending">В очереди и обработке</option><option value="done">Завершённые</option></select></label>' : ""}<span class="muted" data-filter-count></span>`;
+    toolbar.innerHTML = `<label>Поиск в разделе<input data-section-search="${key}" placeholder="${key === "users" ? "Username или роль" : key === "suppliers" ? "Наименование поставщика" : key === "operations" ? "Операция, ID или пояснение" : "Сотрудник или действие"}"></label>${key === "operations" ? '<label>Показать<select id="operation-filter"><option value="all">Все операции</option><option value="attention">Требуют проверки</option><option value="pending">В очереди и обработке</option><option value="done">Завершённые</option><option value="stopped">Остановленные</option></select></label>' : ""}<span class="muted" data-filter-count></span>`;
     panel.querySelector("h2").after(toolbar);
     const rows = key === "suppliers" ? [...panel.querySelectorAll(":scope > .toolbar")] : [...panel.querySelectorAll("table tbody tr")];
     // Legacy operation/audit tables have their header in tbody.
@@ -190,7 +191,8 @@ function setupAdminFilters() {
         const op = key === "operations" ? overview.operations[dataRows.indexOf(row)] : null;
         const stateMatches = key !== "operations" || state === "all" ||
           (state === "attention" && ["unknown", "blocked", "preflight_blocked"].includes(op?.state)) ||
-          (state === "pending" && !["done", "rejected"].includes(op?.state)) ||
+          (state === "pending" && !op?.stopped && !["done", "rejected", "cancelled"].includes(op?.state)) ||
+          (state === "stopped" && (op?.stopped || op?.state === "cancelled")) ||
           (state === "done" && ["done", "rejected"].includes(op?.state));
         row.hidden = !stateMatches || !row.textContent.toLocaleLowerCase("ru-RU").includes(query);
         if (!row.hidden) visible++;
