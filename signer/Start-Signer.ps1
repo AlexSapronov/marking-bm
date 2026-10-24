@@ -55,9 +55,18 @@ function Get-CadesProperty {
 function Set-CadesProperty {
     param([object]$Object, [string]$Name, [object]$Value)
     try {
+        # A COM interface needs PROPERTYPUTREF, not ordinary PROPERTYPUT.
+        # Make an explicit single-element Object[] so PowerShell cannot
+        # enumerate or otherwise unwrap a Certificate COM reference.
+        [object[]]$callArgs = [object[]]::new(1)
+        $callArgs[0] = $Value
+        $setFlags = [System.Reflection.BindingFlags]::SetProperty
+        if ($script:ComType.IsInstanceOfType($Value)) {
+            $setFlags = [System.Reflection.BindingFlags]::PutRefDispProperty
+        }
         [void]$script:ComType.InvokeMember(
-            $Name, [System.Reflection.BindingFlags]::SetProperty,
-            $null, $Object, @($Value)
+            $Name, $setFlags,
+            $null, $Object, $callArgs
         )
     }
     catch {
