@@ -47,7 +47,8 @@ function Invoke-LocalCadesSigner {
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
-    $psi.StandardInputEncoding = [Text.Encoding]::ASCII
+    # Windows PowerShell 5.1 (.NET Framework) has no ProcessStartInfo.StandardInputEncoding.
+    # Input is Base64 ASCII, so StreamWriter's default encoding is sufficient.
     $psi.StandardOutputEncoding = [Text.Encoding]::ASCII
     $psi.StandardErrorEncoding = [Text.Encoding]::UTF8
 
