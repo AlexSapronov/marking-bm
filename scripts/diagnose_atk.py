@@ -114,7 +114,7 @@ def main():
     print("Поля связей в cisInfo:", ", ".join(relation_fields) or "(нет)")
     if status != "CHECKED_OK":
         print("ВЫВОД: документ ещё не подтверждён как CHECKED_OK; смотрите документ в ЛК ЧЗ.")
-    elif len(parents) == 1 and isinstance(next(iter(parents)), str) and re.fullmatch(r"\d{25}", next(iter(parents))):
+    elif len(parents) == 1 and isinstance(next(iter(parents)), str) and re.fullmatch(r"[0-9]{20}[0-9A-Za-z]{5}", next(iter(parents))):
         print("ВЫВОД: один 25-значный parent найден. Повторите только проверку состояния.")
     elif all(not p for p in parents):
         print("ВЫВОД: CHECKED_OK, но parent у всех КИ пуст. Сверьте наличие АТК в ЛК ЧЗ.")
