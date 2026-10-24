@@ -73,9 +73,14 @@ class Worker:
                     self.ensure_tokens()
                 except (ValueError, RemoteError):
                     pass
-            for op in self.db.all(
-                "SELECT * FROM operations WHERE state IN ('queued','submitted','checking') ORDER BY created LIMIT 50"
-            ):
+            # Reserve capacity for both new dispatches and status checks. A full
+            # page of waiting orders must not starve authorization or later polls.
+            scheduled = self.db.all(
+                "SELECT * FROM operations WHERE state='queued' ORDER BY created,id LIMIT 25"
+            ) + self.db.all(
+                "SELECT * FROM operations WHERE state IN ('submitted','checking') ORDER BY updated,created,id LIMIT 25"
+            )
+            for op in scheduled:
                 try:
                     if op["state"] == "queued":
                         self.dispatch(op)
@@ -264,6 +269,13 @@ class Worker:
             )
 
     def poll(self, op):
+        with self.db.transaction() as db:
+            # Touch even pending orders with empty buffers, so subsequent ticks
+            # rotate through the entire queue rather than the first page forever.
+            db.execute(
+                "UPDATE operations SET updated=? WHERE id=? AND state IN ('submitted','checking')",
+                (now(), op["id"]),
+            )
         if op["kind"] in ("fetch", "auth_true", "auth_oms"):
             return self.complete(op, json.loads(op["result"]))
         r = self.g.poll(op)

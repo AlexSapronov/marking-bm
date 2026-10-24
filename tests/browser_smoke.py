@@ -81,6 +81,13 @@ with tempfile.TemporaryDirectory() as tmp:
                 == "logistics"
             )
             page.get_by_role("button", name="Накладные", exact=True).click()
+            page.reload()
+            page.get_by_role("heading", name="Накладные", exact=True).wait_for()
+            page.get_by_role("button", name="Архив", exact=True).click()
+            page.get_by_role("heading", name="Архив накладных", exact=True).wait_for()
+            page.reload()
+            page.get_by_role("heading", name="Архив накладных", exact=True).wait_for()
+            page.get_by_role("button", name="Накладные", exact=True).click()
             page.get_by_role("button", name="+ Новая накладная").click()
             page.locator("#number").fill("SMOKE-001")
             page.locator("#new-supplier").fill("Поставщик smoke")

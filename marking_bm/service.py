@@ -804,20 +804,26 @@ class Service:
             canonical = self.canonical_supplier(db, a["supplier_id"])
             return rows(
                 db,
-                "SELECT c.id,c.cis,c.pn,c.quantity,c.tnved FROM codes c JOIN documents d ON d.id=c.doc_id WHERE d.supplier_id=? AND c.tnved=? AND c.external_status='APPLIED' AND c.atk_id IS NULL AND c.reuse_allowed=1 AND d.status IN ('reported','done','archive')",
-                (canonical, a["tnved"]),
+                "SELECT c.id,c.cis,c.pn,c.quantity,c.tnved FROM codes c JOIN documents d ON d.id=c.doc_id WHERE d.supplier_id=? AND c.tnved=? AND c.external_status='APPLIED' AND c.atk_id IS NULL AND c.reuse_allowed=1 AND d.status IN ('reported','done','archive') AND (? OR d.owner=?)",
+                (canonical, a["tnved"], admin, actor),
             )
 
     def atk_access(self, db, atk_id, actor, admin=False):
         a = one(db, "SELECT * FROM atks WHERE id=?", (atk_id,))
         if not a:
             raise PermissionError("АТК недоступен")
-        if not admin and not one(
-            db,
-            "SELECT d.id FROM documents d JOIN batch_docs b ON b.doc_id=d.id WHERE b.batch_id=? AND b.supplier_id=? AND d.owner=?",
-            (a["batch_id"], a["supplier_id"], actor),
-        ):
-            raise PermissionError("АТК недоступен")
+        if not admin:
+            owners = rows(
+                db,
+                "SELECT d.owner FROM documents d JOIN batch_docs b ON b.doc_id=d.id "
+                "WHERE b.batch_id=? AND b.supplier_id=? "
+                "UNION SELECT d.owner FROM codes c JOIN documents d ON d.id=c.doc_id WHERE c.atk_id=? "
+                "UNION SELECT d.owner FROM atk_versions v JOIN json_each(v.composition) j "
+                "JOIN codes c ON c.id=j.value JOIN documents d ON d.id=c.doc_id WHERE v.atk_id=?",
+                (a["batch_id"], a["supplier_id"], atk_id, atk_id),
+            )
+            if not owners or any(d["owner"] != actor for d in owners):
+                raise PermissionError("АТК со смешанным составом доступен администратору группы")
         return a
 
     def transform(self, atk_id, kind, code_ids, actor, admin=False):
@@ -834,9 +840,11 @@ class Service:
             for i in code_ids:
                 c = one(
                     db,
-                    "SELECT c.*,d.supplier_id FROM codes c JOIN documents d ON d.id=c.doc_id WHERE c.id=?",
+                    "SELECT c.*,d.supplier_id,d.owner FROM codes c JOIN documents d ON d.id=c.doc_id WHERE c.id=?",
                     (i,),
                 )
+                if c and not admin and c["owner"] != actor:
+                    raise PermissionError("Нельзя включать КМ другого сотрудника в заявку")
                 if (
                     not c
                     or self.canonical_supplier(db, c["supplier_id"])

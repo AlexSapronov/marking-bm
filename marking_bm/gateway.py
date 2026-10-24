@@ -132,6 +132,17 @@ class Gateway:
                     raise ValueError("ЧЗ не подтвердил полный ТН ВЭД для КМ")
         return info
 
+    @staticmethod
+    def mutation_id(value):
+        # The request already reached the external API. Invalid response IDs do
+        # not prove rejection and must never turn into a retryable validation error.
+        if not isinstance(value, str):
+            raise RemoteError("ЧЗ не подтвердил ID отправленной операции. Нужна сверка с ЛК", True)
+        try:
+            return str(UUID(value))
+        except (ValueError, TypeError, AttributeError) as error:
+            raise RemoteError("ЧЗ вернул некорректный ID отправленной операции. Нужна сверка с ЛК", True) from error
+
     def submit(self, op):
         kind = op["kind"]
         payload = op["payload"].encode()
@@ -197,12 +208,12 @@ class Gateway:
             )
             if not isinstance(r, str):
                 raise RemoteError("Не подтверждён ID документа АТК", True)
-            return {"id": str(UUID(r)), "complete": False}
+            return {"id": self.mutation_id(r), "complete": False}
         else:
             raise ValueError("Недопустимый тип операции")
         if not isinstance(r, dict) or not r.get(key):
             raise RemoteError("ЧЗ не подтвердил ID операции", True)
-        return {"id": str(UUID(r[key])), "complete": False}
+        return {"id": self.mutation_id(r[key]), "complete": False}
 
     def poll(self, op):
         ext = op["external_id"]

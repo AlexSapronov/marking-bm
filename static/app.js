@@ -136,7 +136,7 @@ function shell(content) {
   const canManage = user.admin || user.role === "manager";
   const canReadRegistry = user.admin || user.role === "logistics";
   $("#app").innerHTML =
-    `<div class="layout"><header class="app-header"><div class="header-inner"><div><div class="eyebrow">Честный ЗНАК · Радиоэлектроника</div><div class="app-title">Маркировка импортных товаров</div><div class="header-meta">${e(roleNames[user.role] || roleNames.manager)} · ${e(user.username)}</div></div><div class="header-actions"><span class="muted user-label">${e(user.username)}</span><button class="icon-btn" data-action="refresh-page" aria-label="Обновить страницу" title="Обновить">↻</button><button class="icon-btn" data-theme-toggle aria-label="Тема">☾</button><button data-action="logout">Выйти</button></div></div></header><nav class="app-nav" aria-label="Разделы приложения"><div class="nav-inner">${canManage ? `<button data-action="list" class="${!adminMode && !archive && !registryMode ? "active" : ""}">Накладные</button><button data-action="archive" class="${archive && !registryMode ? "active" : ""}">Архив</button>` : ""}${canReadRegistry ? `<button data-action="logistics" class="${registryMode ? "active" : ""}">Реестр АТК</button>` : ""}${user.admin ? `<button data-action="admin" class="${adminMode ? "active" : ""}">Администрирование</button>` : ""}</div></nav><main>${content}</main><footer class="app-footer">Честный ЗНАК · ${user.role === "logistics" ? "АТК, итоговые файлы и завершение накладных" : "PDF 58 × 40 мм · печатайте в масштабе 100%"}</footer></div>`;
+    `<div class="layout"><header class="app-header"><div class="header-inner"><div><div class="eyebrow">Честный ЗНАК · Радиоэлектроника</div><div class="app-title">Маркировка импортных товаров</div><div class="header-meta">${e(roleNames[user.role] || roleNames.manager)} · ${e(user.username)}</div></div><div class="header-actions"><span class="muted user-label">${e(user.username)}</span><button class="icon-btn" data-action="refresh-page" aria-label="Обновить страницу" title="Обновить">↻</button><button class="icon-btn" data-theme-toggle aria-label="Тема">☾</button><button data-action="logout">Выйти</button></div></div></header><nav class="app-nav" aria-label="Разделы приложения"><div class="nav-inner">${canManage ? `<button data-action="list" class="${!adminMode && !archive && !registryMode ? "active" : ""}">Накладные</button><button data-action="archive" class="${archive && !registryMode && !adminMode ? "active" : ""}">Архив</button>` : ""}${canReadRegistry ? `<button data-action="logistics" class="${registryMode ? "active" : ""}">Реестр АТК</button>` : ""}${user.admin ? `<button data-action="admin" class="${adminMode ? "active" : ""}">Администрирование</button>` : ""}</div></nav><main>${content}</main><footer class="app-footer">Честный ЗНАК · ${user.role === "logistics" ? "АТК, итоговые файлы и завершение накладных" : "PDF 58 × 40 мм · печатайте в масштабе 100%"}</footer></div>`;
   window.GisTheme.refresh();
 }
 function login(admin = false) {
@@ -168,7 +168,7 @@ function login(admin = false) {
 async function list() {
   if (user.role === "logistics" && !user.admin) return logisticsPage();
   registryMode = false;
-  history.replaceState(null, "", location.pathname);
+  history.replaceState(null, "", location.pathname + (archive ? "#archive" : "#documents"));
   adminMode = false;
   doc = null;
   documentDirty = false;
@@ -267,6 +267,7 @@ async function open(id) {
   if (doc?.id !== id) documentTab = "content";
   documentDirty = false;
   doc = await api("/documents/" + id);
+  archive = doc.status === "archive";
   adminMode = false;
   renderDoc();
 }
@@ -293,7 +294,7 @@ function renderDoc() {
     (a) => a.kind === "labels" && a.version === doc.current_version,
   );
   shell(
-    `<div class="topbar"><div><button class="linkbutton" data-action="list">← Накладные</button><h1>Накладная ${e(doc.number)}</h1><span class="muted">${e(doc.supplier)} · ${e(doc.owner)} · ${date(doc.created)}</span></div>${badge(doc.status)}</div><div class="steps">${steps.map(([s, l]) => `<span class="step ${s === current ? "current" : ""}">${l}</span>`).join("")}</div><div class="stats"><div class="stat"><span class="muted">Единиц товара</span><b>${fmt(doc.units)}</b></div><div class="stat"><span class="muted">Получено КМ</span><b>${fmt(doc.codes.length)} / ${fmt(doc.required)}</b></div><div class="stat"><span class="muted">Версия этикеток</span><b>${doc.current_version || "—"}</b></div></div>${doc.last_error ? `<div class="error">Этикетки не сформированы: ${e(doc.last_error)}. Полученные КМ сохранены. Исправьте состав накладной.</div>` : ""}${doc.operations
+    `<div class="topbar"><div><button class="linkbutton" data-action="${archive ? "archive" : "list"}">${archive ? "← Архив накладных" : "← Накладные"}</button><h1>Накладная ${e(doc.number)}</h1><span class="muted">${e(doc.supplier)} · ${e(doc.owner)} · ${date(doc.created)}</span></div>${badge(doc.status)}</div><div class="steps">${steps.map(([s, l]) => `<span class="step ${s === current ? "current" : ""}">${l}</span>`).join("")}</div><div class="stats"><div class="stat"><span class="muted">Единиц товара</span><b>${fmt(doc.units)}</b></div><div class="stat"><span class="muted">Получено КМ</span><b>${fmt(doc.codes.length)} / ${fmt(doc.required)}</b></div><div class="stat"><span class="muted">Версия этикеток</span><b>${doc.current_version || "—"}</b></div></div>${doc.last_error ? `<div class="error">Этикетки не сформированы: ${e(doc.last_error)}. Полученные КМ сохранены. Исправьте состав накладной.</div>` : ""}${doc.operations
       .filter((o) => o.error)
       .map(
         (o) =>
@@ -1028,6 +1029,10 @@ bind();
     user = await api("/session");
     if (user.role === "logistics" && !user.admin) await logisticsPage();
     else if (location.hash.startsWith("#logistics")) await logisticsPage();
+    else if (["#documents", "#archive"].includes(location.hash)) {
+      archive = location.hash === "#archive";
+      await list();
+    }
     else if (location.hash.startsWith("#admin/") && user.admin) {
       adminSection = location.hash.slice(7);
       await adminPage();
