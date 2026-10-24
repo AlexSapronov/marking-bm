@@ -222,9 +222,6 @@ function modal(content) {
   $("#modal").innerHTML = content;
   $("#modal").showModal();
 }
-function fields() {
-  return `<div class="fields"><label>Дата производства<input id="production-date" type="date" required></label><label>КПП места деятельности<input id="kpp" inputmode="numeric" maxlength="9" required></label><label class="full">ФИАС места деятельности (если используется)<input id="fias"></label></div>`;
-}
 async function newDoc(parent) {
   const suppliers = await api("/suppliers");
   modal(
@@ -509,7 +506,7 @@ function excelMapping(context, inspection, previous = {}) {
 async function batchModal(ids) {
   if (!ids.length) throw new Error("Выберите накладные");
   modal(
-    `<h2>Подтверждение нанесения</h2><p>Поставщик подтвердил нанесение актуальных этикеток по выбранным накладным (${ids.length}). По каждой накладной будет отправлен отдельный отчёт, затем сформированы АТК.</p><p class="notice">Указывайте фактические данные производства и места деятельности.</p><form id="report-form">${fields()}<div class="actions"><button class="primary">Подтвердить и начать обработку</button><button type="button" data-action="close">Отмена</button></div></form>`,
+    `<h2>Подтверждение нанесения</h2><p>Поставщик подтвердил нанесение актуальных этикеток по выбранным накладным (${ids.length}). По каждой накладной будет отправлен отдельный отчёт, затем сформированы АТК.</p><p class="muted">КПП и ФИАС места деятельности будут взяты из настроек организации в админке.</p><form id="report-form"><label>Дата производства<input id="production-date" type="date" required></label><div class="actions"><button class="primary">Подтвердить и начать обработку</button><button type="button" data-action="close">Отмена</button></div></form>`,
   );
   $("#report-form").onsubmit = async (ev) => {
     ev.preventDefault();
@@ -517,8 +514,6 @@ async function batchModal(ids) {
       await api("/batches", {
         documents: ids,
         production_date: $("#production-date").value,
-        kpp: $("#kpp").value,
-        fias_id: $("#fias").value,
       });
       $("#modal").close();
       doc ? await open(doc.id) : await list();
