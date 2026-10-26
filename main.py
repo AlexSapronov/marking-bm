@@ -917,6 +917,8 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         if op:
             with store.read() as db:
                 service.require_operation_active(db, op)
+        if op and op["kind"] == "report" and op["state"] == "rejected":
+            raise Conflict("СУЗ отклонила отчёт. Используйте «Повторить отправку»")
         if op and op["state"] == "preflight_blocked":
             with store.transaction() as db:
                 db.execute(
