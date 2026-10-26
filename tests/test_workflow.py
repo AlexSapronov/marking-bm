@@ -256,14 +256,16 @@ def test_supplier_error_isolation(env):
     assert s.get(a, "alice")["status"] == "reporting"
     assert s.get(b, "bob")["status"] == "done"
     assert len(r.atks) == 1
+    assert s.store.one("SELECT state FROM operations WHERE id=?", (op["id"],))["state"] == "rejected"
     r.fail_report.clear()
     c = client(app, "administrator", True)
-    assert (
-        c.post("/api/admin/operations/" + op["id"] + "/check", json={}).status_code
-        == 200
-    )
+    # A rejected report ID cannot become successful: a new signed report is required.
+    assert c.post("/api/admin/operations/" + op["id"] + "/check", json={}).status_code == 409
+    retried = c.post("/api/admin/operations/" + op["id"] + "/retry", json={})
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["id"] != op["id"]
     advance(app)
-    assert s.get(a, "alice")["status"] == "done" and len(r.reports) == 2
+    assert s.get(a, "alice")["status"] == "done" and len(r.reports) == 3
 
 
 def test_timeout_never_reposts_and_restart_unknown(env):
