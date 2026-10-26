@@ -14,6 +14,44 @@ class RemoteError(Exception):
         self.uncertain = uncertain
 
 
+class ReportRejected(ValueError):
+    """SÚZ explicitly rejected a report; a new report ID is required for retry."""
+
+
+def report_rejection_message(response):
+    # Read only bounded text from a known rejected report status. Never echo
+    # arbitrary upstream bodies, which may contain confidential fields.
+    fragments = []
+    def walk(value, depth=0):
+        if depth > 6 or len(fragments) >= 60:
+            return
+        if isinstance(value, str):
+            fragments.append(value[:2000])
+        elif isinstance(value, dict):
+            for key in ("error", "errors", "message", "errorMessage",
+                        "bufferErrors", "buffers", "reportErrors", "description"):
+                if key in value:
+                    walk(value[key], depth + 1)
+            for value2 in list(value.values())[:15]:
+                if isinstance(value2, (dict, list)):
+                    walk(value2, depth + 1)
+        elif isinstance(value, list):
+            for item in value[:25]:
+                walk(item, depth + 1)
+    walk(response)
+    details = " ".join(fragments).lower()
+    if ("не найдена карточка товара" in details
+            or ("буфер для gtin" in details and "нет прав" in details)):
+        gtins = sorted(set(re.findall(r"(?<!\\d)\\d{14}(?!\\d)", details)))[:10]
+        suffix = " GTIN: " + ", ".join(gtins) + "." if gtins else ""
+        return (
+            "Карточка в Национальном каталоге ещё не готова или нет прав "
+            "на этот GTIN. Попробуйте сформировать отчёт позже "
+            "или свяжитесь с ответственным." + suffix
+        )
+    return "Отчёт отклонён СУЗ. Проверьте причину в ЛК ЧЗ перед повторной отправкой."
+
+
 class Gateway:
     def __init__(self, settings, config, transport=None):
         self.settings, self.config, self.transport = settings, config, transport
@@ -230,7 +268,7 @@ class Gateway:
             if r.get("reportId") != ext:
                 raise ValueError("Ответ относится к другому отчёту")
             if r.get("reportStatus") == "REJECTED":
-                raise ValueError("Отчёт отклонён СУЗ")
+                raise ReportRejected(report_rejection_message(r))
             if r.get("reportStatus") != "SUCCESS":
                 return {"complete": False, "receipt": r}
             rec = self.oms("receipts/receipt", params={"resultDocId": ext})
