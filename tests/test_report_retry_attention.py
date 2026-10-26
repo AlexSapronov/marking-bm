@@ -1,8 +1,4 @@
 """Report rejection, safe retry and reversible admin attention handling."""
-import json
-
-import pytest
-
 from conftest import add_doc, advance, client, sign_all
 from marking_bm.gateway import report_rejection_message
 
