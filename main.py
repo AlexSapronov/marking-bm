@@ -682,12 +682,25 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             "[0-9]{10}|[0-9]{12}", body.inn
         ) or body.template_id not in (36, 37):
             raise ValueError("Проверьте ИНН и шаблон этикетки")
-        UUID(body.oms_id)
-        UUID(body.oms_connection)
+        config_values = body.model_dump()
+        for field, label in (
+            ("oms_id", "OMS ID"),
+            ("oms_connection", "omsConnection"),
+            ("fias_id", "ФИАС места деятельности"),
+        ):
+            raw = config_values[field].strip()
+            if field == "fias_id" and not raw:
+                config_values[field] = ""
+                continue
+            try:
+                config_values[field] = str(UUID(raw))
+            except (ValueError, TypeError, AttributeError):
+                raise ValueError(
+                    f"{label}: неверный UUID. Проверьте латинские буквы, "
+                    "36 символов и отсутствие посторонних знаков"
+                ) from None
         if body.kpp and not re.fullmatch("[0-9]{9}", body.kpp):
             raise ValueError("КПП: 9 цифр")
-        if body.fias_id:
-            UUID(body.fias_id)
         with store.transaction() as db:
             old = service.config()
             # One organization for life of existing documents; no silent reassignment of ownership.
@@ -716,16 +729,16 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                 )
             )
             if pending and not initial_auth_only and any(
-                old[k] != body.model_dump()[k]
+                old[k] != config_values[k]
                 for k in ("inn", "oms_id", "oms_connection")
             ):
                 raise Conflict(
                     "Дождитесь завершения текущих операций перед сменой подключения"
                 )
-            for k, v in body.model_dump().items():
+            for k, v in config_values.items():
                 db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (k, dumps(v)))
             audit(
-                db, s["username"], "Настройки организации", "config", body.model_dump()
+                db, s["username"], "Настройки организации", "config", config_values
             )
         return {"ok": True}
 
