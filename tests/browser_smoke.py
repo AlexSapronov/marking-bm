@@ -247,10 +247,21 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("button", name="Тёмная тема", exact=True).click()
             page.screenshot(path=str(out / "admin-dark.png"), full_page=True)
             page.get_by_role("button", name="Светлая тема", exact=True).click()
-            for section in ["operations", "approvals", "users", "organization", "connections", "catalog", "suppliers", "audit"]:
+            for section in ["operations", "approvals", "users", "documents", "organization", "connections", "catalog", "suppliers", "audit"]:
                 page.locator(f'.section-nav [data-id="{section}"]').click()
                 expect(page.locator(f'[data-admin-panel="{section}"]')).to_be_visible()
                 expect(page.locator('[data-admin-panel]:visible')).to_have_count(1)
+            # Admin can find a working invoice and transfer ownership in the UI.
+            page.locator('.section-nav [data-id="documents"]').click()
+            page.locator("#admin-doc-q").fill("SMOKE-001")
+            page.locator("#admin-doc-search-form button").click()
+            expect(page.locator("#admin-doc-results tbody tr")).to_have_count(1)
+            expect(page.locator("#admin-doc-results tbody tr td").nth(3)).to_have_text("administrator")
+            page.locator("#admin-doc-results select.user-role").select_option("smoke-user")
+            page.once("dialog", lambda dialog: dialog.accept())
+            page.locator('[data-action="reassign-document"]').click()
+            expect(page.locator("#admin-doc-results tbody tr td").nth(3)).to_have_text("smoke-user")
+            page.screenshot(path=str(out / "admin-documents.png"), full_page=True)
             page.locator('.section-nav [data-id="organization"]').click()
             page.locator('[name="organization"]').fill("Организация smoke")
             page.locator('.section-nav [data-id="users"]').click()

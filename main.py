@@ -441,6 +441,26 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
     def stop_document(doc_id: str, body: StopDocument, s=Depends(manager)):
         return service.stop_document(doc_id, body.number, s["username"], s["admin"])
 
+    @app.get("/api/admin/documents")
+    def admin_documents(q: str = "", s=Depends(admin)):
+        term = q.strip()[:120]
+        sql = (
+            "SELECT d.id,d.number,d.owner,d.status,d.updated,p.name supplier "
+            "FROM documents d JOIN suppliers p ON p.id=d.supplier_id"
+        )
+        args = []
+        if term:
+            sql += " WHERE d.number LIKE ? OR d.owner LIKE ? OR p.name LIKE ?"
+            args = ["%" + term + "%"] * 3
+        return store.all(sql + " ORDER BY d.updated DESC,d.id DESC LIMIT 100", args)
+
+    class ReassignDocument(BaseModel):
+        owner: str = Field(min_length=1, max_length=80)
+
+    @app.put("/api/admin/documents/{doc_id}/owner")
+    def admin_reassign_document(doc_id: str, body: ReassignDocument, s=Depends(admin)):
+        return service.reassign_document(doc_id, body.owner, s["username"])
+
     class RestoreDocument(BaseModel):
         reason: str = Field(min_length=1, max_length=1000)
 

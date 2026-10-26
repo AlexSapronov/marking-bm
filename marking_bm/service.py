@@ -263,6 +263,41 @@ class Service:
             raise PermissionError("Документ недоступен")
         return d
 
+    def reassign_document(self, doc_id, username, actor):
+        # Keep documents, codes, artifacts and in-flight operations intact.
+        # Only the owner changes; all historical actors remain in the audit log.
+        with self.store.transaction() as db:
+            doc = one(db, "SELECT id,number,owner FROM documents WHERE id=?", (doc_id,))
+            if not doc:
+                raise ValueError("Накладная не найдена")
+            user = one(
+                db,
+                "SELECT username FROM users WHERE username=? AND enabled=1 AND role='manager'",
+                (username,),
+            )
+            if not user:
+                raise ValueError("Выберите активного пользователя с ролью Бренд-менеджер")
+            if doc["owner"] == username:
+                raise Conflict("Этот сотрудник уже назначен ответственным")
+            stamp = now()
+            db.execute(
+                "UPDATE documents SET owner=?,updated=?,revision=revision+1 WHERE id=?",
+                (username, stamp, doc_id),
+            )
+            audit(
+                db,
+                actor,
+                "Переназначен ответственный за накладную",
+                doc_id,
+                {"number": doc["number"], "previous_owner": doc["owner"], "new_owner": username},
+            )
+            return {
+                "id": doc_id,
+                "number": doc["number"],
+                "previous_owner": doc["owner"],
+                "owner": username,
+            }
+
     def get(self, doc_id, actor, admin=False):
         with self.store.transaction() as db:
             d = self.document(db, doc_id, actor, admin)
