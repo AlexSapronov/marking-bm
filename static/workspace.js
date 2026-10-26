@@ -14,6 +14,7 @@ const adminSections = {
   operations: ["Операции", "Очередь подписи, отправка и проверка результатов ЧЗ"],
   approvals: ["Согласования", "Решения по добавлению и изъятию КМ из АТК"],
   users: ["Пользователи", "Учётные записи, роли и доступ сотрудников"],
+  documents: ["Документы", "Назначение ответственных за накладные и передача между сотрудниками"],
   organization: ["Организация", "Реквизиты, место деятельности и параметры эмиссии"],
   connections: ["Подключения", "Доступ к ГИС МТ, СУЗ и Windows-подписант"],
   suppliers: ["Поставщики", "Наименования и объединение записей справочника"],
@@ -96,6 +97,7 @@ function selectAdminSection(key, operationFilter) {
     $("#operation-filter").dispatchEvent(new Event("change"));
   }
   history.replaceState(null, "", location.pathname + "#admin/" + adminSection);
+  if (adminSection === "documents") void loadAdminDocuments();
 }
 function organizeDocument(editable) {
   const main = $("main"), composition = $("#edit-rows").closest(".card");
