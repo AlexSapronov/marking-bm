@@ -884,7 +884,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
 
     @app.post("/api/admin/operations/{op_id}/retry")
     def admin_retry_report(op_id: str, s=Depends(admin)):
-        return service.retry_rejected_report(op_id, s["username"])
+        return service.retry_rejected_report(op_id, s["username"], admin=True)
 
     class AttentionBody(BaseModel):
         resolved: bool
