@@ -30,7 +30,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now marking-bm
 ```
 
-Добавьте `deploy/nginx.conf` в HTTPS-сервер корпоративного reverse proxy. Укажите тот же origin в `BM_PUBLIC_URL`. Порт 8010 слушает только localhost. Не открывайте его наружу; в systemd оставьте **один** worker. Серверу нужен доступ HTTPS к `markirovka.crpt.ru` и `suzgrid.crpt.ru`.
+Добавьте `deploy/nginx.conf` в HTTPS-сервер корпоративного reverse proxy. Укажите тот же origin в `BM_PUBLIC_URL`. На VPS порт 8030 слушает только localhost (команда WSL-запуска ниже по-прежнему использует 8010). Не открывайте его наружу; в systemd оставьте **один** worker. Серверу нужен доступ HTTPS к `markirovka.crpt.ru` и `suzgrid.crpt.ru`.
 
 Файл `.env.example` предназначен для `EnvironmentFile` systemd. Приложение не загружает `.env` автоматически.
 
