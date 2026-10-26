@@ -311,7 +311,7 @@ function renderDoc() {
       )
       .join(
         "",
-      )}${doc.status === "receiving" ? '<div class="notice">PDF станет доступен после получения полного комплекта КМ. Повторный заказ не требуется.</div>' : ""}<div class="card"><div class="topbar"><h2>Состав накладной</h2>${editable ? '<div class="actions"><a href="/api/template">Скачать шаблон Excel</a><button data-action="import">Загрузить Excel</button><input type="file" id="excel-file" accept=".xlsx" hidden></div>' : ""}</div><div class="table-wrap"><table><thead><tr><th>PN</th><th>GTIN</th><th>Штук в этикетке</th><th>Этикеток</th><th>ТН ВЭД</th>${editable ? "<th></th>" : ""}</tr></thead><tbody id="edit-rows">${editable ? doc.lines.map(lineRow).join("") : doc.lines.map((l) => `<tr><td>${e(l.pn)}</td><td>${e(l.gtin)}</td><td>${fmt(l.quantity)}</td><td>${fmt(l.labels)}</td><td>${e(l.tnved)}</td></tr>`).join("")}</tbody></table></div>${editable ? '<div class="actions"><button data-action="add-line">+ Добавить строку</button><button data-action="save-lines">Проверить и сохранить состав</button></div>' : ""}<div class="actions">${doc.status === "draft" ? '<button class="primary" data-action="order">Заказать КМ</button>' : ""}${currentFile && doc.codes.length === doc.required && !["repack", "receiving"].includes(doc.status) ? `<a href="/api/files/${e(currentFile.id)}">Скачать актуальные этикетки · ZIP v${doc.current_version}</a>` : ""}${["ready", "transferred"].includes(doc.status) ? `<button class="primary" data-action="transfer">${doc.status === "transferred" ? "Повторно отметить передачу" : "Передано поставщику"}</button>` : ""}${doc.status === "transferred" ? '<button class="primary" data-action="report">Подтвердить нанесение и сформировать АТК</button>' : ""}${!doc.stopped && ["done", "archive", "reported"].includes(doc.status) ? '<button data-action="supplement">Создать дополнение</button>' : ""}${!doc.stopped ? '<button class="danger" data-action="stop-document">Остановить и архивировать</button>' : ""}${user.admin && doc.status === "archive" ? '<button data-action="restore-document">Вернуть из архива</button>' : ""}<button data-action="refresh-doc">Обновить состояние</button></div></div>${doc.atks.length ? `<div class="card"><h2>Таможенные коды</h2>${doc.atks.map((a) => `<div class="toolbar"><span>ТН ВЭД <b>${e(a.tnved)}</b> · ${a.code ? e(a.code) : "Ожидает формирования"}</span>${a.state === "done" ? `<button data-action="atk" data-id="${e(a.id)}">Состав и трансформации</button>` : badge(a.state)}</div>`).join("")}<div class="files">${doc.exports.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div></div>` : ""}<div class="split"><div class="card"><h2>Обработка</h2>${doc.operations.length ? doc.operations.map((o) => `<div class="history"><b>${e(kinds[o.kind])}</b>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)} <span class="muted">${date(o.updated)}</span></div>`).join("") : '<p class="muted">Внешние операции ещё не запускались.</p>'}<details><summary>История файлов и прежние версии</summary><p class="muted">Скачанные поставщиком старые этикетки технически отозвать нельзя.</p><div class="files">${doc.artifacts.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · ${e(f.kind === "source" ? "Исходный Excel" : "v" + f.version)}</a>`).join("")}</div></details></div><div class="card"><h2>История документа</h2>${doc.history.map((h) => `<div class="history"><b>${e(h.action)}</b><span class="muted">${date(h.created)} · ${e(h.actor)}</span></div>`).join("")}</div></div>`,
+      )}${doc.status === "receiving" ? '<div class="notice">PDF станет доступен после получения полного комплекта КМ. Повторный заказ не требуется.</div>' : ""}<div class="card"><div class="topbar"><h2>Состав накладной</h2>${editable ? '<div class="actions"><a href="/api/template">Скачать шаблон Excel</a><button data-action="import">Загрузить Excel</button><input type="file" id="excel-file" accept=".xlsx" hidden></div>' : ""}</div><div class="table-wrap"><table><thead><tr><th>PN</th><th>GTIN</th><th>Штук в этикетке</th><th>Этикеток</th><th>ТН ВЭД</th>${editable ? "<th></th>" : ""}</tr></thead><tbody id="edit-rows">${editable ? doc.lines.map(lineRow).join("") : doc.lines.map((l) => `<tr><td>${e(l.pn)}</td><td>${e(l.gtin)}</td><td>${fmt(l.quantity)}</td><td>${fmt(l.labels)}</td><td>${e(l.tnved)}</td></tr>`).join("")}</tbody></table></div>${editable ? '<div class="actions"><button data-action="add-line">+ Добавить строку</button><button data-action="save-lines">Проверить и сохранить состав</button></div>' : ""}<div class="actions">${doc.status === "draft" ? '<button class="primary" data-action="order">Заказать КМ</button>' : ""}${currentFile && doc.codes.length === doc.required && !["repack", "receiving"].includes(doc.status) ? `<a class="button primary" href="/api/files/${e(currentFile.id)}">↓ Скачать ZIP с этикетками · v${doc.current_version}</a>` : ""}${["ready", "transferred"].includes(doc.status) ? `<button class="primary" data-action="transfer">${doc.status === "transferred" ? "Повторно отметить передачу" : "Передано поставщику"}</button>` : ""}${doc.status === "transferred" ? '<button class="primary" data-action="report">Подтвердить нанесение и сформировать АТК</button>' : ""}${!doc.stopped && ["done", "archive", "reported"].includes(doc.status) ? '<button data-action="supplement">Создать дополнение</button>' : ""}${!doc.stopped ? '<button class="danger" data-action="stop-document">Остановить и архивировать</button>' : ""}${user.admin && doc.status === "archive" ? '<button data-action="restore-document">Вернуть из архива</button>' : ""}<button data-action="refresh-doc">Обновить состояние</button></div></div>${doc.atks.length ? `<div class="card"><h2>Таможенные коды</h2>${doc.atks.map((a) => `<div class="toolbar"><span>ТН ВЭД <b>${e(a.tnved)}</b> · ${a.code ? e(a.code) : "Ожидает формирования"}</span>${a.state === "done" ? `<button data-action="atk" data-id="${e(a.id)}">Состав и трансформации</button>` : badge(a.state)}</div>`).join("")}<div class="files">${doc.exports.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div></div>` : ""}<div class="split"><div class="card"><h2>Обработка</h2>${doc.operations.length ? doc.operations.map((o) => `<div class="history"><b>${e(kinds[o.kind])}</b>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)} <span class="muted">${date(o.updated)}</span></div>`).join("") : '<p class="muted">Внешние операции ещё не запускались.</p>'}<details><summary>История файлов и прежние версии</summary><p class="muted">Скачанные поставщиком старые этикетки технически отозвать нельзя.</p><div class="files">${doc.artifacts.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · ${e(f.kind === "source" ? "Исходный Excel" : "v" + f.version)}</a>`).join("")}</div></details></div><div class="card"><h2>История документа</h2>${doc.history.map((h) => `<div class="history"><b>${e(h.action)}</b><span class="muted">${date(h.created)} · ${e(h.actor)}</span></div>`).join("")}</div></div>`,
   );
   organizeDocument(editable);
   if (editable) {
@@ -559,6 +559,38 @@ async function transformModal(id, kind) {
     }
   };
 }
+async function loadAdminDocuments() {
+  const result = $("#admin-doc-results");
+  if (!result || !user?.admin) return;
+  const search = $("#admin-doc-q").value.trim();
+  result.textContent = "Загрузка накладных…";
+  try {
+    const invoices = await api("/admin/documents?q=" + encodeURIComponent(search));
+    if (!$("#admin-doc-results")) return;
+    const managers = overview.users.filter(u => u.enabled && u.role === "manager");
+    result.innerHTML = invoices.length
+      ? `<div class="table-wrap"><table><thead><tr><th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Текущий ответственный</th><th>Новый ответственный</th><th>Действие</th></tr></thead><tbody>${invoices.map(d => {
+          const options = managers.filter(u => u.username !== d.owner);
+          return `<tr data-owner="${e(d.owner)}" data-number="${e(d.number)}"><td><b>${e(d.number)}</b></td><td>${e(d.supplier)}</td><td>${badge(d.status)}</td><td>${e(d.owner)}</td><td><select class="user-role" aria-label="Назначить ответственного для ${e(d.number)}"><option value="">Выберите сотрудника</option>${options.map(u => `<option value="${e(u.username)}">${e(u.username)}</option>`).join("")}</select></td><td><button data-action="reassign-document" data-id="${e(d.id)}" ${options.length ? "" : "disabled"}>Передать</button></td></tr>`;
+        }).join("")}</tbody></table></div>`
+      : '<p class="empty">Накладные не найдены. Измените запрос.</p>';
+    $("#admin-doc-count").textContent = `Показано ${invoices.length} накладных${invoices.length === 100 ? " (первые 100; уточните поиск)" : ""}. Архивные документы тоже учитываются.`;
+  } catch (error) {
+    if ($("#admin-doc-results")) result.textContent = "Не удалось загрузить накладные";
+    toast(error.message);
+  }
+}
+function setupAdminDocumentPanel() {
+  const panel = document.createElement("section");
+  panel.className = "card";
+  panel.dataset.adminPanel = "documents";
+  panel.innerHTML = `<h2>Передать накладную другому сотруднику</h2><p class="muted">Администратор может изменить ответственного, включая архивные накладные. История и полученные КМ сохраняются. Новый сотрудник получит доступ, прежний его потеряет.</p><form id="admin-doc-search-form" class="admin-filter-bar"><label>Поиск накладной, поставщика или владельца<input id="admin-doc-q" type="search" maxlength="120" placeholder="Номер, поставщик или username"></label><button class="primary" type="submit">Найти</button></form><p id="admin-doc-count" class="muted" role="status"></p><div id="admin-doc-results"></div>`;
+  $('[data-admin-panel="users"]').after(panel);
+  $("#admin-doc-search-form").onsubmit = event => {
+    event.preventDefault();
+    void loadAdminDocuments();
+  };
+}
 async function adminPage() {
   registryMode = false;
 
@@ -600,6 +632,7 @@ async function adminPage() {
         "",
       )}<p class="muted">Объединение сохраняет исходные партии, АТК и версии файлов. Новые документы используют единый справочник.</p></div></div><div class="card" data-admin-panel="audit"><h2>Журнал действий</h2><div class="table-wrap"><table><tr><th>Когда</th><th>Username</th><th>Действие</th></tr>${overview.audit.map((a) => `<tr><td>${date(a.created)}</td><td>${e(a.actor)}</td><td>${e(a.action)}</td></tr>`).join("")}</table></div></div>`,
   );
+  setupAdminDocumentPanel();
   organizeAdmin(hb);
   $$(".user-role").forEach(
     (select) =>
@@ -672,6 +705,18 @@ function reasonModal(title, callback) {
 }
 async function action(name, id, b) {
   switch (name) {
+    case "reassign-document": {
+      const row = b.closest("tr");
+      const owner = row?.querySelector("select")?.value;
+      if (!owner) throw new Error("Выберите нового ответственного");
+      const number = row.dataset.number;
+      const previous = row.dataset.owner;
+      if (!confirm("Передать накладную " + number + " от " + previous + " сотруднику " + owner + "?")) break;
+      await api("/admin/documents/" + encodeURIComponent(id) + "/owner", {owner}, "PUT");
+      await loadAdminDocuments();
+      toast("Накладная " + number + " передана сотруднику " + owner);
+      break;
+    }
     case "admin-section":
       selectAdminSection(id, b.dataset.operationFilter);
       break;
