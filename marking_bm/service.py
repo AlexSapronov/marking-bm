@@ -904,6 +904,35 @@ class Service:
                 )
             return batch
 
+    def retry_rejected_report(self, op_id, actor):
+        # A fresh signed operation is safe only after SUZ returned REJECTED.
+        # For uncertain or blocked results, never re-send without reconciliation.
+        with self.store.transaction() as db:
+            op = one(db, "SELECT * FROM operations WHERE id=?", (op_id,))
+            if not op or op["kind"] != "report" or op["state"] != "rejected" or not op["external_id"]:
+                raise Conflict("Повторная отправка разрешена только для отчёта, отклонённого СУЗ")
+            self.require_operation_active(db, op)
+            document = one(db, "SELECT status FROM documents WHERE id=?", (op["doc_id"],))
+            if not document or document["status"] != "reporting":
+                raise Conflict("Накладная уже перешла на другой этап. Проверьте состояние")
+            if one(db, "SELECT id FROM codes WHERE doc_id=? AND external_status='APPLIED' LIMIT 1",
+                   (op["doc_id"],)):
+                raise Conflict("Некоторые КМ уже нанесены в ЧЗ. Требуется сверка")
+            latest = one(
+                db, "SELECT id FROM operations WHERE kind='report' AND doc_id=? "
+                    "ORDER BY rowid DESC LIMIT 1", (op["doc_id"],)
+            )
+            if not latest or latest["id"] != op_id:
+                raise Conflict("Есть более новая попытка отчёта. Обновите страницу")
+            new_id = self.queue(
+                db, "report", "report:retry:" + uid(),
+                json.loads(op["payload"]), op["doc_id"], op["group_id"]
+            )
+            audit(db, actor, "Повторная отправка отклонённого отчёта", op["doc_id"],
+                  {"previous_operation": op_id, "new_operation": new_id,
+                   "external_id": op["external_id"]})
+            return {"id": new_id, "previous_id": op_id, "state": "signing"}
+
     def create_atks(self, db):
         groups = rows(db, "SELECT DISTINCT batch_id,supplier_id FROM batch_docs")
         for g in groups:
