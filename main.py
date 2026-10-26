@@ -697,10 +697,25 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                 and one(db, "SELECT id FROM documents LIMIT 1")
             ):
                 raise Conflict("Нельзя менять организацию при существующих документах")
-            if one(
+            pending = rows(
                 db,
-                "SELECT id FROM operations WHERE state NOT IN ('done','rejected','cancelled') LIMIT 1",
-            ) and any(
+                "SELECT kind,state,external_id FROM operations "
+                "WHERE state NOT IN ('done','rejected','cancelled')",
+            )
+            # Initial setup may follow a premature authorization request.
+            # An auth challenge is not organization-bound before it is dispatched.
+            # Never relax this guard for issued/uncertain requests, other
+            # operation kinds, or later changes to an established organization.
+            initial_auth_only = (
+                not old["inn"]
+                and all(
+                    op["kind"] in ("auth_true", "auth_oms")
+                    and op["state"] in ("signing", "leased", "queued", "blocked")
+                    and not op["external_id"]
+                    for op in pending
+                )
+            )
+            if pending and not initial_auth_only and any(
                 old[k] != body.model_dump()[k]
                 for k in ("inn", "oms_id", "oms_connection")
             ):
