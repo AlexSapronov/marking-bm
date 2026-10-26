@@ -94,3 +94,24 @@ def test_admin_retry_creates_one_new_signed_operation(env):
     assert r.json()["id"] != old["id"]
     assert admin.post(f"/api/admin/operations/{old['id']}/retry", json={}).status_code == 409
     assert service.store.one("SELECT COUNT(*) n FROM operations WHERE kind='report' AND doc_id=?", (doc_id,))["n"] == 2
+
+
+def test_admin_can_retry_only_known_local_failures(env):
+    app, service, registry = env
+    doc_id, old = _rejected_report(env)
+    admin = client(app, "administrator", True)
+    path = f"/api/admin/operations/{old['id']}/retry-local"
+    # Explicit upstream rejections and unknown results cannot be blindly replayed.
+    assert admin.post(path, json={}).status_code == 409
+    with service.store.transaction() as db:
+        db.execute("UPDATE operations SET state='blocked',external_id=NULL,error=? WHERE id=?",
+                   ("ЧЗ: HTTP 403. Проверьте права", old["id"]))
+    assert admin.post(path, json={}).status_code == 409
+    with service.store.transaction() as db:
+        db.execute("UPDATE operations SET error=? WHERE id=?",
+                   ("Обновите доступ к СУЗ в админке", old["id"]))
+    sent = admin.post(path, json={})
+    assert sent.status_code == 200, sent.text
+    assert sent.json()["state"] == "queued"
+    record = service.store.one("SELECT state,external_id,error FROM operations WHERE id=?", (old["id"],))
+    assert record == {"state": "queued", "external_id": None, "error": None}
