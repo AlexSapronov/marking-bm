@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY,kind TEXT NOT NULL,doc
  op_key TEXT NOT NULL UNIQUE,payload TEXT NOT NULL,sha256 TEXT NOT NULL,state TEXT NOT NULL,
  external_id TEXT,result TEXT,signature TEXT,lease TEXT,error TEXT,created TEXT NOT NULL,updated TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS receipts(id INTEGER PRIMARY KEY,op_id TEXT NOT NULL REFERENCES operations(id),body TEXT NOT NULL,created TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS operation_attention(op_id TEXT PRIMARY KEY REFERENCES operations(id),resolved_by TEXT NOT NULL,reason TEXT NOT NULL,resolved_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY,doc_id TEXT,group_id TEXT,version INTEGER NOT NULL,kind TEXT NOT NULL,
  name TEXT NOT NULL,content BLOB NOT NULL,sha256 TEXT NOT NULL,snapshot TEXT NOT NULL,created TEXT NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS doc_artifact ON artifacts(doc_id,version,kind) WHERE doc_id IS NOT NULL;
