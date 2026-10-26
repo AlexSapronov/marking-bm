@@ -882,6 +882,27 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                 raise Conflict("Отчёт не относится к этой накладной")
         return service.retry_rejected_report(op_id, s["username"])
 
+    @app.post("/api/admin/operations/{op_id}/retry-local")
+    def retry_local_failure(op_id: str, s=Depends(admin)):
+        # Only known LOCAL failures are safe to requeue without reconciliation.
+        # In particular, unknown outcomes and HTTP failures are never replayed.
+        with store.transaction() as db:
+            op = one(db, "SELECT * FROM operations WHERE id=?", (op_id,))
+            if not op or op["state"] != "blocked" or op["external_id"]:
+                raise Conflict("Неизвестный либо отправленный результат нельзя повторять без сверки")
+            service.require_operation_active(db, op)
+            reason = op["error"] or ""
+            if not reason.startswith(("Обновите доступ к ГИС МТ",
+                                      "Обновите доступ к СУЗ",
+                                      "Отправка операций отключена администратором сервера")):
+                raise Conflict("Причина отказа не подтверждает отсутствие отправки. Проверьте ЛК ЧЗ")
+            new_state = "queued" if op["signature"] or op["kind"] == "fetch" else "signing"
+            db.execute("UPDATE operations SET state=?,error=NULL,updated=? WHERE id=?",
+                       (new_state, now(), op_id))
+            audit(db, s["username"], "Повторно запущена локально заблокированная операция",
+                  op_id, {"previous_error": reason, "new_state": new_state})
+        return {"ok": True, "state": new_state}
+
     @app.post("/api/admin/operations/{op_id}/retry")
     def admin_retry_report(op_id: str, s=Depends(admin)):
         return service.retry_rejected_report(op_id, s["username"], admin=True)
