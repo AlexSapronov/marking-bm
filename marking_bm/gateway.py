@@ -42,7 +42,7 @@ def report_rejection_message(response):
     details = " ".join(fragments).lower()
     if ("не найдена карточка товара" in details
             or ("буфер для gtin" in details and "нет прав" in details)):
-        gtins = sorted(set(re.findall(r"(?<!\\d)\\d{14}(?!\\d)", details)))[:10]
+        gtins = sorted(set(re.findall(r"(?<!\d)\d{14}(?!\d)", details)))[:10]
         suffix = " GTIN: " + ", ".join(gtins) + "." if gtins else ""
         return (
             "Карточка в Национальном каталоге ещё не готова или нет прав "
