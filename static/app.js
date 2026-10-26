@@ -566,8 +566,13 @@ function renderOperationRow(o) {
   if (!o.stopped && o.kind === "report" && o.state === "rejected" && o.external_id) {
     buttons.push(`<button data-action="retry-report" data-id="${e(o.id)}">Повторить отправку</button>`);
   }
+  if (!o.stopped && o.state === "blocked" && !o.external_id &&
+      ["Обновите доступ к ГИС МТ", "Обновите доступ к СУЗ", "Отправка операций отключена администратором сервера"]
+        .some(text => (o.error || "").startsWith(text))) {
+    buttons.push(`<button data-action="retry-local" data-id="${e(o.id)}">Повторить отправку</button>`);
+  }
   if (!o.stopped && ((o.external_id && ["unknown", "blocked", "submitted"].includes(o.state)) || o.state === "preflight_blocked")) {
-    buttons.push(`<button data-action="check-op" data-id="${e(o.id)}">Проверить состояние</button>`);
+    buttons.push(`<button data-action="check-op" data-id="${e(o.id)}">${o.state === "preflight_blocked" ? "Повторить проверку и отправку" : "Проверить состояние"}</button>`);
   }
   if (!o.stopped && o.state === "unknown" && o.kind === "fetch") {
     buttons.push(`<button data-action="recover-block" data-id="${e(o.id)}">Восстановить блок</button>`);
@@ -933,6 +938,12 @@ async function action(name, id, b) {
       await api("/admin/auth/" + id, {});
       await adminPage();
       toast("Авторизация ожидает подписи на Windows-ПК");
+      break;
+    case "retry-local":
+      if (!confirm("Это локальная ошибка до отправки в ЧЗ. Повторить операцию после исправления подключения?")) break;
+      await api("/admin/operations/" + id + "/retry-local", {});
+      await adminPage();
+      toast("Операция повторно поставлена в очередь");
       break;
     case "retry-report":
       if (!confirm("СУЗ отклонила предыдущий отчёт. Создать новую попытку с повторной подписью на Windows-ПК?")) break;
