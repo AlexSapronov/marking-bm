@@ -602,7 +602,10 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         usage = shutil.disk_usage(settings.data_dir)
         secrets_config = settings.secrets()
         operations = store.all(
-            "SELECT id,kind,doc_id,group_id,state,external_id,error,created,updated FROM operations ORDER BY created DESC LIMIT 200"
+            "SELECT o.id,o.kind,o.doc_id,o.group_id,o.state,o.external_id,o.error,"
+            "o.created,o.updated, a.resolved_at AS attention_resolved_at "
+            "FROM operations o LEFT JOIN operation_attention a ON a.op_id=o.id "
+            "ORDER BY o.created DESC LIMIT 200"
         )
         transformations = store.all(
             "SELECT * FROM transformations ORDER BY created DESC"
@@ -870,12 +873,73 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             audit(db, s["username"], "Запрошена авторизация ЧЗ", op)
         return {"id": op}
 
+    @app.post("/api/documents/{doc_id}/report/{op_id}/retry")
+    def employee_retry_report(doc_id: str, op_id: str, s=Depends(manager)):
+        with store.read() as db:
+            service.document(db, doc_id, s["username"], s["admin"])
+            op = one(db, "SELECT doc_id FROM operations WHERE id=?", (op_id,))
+            if not op or op["doc_id"] != doc_id:
+                raise Conflict("Отчёт не относится к этой накладной")
+        return service.retry_rejected_report(op_id, s["username"])
+
+    @app.post("/api/admin/operations/{op_id}/retry-local")
+    def retry_local_failure(op_id: str, s=Depends(admin)):
+        # Only known LOCAL failures are safe to requeue without reconciliation.
+        # In particular, unknown outcomes and HTTP failures are never replayed.
+        with store.transaction() as db:
+            op = one(db, "SELECT * FROM operations WHERE id=?", (op_id,))
+            if not op or op["state"] != "blocked" or op["external_id"]:
+                raise Conflict("Неизвестный либо отправленный результат нельзя повторять без сверки")
+            service.require_operation_active(db, op)
+            reason = op["error"] or ""
+            if not reason.startswith(("Обновите доступ к ГИС МТ",
+                                      "Обновите доступ к СУЗ",
+                                      "Отправка операций отключена администратором сервера")):
+                raise Conflict("Причина отказа не подтверждает отсутствие отправки. Проверьте ЛК ЧЗ")
+            new_state = "queued" if op["signature"] or op["kind"] == "fetch" else "signing"
+            db.execute("UPDATE operations SET state=?,error=NULL,updated=? WHERE id=?",
+                       (new_state, now(), op_id))
+            audit(db, s["username"], "Повторно запущена локально заблокированная операция",
+                  op_id, {"previous_error": reason, "new_state": new_state})
+        return {"ok": True, "state": new_state}
+
+    @app.post("/api/admin/operations/{op_id}/retry")
+    def admin_retry_report(op_id: str, s=Depends(admin)):
+        return service.retry_rejected_report(op_id, s["username"], admin=True)
+
+    class AttentionBody(BaseModel):
+        resolved: bool
+        reason: str = Field(default="", max_length=500)
+
+    @app.post("/api/admin/operations/{op_id}/attention")
+    def set_attention(op_id: str, body: AttentionBody, s=Depends(admin)):
+        with store.transaction() as db:
+            op = one(db, "SELECT id,kind,state FROM operations WHERE id=?", (op_id,))
+            if not op:
+                raise Conflict("Операция не найдена")
+            if body.resolved:
+                if op["state"] not in ("unknown", "blocked", "preflight_blocked", "rejected"):
+                    raise Conflict("Эта операция не содержит активного предупреждения")
+                db.execute(
+                    "INSERT OR REPLACE INTO operation_attention(op_id,resolved_by,reason,resolved_at) "
+                    "VALUES(?,?,?,?)",
+                    (op_id, s["username"], body.reason.strip() or "Отмечено решённым вручную", now()),
+                )
+            else:
+                db.execute("DELETE FROM operation_attention WHERE op_id=?", (op_id,))
+            audit(db, s["username"],
+                  "Предупреждение скрыто" if body.resolved else "Предупреждение возвращено",
+                  op_id, {"reason": body.reason.strip(), "state": op["state"]})
+        return {"ok": True, "resolved": body.resolved}
+
     @app.post("/api/admin/operations/{op_id}/check")
     def check(op_id: str, s=Depends(admin)):
         op = store.one("SELECT * FROM operations WHERE id=?", (op_id,))
         if op:
             with store.read() as db:
                 service.require_operation_active(db, op)
+        if op and op["kind"] == "report" and op["state"] == "rejected":
+            raise Conflict("СУЗ отклонила отчёт. Используйте «Повторить отправку»")
         if op and op["state"] == "preflight_blocked":
             with store.transaction() as db:
                 db.execute(

@@ -311,7 +311,7 @@ function renderDoc() {
       )
       .join(
         "",
-      )}${doc.status === "receiving" ? '<div class="notice">PDF станет доступен после получения полного комплекта КМ. Повторный заказ не требуется.</div>' : ""}<div class="card"><div class="topbar"><h2>Состав накладной</h2>${editable ? '<div class="actions"><a href="/api/template">Скачать шаблон Excel</a><button data-action="import">Загрузить Excel</button><input type="file" id="excel-file" accept=".xlsx" hidden></div>' : ""}</div><div class="table-wrap"><table><thead><tr><th>PN</th><th>GTIN</th><th>Штук в этикетке</th><th>Этикеток</th><th>ТН ВЭД</th>${editable ? "<th></th>" : ""}</tr></thead><tbody id="edit-rows">${editable ? doc.lines.map(lineRow).join("") : doc.lines.map((l) => `<tr><td>${e(l.pn)}</td><td>${e(l.gtin)}</td><td>${fmt(l.quantity)}</td><td>${fmt(l.labels)}</td><td>${e(l.tnved)}</td></tr>`).join("")}</tbody></table></div>${editable ? '<div class="actions"><button data-action="add-line">+ Добавить строку</button><button data-action="save-lines">Проверить и сохранить состав</button></div>' : ""}<div class="actions">${doc.status === "draft" ? '<button class="primary" data-action="order">Заказать КМ</button>' : ""}${currentFile && doc.codes.length === doc.required && !["repack", "receiving"].includes(doc.status) ? `<a class="button primary" href="/api/files/${e(currentFile.id)}">↓ Скачать ZIP с этикетками · v${doc.current_version}</a>` : ""}${["ready", "transferred"].includes(doc.status) ? `<button class="primary" data-action="transfer">${doc.status === "transferred" ? "Повторно отметить передачу" : "Передано поставщику"}</button>` : ""}${doc.status === "transferred" ? '<button class="primary" data-action="report">Подтвердить нанесение и сформировать АТК</button>' : ""}${!doc.stopped && ["done", "archive", "reported"].includes(doc.status) ? '<button data-action="supplement">Создать дополнение</button>' : ""}${!doc.stopped ? '<button class="danger" data-action="stop-document">Остановить и архивировать</button>' : ""}${user.admin && doc.status === "archive" ? '<button data-action="restore-document">Вернуть из архива</button>' : ""}<button data-action="refresh-doc">Обновить состояние</button></div></div>${doc.atks.length ? `<div class="card"><h2>Таможенные коды</h2>${doc.atks.map((a) => `<div class="toolbar"><span>ТН ВЭД <b>${e(a.tnved)}</b> · ${a.code ? e(a.code) : "Ожидает формирования"}</span>${a.state === "done" ? `<button data-action="atk" data-id="${e(a.id)}">Состав и трансформации</button>` : badge(a.state)}</div>`).join("")}<div class="files">${doc.exports.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div></div>` : ""}<div class="split"><div class="card"><h2>Обработка</h2>${doc.operations.length ? doc.operations.map((o) => `<div class="history"><b>${e(kinds[o.kind])}</b>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)} <span class="muted">${date(o.updated)}</span></div>`).join("") : '<p class="muted">Внешние операции ещё не запускались.</p>'}<details><summary>История файлов и прежние версии</summary><p class="muted">Скачанные поставщиком старые этикетки технически отозвать нельзя.</p><div class="files">${doc.artifacts.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · ${e(f.kind === "source" ? "Исходный Excel" : "v" + f.version)}</a>`).join("")}</div></details></div><div class="card"><h2>История документа</h2>${doc.history.map((h) => `<div class="history"><b>${e(h.action)}</b><span class="muted">${date(h.created)} · ${e(h.actor)}</span></div>`).join("")}</div></div>`,
+      )}${doc.status === "receiving" ? '<div class="notice">PDF станет доступен после получения полного комплекта КМ. Повторный заказ не требуется.</div>' : ""}<div class="card"><div class="topbar"><h2>Состав накладной</h2>${editable ? '<div class="actions"><a href="/api/template">Скачать шаблон Excel</a><button data-action="import">Загрузить Excel</button><input type="file" id="excel-file" accept=".xlsx" hidden></div>' : ""}</div><div class="table-wrap"><table><thead><tr><th>PN</th><th>GTIN</th><th>Штук в этикетке</th><th>Этикеток</th><th>ТН ВЭД</th>${editable ? "<th></th>" : ""}</tr></thead><tbody id="edit-rows">${editable ? doc.lines.map(lineRow).join("") : doc.lines.map((l) => `<tr><td>${e(l.pn)}</td><td>${e(l.gtin)}</td><td>${fmt(l.quantity)}</td><td>${fmt(l.labels)}</td><td>${e(l.tnved)}</td></tr>`).join("")}</tbody></table></div>${editable ? '<div class="actions"><button data-action="add-line">+ Добавить строку</button><button data-action="save-lines">Проверить и сохранить состав</button></div>' : ""}<div class="actions">${doc.status === "draft" ? '<button class="primary" data-action="order">Заказать КМ</button>' : ""}${currentFile && doc.codes.length === doc.required && !["repack", "receiving"].includes(doc.status) ? `<a class="button primary" href="/api/files/${e(currentFile.id)}">↓ Скачать ZIP с этикетками · v${doc.current_version}</a>` : ""}${["ready", "transferred"].includes(doc.status) ? `<button class="primary" data-action="transfer">${doc.status === "transferred" ? "Повторно отметить передачу" : "Передано поставщику"}</button>` : ""}${doc.status === "transferred" ? '<button class="primary" data-action="report">Подтвердить нанесение и сформировать АТК</button>' : ""}${!doc.stopped && ["done", "archive", "reported"].includes(doc.status) ? '<button data-action="supplement">Создать дополнение</button>' : ""}${!doc.stopped ? '<button class="danger" data-action="stop-document">Остановить и архивировать</button>' : ""}${user.admin && doc.status === "archive" ? '<button data-action="restore-document">Вернуть из архива</button>' : ""}<button data-action="refresh-doc">Обновить состояние</button></div></div>${doc.atks.length ? `<div class="card"><h2>Таможенные коды</h2>${doc.atks.map((a) => `<div class="toolbar"><span>ТН ВЭД <b>${e(a.tnved)}</b> · ${a.code ? e(a.code) : "Ожидает формирования"}</span>${a.state === "done" ? `<button data-action="atk" data-id="${e(a.id)}">Состав и трансформации</button>` : badge(a.state)}</div>`).join("")}<div class="files">${doc.exports.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div></div>` : ""}<div class="split"><div class="card"><h2>Обработка</h2>${doc.operations.length ? doc.operations.map((o) => `<div class="history"><b>${e(kinds[o.kind])}</b>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)} <span class="muted">${date(o.updated)}</span>${!o.stopped && o.kind === "report" && o.state === "rejected" ? `<div class="actions"><button class="primary" data-action="retry-report-doc" data-id="${e(o.id)}">Повторить отправку отчёта</button></div>` : ""}</div>`).join("") : '<p class="muted">Внешние операции ещё не запускались.</p>'}<details><summary>История файлов и прежние версии</summary><p class="muted">Скачанные поставщиком старые этикетки технически отозвать нельзя.</p><div class="files">${doc.artifacts.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · ${e(f.kind === "source" ? "Исходный Excel" : "v" + f.version)}</a>`).join("")}</div></details></div><div class="card"><h2>История документа</h2>${doc.history.map((h) => `<div class="history"><b>${e(h.action)}</b><span class="muted">${date(h.created)} · ${e(h.actor)}</span></div>`).join("")}</div></div>`,
   );
   organizeDocument(editable);
   if (editable) {
@@ -559,6 +559,32 @@ async function transformModal(id, kind) {
     }
   };
 }
+function renderOperationRow(o) {
+  const attention = ["unknown", "blocked", "preflight_blocked", "rejected"].includes(o.state);
+  const resolved = Boolean(o.attention_resolved_at);
+  const buttons = [];
+  if (!o.stopped && o.kind === "report" && o.state === "rejected" && o.external_id) {
+    buttons.push(`<button data-action="retry-report" data-id="${e(o.id)}">Повторить отправку</button>`);
+  }
+  if (!o.stopped && o.state === "blocked" && !o.external_id &&
+      ["Обновите доступ к ГИС МТ", "Обновите доступ к СУЗ", "Отправка операций отключена администратором сервера"]
+        .some(text => (o.error || "").startsWith(text))) {
+    buttons.push(`<button data-action="retry-local" data-id="${e(o.id)}">Повторить отправку</button>`);
+  }
+  if (!o.stopped && ((o.external_id && ["unknown", "blocked", "submitted"].includes(o.state)) || o.state === "preflight_blocked")) {
+    buttons.push(`<button data-action="check-op" data-id="${e(o.id)}">${o.state === "preflight_blocked" ? "Повторить проверку и отправку" : "Проверить состояние"}</button>`);
+  }
+  if (!o.stopped && o.state === "unknown" && o.kind === "fetch") {
+    buttons.push(`<button data-action="recover-block" data-id="${e(o.id)}">Восстановить блок</button>`);
+  }
+  if (!o.stopped && !o.external_id && o.state === "unknown" && o.kind !== "fetch") {
+    buttons.push(`<button data-action="reconcile-op" data-id="${e(o.id)}">Указать ID после сверки ЛК</button>`);
+  }
+  if (attention) {
+    buttons.push(`<button data-action="${resolved ? "unresolve-op" : "resolve-op"}" data-id="${e(o.id)}">${resolved ? "Вернуть предупреждение" : "Скрыть предупреждение"}</button>`);
+  }
+  return `<tr><td>${e(kinds[o.kind])}<br><span class="muted">${date(o.created)}</span></td><td>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)}${resolved ? '<span class="cell-sub">Предупреждение скрыто</span>' : ""}</td><td class="mono">${e(o.external_id || "—")}</td><td class="filename">${e(o.error || "")}</td><td><div class="download-actions">${buttons.join("")}</div></td></tr>`;
+}
 async function loadAdminDocuments() {
   const result = $("#admin-doc-results");
   if (!result || !user?.admin) return;
@@ -622,7 +648,7 @@ async function adminPage() {
       )
       .join(
         "",
-      )}<label>Шаблон кода<select name="template_id"><option value="36" ${c.template_id === 36 ? "selected" : ""}>36 · стандартный</option><option value="37" ${c.template_id === 37 ? "selected" : ""}>37 · укороченный</option></select></label></div><div class="actions"><button class="primary">Сохранить настройки</button></div></form></div><div class="card" data-admin-panel="operations"><h2>Очередь подписи и внешних операций</h2><div class="table-wrap"><table><tr><th>Операция</th><th>Состояние</th><th>Внешний ID</th><th>Пояснение</th><th></th></tr>${overview.operations.map((o) => `<tr><td>${e(kinds[o.kind])}<br><span class="muted">${date(o.created)}</span></td><td>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)}</td><td class="mono">${e(o.external_id || "—")}</td><td class="filename">${e(o.error || "")}</td><td>${!o.stopped && ((o.external_id && ["unknown", "blocked", "submitted"].includes(o.state)) || o.state === "preflight_blocked") ? `<button data-action="check-op" data-id="${e(o.id)}">Проверить состояние</button>` : ""}${!o.stopped && o.state === "unknown" && o.kind === "fetch" ? `<button data-action="recover-block" data-id="${e(o.id)}">Восстановить конкретный блок</button>` : ""}${!o.stopped && !o.external_id && o.state === "unknown" && o.kind !== "fetch" ? `<button data-action="reconcile-op" data-id="${e(o.id)}">Указать ID после сверки ЛК</button>` : ""}</td></tr>`).join("")}</table></div></div><div class="card" data-admin-panel="approvals"><h2>Заявки на трансформацию АТК</h2>${overview.transformations.length ? overview.transformations.map((t) => `<div class="history"><b>${t.kind === "ADDING" ? "Добавить" : "Изъять"} КМ · ${e(t.actor)}</b>${t.stopped ? badge("cancelled") : badge(t.state)} · ${date(t.created)}<div class="mono">ID заявки: ${e(t.id)}<br>КМ: ${e(JSON.parse(t.code_ids).join(", "))}</div>${t.state === "approval" && !t.stopped ? `<div class="actions"><button data-action="review" data-id="${e(t.id)}">Рассмотреть состав и принять решение</button></div>` : ""}</div>`).join("") : '<p class="muted">Нет заявок.</p>'}</div><div class="split"><div class="card" data-admin-panel="catalog"><h2>Общий пул кодов</h2><table><tr><th>GTIN</th><th>Статус ЧЗ</th><th>Состояние</th><th>КМ</th></tr>${overview.pool.map((p) => `<tr><td>${e(p.gtin)}</td><td>${e(p.external_status)}</td><td>${e(states[p.local_state] || p.local_state)}</td><td>${fmt(p.count)}</td></tr>`).join("")}</table><details><summary>Исправить привязку ТН ВЭД</summary><form id="catalog-form"><div class="fields"><label>GTIN<input name="gtin" required></label><label>ТН ВЭД<input name="tnved" required></label><label class="full">Причина<input name="reason" required></label></div><div class="actions"><button>Исправить справочник</button></div></form><p class="muted">Исторические документы остаются без изменений.</p></details>${overview.removed.map((c) => `<p class="mono">${e(c.cis)} <button data-action="allow-reuse" data-id="${e(c.id)}">Разрешить подбор в новый АТК</button></p>`).join("")}</div><div class="card" data-admin-panel="suppliers"><h2>Поставщики</h2>${overview.suppliers
+      )}<label>Шаблон кода<select name="template_id"><option value="36" ${c.template_id === 36 ? "selected" : ""}>36 · стандартный</option><option value="37" ${c.template_id === 37 ? "selected" : ""}>37 · укороченный</option></select></label></div><div class="actions"><button class="primary">Сохранить настройки</button></div></form></div><div class="card" data-admin-panel="operations"><h2>Очередь подписи и внешних операций</h2><div class="table-wrap"><table><tr><th>Операция</th><th>Состояние</th><th>Внешний ID</th><th>Пояснение</th><th></th></tr>${overview.operations.map(renderOperationRow).join("")}</table></div></div><div class="card" data-admin-panel="approvals"><h2>Заявки на трансформацию АТК</h2>${overview.transformations.length ? overview.transformations.map((t) => `<div class="history"><b>${t.kind === "ADDING" ? "Добавить" : "Изъять"} КМ · ${e(t.actor)}</b>${t.stopped ? badge("cancelled") : badge(t.state)} · ${date(t.created)}<div class="mono">ID заявки: ${e(t.id)}<br>КМ: ${e(JSON.parse(t.code_ids).join(", "))}</div>${t.state === "approval" && !t.stopped ? `<div class="actions"><button data-action="review" data-id="${e(t.id)}">Рассмотреть состав и принять решение</button></div>` : ""}</div>`).join("") : '<p class="muted">Нет заявок.</p>'}</div><div class="split"><div class="card" data-admin-panel="catalog"><h2>Общий пул кодов</h2><table><tr><th>GTIN</th><th>Статус ЧЗ</th><th>Состояние</th><th>КМ</th></tr>${overview.pool.map((p) => `<tr><td>${e(p.gtin)}</td><td>${e(p.external_status)}</td><td>${e(states[p.local_state] || p.local_state)}</td><td>${fmt(p.count)}</td></tr>`).join("")}</table><details><summary>Исправить привязку ТН ВЭД</summary><form id="catalog-form"><div class="fields"><label>GTIN<input name="gtin" required></label><label>ТН ВЭД<input name="tnved" required></label><label class="full">Причина<input name="reason" required></label></div><div class="actions"><button>Исправить справочник</button></div></form><p class="muted">Исторические документы остаются без изменений.</p></details>${overview.removed.map((c) => `<p class="mono">${e(c.cis)} <button data-action="allow-reuse" data-id="${e(c.id)}">Разрешить подбор в новый АТК</button></p>`).join("")}</div><div class="card" data-admin-panel="suppliers"><h2>Поставщики</h2>${overview.suppliers
       .filter((s) => !s.merged_into)
       .map(
         (s) =>
@@ -912,6 +938,37 @@ async function action(name, id, b) {
       await api("/admin/auth/" + id, {});
       await adminPage();
       toast("Авторизация ожидает подписи на Windows-ПК");
+      break;
+    case "retry-local":
+      if (!confirm("Это локальная ошибка до отправки в ЧЗ. Повторить операцию после исправления подключения?")) break;
+      await api("/admin/operations/" + id + "/retry-local", {});
+      await adminPage();
+      toast("Операция повторно поставлена в очередь");
+      break;
+    case "retry-report":
+      if (!confirm("СУЗ отклонила предыдущий отчёт. Создать новую попытку с повторной подписью на Windows-ПК?")) break;
+      await api("/admin/operations/" + id + "/retry", {});
+      await adminPage();
+      toast("Новый отчёт ожидает подписи на Windows-ПК");
+      break;
+    case "retry-report-doc":
+      if (!confirm("СУЗ отклонила отчёт. Отправить его повторно после проверки карточек в НК?")) break;
+      await api("/documents/" + encodeURIComponent(doc.id) + "/report/" + encodeURIComponent(id) + "/retry", {});
+      await open(doc.id);
+      toast("Повторная отправка ожидает подписи на Windows-ПК");
+      break;
+    case "resolve-op": {
+      const reason = prompt("Причина скрытия предупреждения (операция в ЧЗ останется без изменений):", "Рассмотрено администратором");
+      if (reason === null) break;
+      await api("/admin/operations/" + id + "/attention", {resolved: true, reason});
+      await adminPage();
+      toast("Предупреждение скрыто. История операции сохранена");
+      break;
+    }
+    case "unresolve-op":
+      await api("/admin/operations/" + id + "/attention", {resolved: false});
+      await adminPage();
+      toast("Предупреждение возвращено в список");
       break;
     case "check-op":
       await api("/admin/operations/" + id + "/check", {});
