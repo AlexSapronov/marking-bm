@@ -904,7 +904,7 @@ class Service:
                 )
             return batch
 
-    def retry_rejected_report(self, op_id, actor):
+    def retry_rejected_report(self, op_id, actor, admin=False):
         # A fresh signed operation is safe only after SUZ returned REJECTED.
         # For uncertain or blocked results, never re-send without reconciliation.
         with self.store.transaction() as db:
@@ -912,8 +912,10 @@ class Service:
             if not op or op["kind"] != "report" or op["state"] != "rejected" or not op["external_id"]:
                 raise Conflict("Повторная отправка разрешена только для отчёта, отклонённого СУЗ")
             self.require_operation_active(db, op)
-            document = one(db, "SELECT status FROM documents WHERE id=?", (op["doc_id"],))
-            if not document or document["status"] != "reporting":
+            document = one(db, "SELECT status,owner FROM documents WHERE id=?", (op["doc_id"],))
+            if not document or (not admin and document["owner"] != actor):
+                raise PermissionError("Документ недоступен")
+            if document["status"] != "reporting":
                 raise Conflict("Накладная уже перешла на другой этап. Проверьте состояние")
             if one(db, "SELECT id FROM codes WHERE doc_id=? AND external_status='APPLIED' LIMIT 1",
                    (op["doc_id"],)):
