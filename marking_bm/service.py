@@ -1175,6 +1175,12 @@ class Service:
             )
             if len(codes) != sum(l["labels"] for l in lines):
                 raise Conflict("Количество КМ не совпадает с составом одной из накладных")
+            active_count = one(
+                db, "SELECT COUNT(*) n FROM assignments "
+                    "WHERE doc_id=? AND active=1", (document["id"],)
+            )["n"]
+            if active_count != len(codes):
+                raise Conflict("В накладной найдены лишние или отсутствующие назначения КМ")
             by_tuple = Counter(self._line_key(c) for c in codes)
             lines_by_tuple = Counter()
             for l in lines:
