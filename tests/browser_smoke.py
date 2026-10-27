@@ -358,6 +358,14 @@ with tempfile.TemporaryDirectory() as tmp:
             assert page.get_by_role("button", name="Накладные", exact=True).count() == 0
             assert page.get_by_role("button", name="+ Новая накладная").count() == 0
             assert page.locator("#atk-table").count() == 1
+            expect(page.locator(".registry-supplier-row")).to_have_count(1)
+            expect(page.get_by_role("columnheader", name="Следующее действие")).to_be_visible()
+            expect(page.locator("#registry-selection-summary")).to_contain_text("Выберите готовые АТК")
+            page.locator(".atk-select").check()
+            expect(page.locator("#registry-selection-summary")).to_contain_text("1 уникальных комплектов")
+            expect(page.locator("#registry-selection-summary")).to_contain_text("2 файлов Excel")
+            expect(page.locator("#registry-selection-summary")).to_contain_text("LOGISTICS-READY")
+            page.locator(".atk-select").uncheck()
             expect(page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
             expect(page.get_by_role("button", name="Завершить накладную", exact=True)).to_be_visible()
             expect(page.get_by_role("button", name="Завершить накладную", exact=True)).to_be_in_viewport(ratio=1)
@@ -383,18 +391,18 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("button", name="Завершить накладную", exact=True).click()
             page.locator('#modal [data-action="logistics-complete"]').click()
             page.get_by_role("button", name="Отмена", exact=True).click()
-            expect(page.locator('#atk-table tbody tr')).to_have_count(1)
+            expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row)')).to_have_count(1)
             page.get_by_role("button", name="Завершить накладную", exact=True).click()
             page.locator('#modal [data-action="logistics-complete"]').click()
             page.locator('#modal [data-action="confirm-logistics-complete"]').click()
-            expect(page.locator('#atk-table tbody tr')).to_have_count(0)
+            expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row)')).to_have_count(0)
             page.locator("#atk-archive").check()
-            expect(page.locator('#atk-table tbody tr')).to_have_count(1)
+            expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row)')).to_have_count(1)
             expect(page.locator('#atk-table')).to_contain_text("LOGISTICS-READY")
             expect(page.get_by_role("button", name="Завершить накладную", exact=True)).to_have_count(0)
             page.reload()
             # Archive choice is an in-session filter; the completed invoice stays out of work.
-            expect(page.locator('#atk-table tbody tr')).to_have_count(0)
+            expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row)')).to_have_count(0)
             page.get_by_role("button", name="Выйти", exact=True).click()
             page.get_by_role("button", name="Первый вход / сброс пароля").click()
             page.locator("#login-value").fill("smoke-user")
@@ -434,6 +442,9 @@ with tempfile.TemporaryDirectory() as tmp:
             page.locator('#move-lines-form select[name="target"]').select_option(move_target)
             page.get_by_role("button", name="Проверить перенос").click()
             expect(page.get_by_role("heading", name="Подтвердить перенос")).to_be_visible()
+            expect(page.locator(".move-impact-grid")).to_contain_text("Источник")
+            expect(page.locator(".move-impact-grid")).to_contain_text("Получатель")
+            expect(page.locator(".move-impact-grid")).to_contain_text("Единицы товара")
             # Browser smoke intentionally has no True API credentials. Route
             # this *single* mutating request to the fixture with a mocked,
             # read-only True API gateway; all other UI calls use real FastAPI.
