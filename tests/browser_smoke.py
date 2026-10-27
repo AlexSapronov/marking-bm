@@ -399,6 +399,10 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("button", name="Проверить перенос").click()
             expect(page.get_by_role("heading", name="Подтвердить перенос")).to_be_visible()
             page.locator("#confirm-move-lines").click()
+            page.wait_for_timeout(1200)
+            assert test_service.get(move_source, "smoke-user")["status"] == "draft", (
+                page.locator("#toast").inner_text(), errors
+            )
             page.get_by_role("heading", name="Накладная MOVE-READY").wait_for()
             expect(page.locator('[data-action="move-lines"]')).to_have_count(0)
             assert test_service.get(move_target, "smoke-user")["status"] == "ready"
