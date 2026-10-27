@@ -877,8 +877,9 @@ async function batchModal(ids) {
     throw new Error("Состав выбранных накладных изменился. Обновите реестр и повторите выбор");
   }
   if (!ids.length) throw new Error("Выберите накладные");
+  const single = ids.length === 1;
   modal(
-    `<h2>Подтвердить нанесение и создать отчёты</h2><p>Поставщик подтвердил нанесение актуальных этикеток по выбранным накладным (${ids.length}). По каждой накладной будет отправлен отдельный отчёт, затем сформированы АТК.</p><p class="muted">КПП и ФИАС места деятельности будут взяты из настроек организации в админке.</p><details open><summary>Накладные, которые будут обработаны: ${ids.length}</summary><div class="batch-preview">${selected.map(d => `<div><b>${e(d.number)}</b><span class="muted">${e(d.supplier)}</span></div>`).join("")}</div></details><form id="report-form"><label>Дата производства<input id="production-date" type="date" required></label><div class="actions"><button class="primary">Подтвердить и поставить отчёты в очередь подписи</button><button type="button" data-action="close">Отмена</button></div></form>`,
+    `<h2>${single ? "Подтвердить нанесение и создать отчёт" : "Подтвердить нанесение и создать отчёты"}</h2><p>Поставщик подтвердил нанесение актуальных этикеток по выбранным накладным (${ids.length}). По каждой накладной будет отправлен отдельный отчёт, затем сформированы АТК.</p><p class="muted">КПП и ФИАС места деятельности будут взяты из настроек организации в админке.</p><details open><summary>Накладные, которые будут обработаны: ${ids.length}</summary><div class="batch-preview">${selected.map(d => `<div><b>${e(d.number)}</b><span class="muted">${e(d.supplier)}</span></div>`).join("")}</div></details><form id="report-form"><label>Дата производства<input id="production-date" type="date" required></label><div class="actions"><button class="primary">${single ? "Подтвердить и поставить отчёт в очередь подписи" : "Подтвердить и поставить отчёты в очередь подписи"}</button><button type="button" data-action="close">Отмена</button></div></form>`,
   );
   $("#report-form").onsubmit = async (ev) => {
     ev.preventDefault();
