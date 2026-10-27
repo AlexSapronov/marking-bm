@@ -117,7 +117,7 @@ with tempfile.TemporaryDirectory() as tmp:
             assert page.locator("#new-supplier").get_attribute("role") == "combobox"
             assert page.locator("#new-supplier").get_attribute("list") is None
             page.locator("#new-supplier").fill("smoke")
-            expect(page.get_by_role("option", name="Поставщик smoke")).to_be_visible()
+            expect(page.locator("#modal .supplier-picker-option", has_text="Поставщик smoke")).to_be_visible()
             page.locator("#new-supplier").press("ArrowDown")
             page.locator("#new-supplier").press("Enter")
             expect(page.locator("#new-supplier")).to_have_value("Поставщик smoke")
