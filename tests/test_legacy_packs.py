@@ -368,3 +368,158 @@ def test_mixed_legacy_file_with_ai30_and_no_ai30_passes_server_preview(env):
     assert len(imported_codes) == 5
     assert sum(c["quantity"] for c in imported_codes) == 19000
     assert all(parse(c["raw"]).quantity is None for c in imported_codes)
+
+
+def test_archived_invoice_may_be_imported_again_without_duplicate_cis(env):
+    app, service, registry = env
+    admin = client(app, "administrator", True)
+    source = make_rows(3)
+    register_legacy(registry, source)
+    content = make_xlsx(source)
+    data = {"supplier": "Legacy", "owner": "alice"}
+    first = admin.post(
+        "/api/admin/legacy/import",
+        files={"file": ("result_REUSED.xlsx", content)}, data=data
+    )
+    assert first.status_code == 200, first.text
+    original_id = first.json()["id"]
+    before = service.store.all("SELECT id,cis FROM codes WHERE doc_id=?", (original_id,))
+    old_ids = {row["id"] for row in before}
+    assert len(old_ids) == 3
+    service.stop_document(original_id, "REUSED", "alice")
+    assert service.get(original_id, "alice")["status"] == "archive"
+    preview = admin.post(
+        "/api/admin/legacy/preview",
+        files={"file": ("result_REUSED.xlsx", content)}
+    )
+    assert preview.status_code == 200, preview.text
+    summary = preview.json()
+    assert not summary["duplicate_invoice"]
+    assert summary["archived_codes"] == 3
+    assert summary["blocked_codes"] == 0
+    assert summary["verification"]["allowed"]
+    second = admin.post(
+        "/api/admin/legacy/import",
+        files={"file": ("result_REUSED.xlsx", content)}, data=data
+    )
+    assert second.status_code == 200, second.text
+    new_id = second.json()["id"]
+    assert new_id != original_id
+    assert service.get(new_id, "alice")["status"] == "transferred"
+    assert service.get(original_id, "alice")["status"] == "archive"
+    new_ids = {x["id"] for x in service.store.all(
+        "SELECT id FROM codes WHERE doc_id=?", (new_id,)
+    )}
+    assert old_ids == new_ids
+    assert service.store.one("SELECT COUNT(*) n FROM codes")["n"] == 3
+    assert service.store.one(
+        "SELECT COUNT(*) n FROM assignments WHERE active=1"
+    )["n"] == 3
+    assert service.store.one(
+        "SELECT COUNT(*) n FROM assignments WHERE active=0 AND doc_id=?", (original_id,)
+    )["n"] == 3
+    assert service.store.one(
+        "SELECT COUNT(*) n FROM artifacts WHERE kind='source'"
+    )["n"] == 2
+    assert service.store.one(
+        "SELECT COUNT(*) n FROM audit WHERE entity=? AND action=?",
+        (original_id, "КМ перенесены из архивной накладной"),
+    )["n"] == 1
+    assert admin.post(
+        "/api/admin/documents/" + original_id + "/restore",
+        json={"reason": "Проверка возврата"},
+    ).status_code == 409
+    assert not registry.orders
+
+
+def test_archived_code_transfer_denied_if_old_report_exists(env):
+    app, service, registry = env
+    admin = client(app, "administrator", True)
+    source = make_rows(1)
+    register_legacy(registry, source)
+    content = make_xlsx(source)
+    data = {"supplier": "Legacy", "owner": "alice"}
+    first = admin.post(
+        "/api/admin/legacy/import",
+        files={"file": ("result_REPORTED.xlsx", content)}, data=data
+    )
+    assert first.status_code == 200, first.text
+    old_id = first.json()["id"]
+    with service.store.transaction() as db:
+        # A past report makes it unsafe to transfer the old code.
+        service.queue(db, "report", "fake:report:once", {"sntins":[]}, doc_id=old_id)
+    service.stop_document(old_id, "REPORTED", "alice")
+    preview = admin.post(
+        "/api/admin/legacy/preview",
+        files={"file": ("result_REPORTED.xlsx", content)}
+    )
+    assert preview.status_code == 200
+    assert preview.json()["archived_codes"] == 0
+    assert preview.json()["blocked_codes"] == 1
+    response = admin.post(
+        "/api/admin/legacy/import",
+        files={"file": ("result_REPORTED.xlsx", content)}, data=data
+    )
+    assert response.status_code == 409
+    assert service.store.one(
+        "SELECT COUNT(*) n FROM documents WHERE number='REPORTED'"
+    )["n"] == 1
+    assert service.store.one(
+        "SELECT COUNT(*) n FROM assignments WHERE active=1"
+    )["n"] == 1
+
+
+def test_active_invoice_codes_cannot_be_imported_again(env):
+    app, service, registry = env
+    admin = client(app, "administrator", True)
+    source = make_rows(1)
+    register_legacy(registry, source)
+    content = make_xlsx(source)
+    data = {"supplier": "Legacy", "owner": "alice"}
+    first = admin.post(
+        "/api/admin/legacy/import",
+        files={"file": ("result_ACTIVE.xlsx", content)}, data=data
+    )
+    assert first.status_code == 200
+    preview = admin.post(
+        "/api/admin/legacy/preview",
+        files={"file": ("result_OTHER.xlsx", content)}
+    )
+    assert preview.status_code == 200
+    assert preview.json()["blocked_codes"] == 1
+    denied = admin.post(
+        "/api/admin/legacy/import",
+        files={"file": ("result_OTHER.xlsx", content)}, data=data
+    )
+    assert denied.status_code == 409
+    assert service.store.one("SELECT COUNT(*) n FROM codes")["n"] == 1
+
+
+def test_archived_code_with_applied_local_status_cannot_move(env):
+    app, service, registry = env
+    admin = client(app, "administrator", True)
+    source = make_rows(1)
+    register_legacy(registry, source)
+    content = make_xlsx(source)
+    data = {"supplier": "Legacy", "owner": "alice"}
+    first = admin.post(
+        "/api/admin/legacy/import",
+        files={"file": ("result_APPLIED.xlsx", content)}, data=data
+    )
+    assert first.status_code == 200
+    old_id = first.json()["id"]
+    service.stop_document(old_id, "APPLIED", "alice")
+    with service.store.transaction() as db:
+        db.execute("UPDATE codes SET external_status='APPLIED' WHERE doc_id=?", (old_id,))
+    preview = admin.post(
+        "/api/admin/legacy/preview",
+        files={"file": ("result_APPLIED.xlsx", content)}
+    )
+    assert preview.status_code == 200
+    assert preview.json()["archived_codes"] == 0
+    assert preview.json()["blocked_codes"] == 1
+    denied = admin.post(
+        "/api/admin/legacy/import",
+        files={"file": ("result_APPLIED.xlsx", content)}, data=data
+    )
+    assert denied.status_code == 409

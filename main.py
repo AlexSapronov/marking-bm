@@ -457,15 +457,17 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
     async def legacy_preview(file: UploadFile = File(...), s=Depends(admin)):
         content = await file.read(10 * 1024 * 1024 + 1)
         parsed = parse_legacy_pack(content, file.filename)
-        conflict = store.one(
-            "SELECT id FROM documents WHERE number=? COLLATE NOCASE", (parsed["number"],)
-        )
+        with store.read() as db:
+            archive = service.legacy_archive_candidates(db, parsed)
         # Read-only True API verification is mandatory even for preview.
         verification = service.check_legacy_codes(parsed)
         return {
             "number": parsed["number"], "codes": parsed["codes_count"],
             "units": parsed["units"], "lines": parsed["lines"],
-            "duplicate_invoice": bool(conflict),
+            "duplicate_invoice": archive["duplicate_invoice"],
+            "archived_codes": archive["archived_codes"],
+            "blocked_codes": archive["blocked_codes"],
+            "blocked_examples": archive["blocked_examples"],
             "verification": verification,
         }
 
