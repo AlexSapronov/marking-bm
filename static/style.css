@@ -353,6 +353,11 @@ td button {
   border-radius: 6px;
   font-weight: 650;
 }
+.badge.logistics {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: var(--warn-border);
+}
 .badge.ready,
 .badge.done {
   background: var(--ok-bg);
