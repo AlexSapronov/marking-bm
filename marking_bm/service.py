@@ -1025,7 +1025,7 @@ class Service:
         )
         return i
 
-    def prepare_labels(self, db, doc_id):
+    def prepare_labels(self, db, doc_id, *, exact_assignments=False):
         if self.document_stopped(db, doc_id):
             return
         d = one(db, "SELECT * FROM documents WHERE id=?", (doc_id,))
@@ -1037,14 +1037,24 @@ class Service:
             raise Conflict("Статус КМ не EMITTED")
         buckets = defaultdict(list)
         for c in cs:
-            buckets[c["gtin"]].append(c)
+            key = (
+                (c["pn"], c["gtin"], c["quantity"], c["tnved"])
+                if exact_assignments else c["gtin"]
+            )
+            buckets[key].append(c)
         snapshot = []
         files = {}
         used = set()
         for l in ls:
             writer = PdfWriter()
             for _ in range(l["labels"]):
-                c = buckets[l["gtin"]].pop(0)
+                key = (
+                    (l["pn"], l["gtin"], l["quantity"], l["tnved"])
+                    if exact_assignments else l["gtin"]
+                )
+                if not buckets[key]:
+                    raise Conflict("КМ не соответствуют строкам накладной. Формирование этикеток отменено")
+                c = buckets[key].pop(0)
                 full = with_quantity(c["raw"], l["quantity"])
                 writer.add_page(
                     PdfReader(
@@ -1105,6 +1115,238 @@ class Service:
             doc_id,
             {"version": version, "labels": len(snapshot)},
         )
+
+    @staticmethod
+    def _line_key(item):
+        return (item["pn"], item["gtin"], item["quantity"], item["tnved"])
+
+    def move_line_targets(self, source_id, actor, admin=False):
+        with self.store.read() as db:
+            src = self.document(db, source_id, actor, admin)
+            query = (
+                "SELECT d.id,d.number,d.status,d.owner,d.revision FROM documents d "
+                "WHERE d.supplier_id=? AND d.id!=? AND d.status IN "
+                "('draft','ready','transferred') ORDER BY d.number,d.id"
+            )
+            candidates = rows(db, query, (src["supplier_id"], source_id))
+            if not admin:
+                candidates = [d for d in candidates if d["owner"] == actor]
+            return candidates
+
+    def _line_move_plan(self, db, source_id, target_id, line_ids, actor, admin):
+        if source_id == target_id or not line_ids or len(line_ids) != len(set(line_ids)):
+            raise ValueError("Выберите строки и другую накладную-получатель")
+        if len(line_ids) > 500:
+            raise ValueError("За один перенос можно выбрать до 500 строк")
+        src = self.document(db, source_id, actor, admin)
+        dst = self.document(db, target_id, actor, admin)
+        if src["supplier_id"] != dst["supplier_id"]:
+            raise Conflict("Перенос допускается только между накладными одного поставщика")
+        if src["parent_id"] or dst["parent_id"]:
+            raise Conflict("Дополнения к накладным требуют отдельного процесса")
+        if src["status"] not in ("ready", "transferred"):
+            raise Conflict("Накладная-источник должна быть на этапе этикеток или нанесения")
+        if dst["status"] not in ("draft", "ready", "transferred"):
+            raise Conflict("Получатель уже находится в обработке")
+        for document in (src, dst):
+            if self.document_stopped(db, document["id"]):
+                raise Conflict("Одна из накладных остановлена или архивирована")
+            if one(db, "SELECT doc_id FROM batch_docs WHERE doc_id=?", (document["id"],)):
+                raise Conflict("По накладной уже создана партия для отчёта/АТК")
+            ops = rows(db, "SELECT kind,state,external_id FROM operations WHERE doc_id=?", (document["id"],))
+            if any(
+                o["kind"] in ("report", "atk", "transform")
+                or o["state"] not in ("done", "cancelled")
+                or (o["state"] == "cancelled" and o["external_id"])
+                for o in ops
+            ):
+                raise Conflict("Есть операция ЧЗ или СУЗ, не допускающая перенос строк")
+        src_lines = rows(db, "SELECT * FROM lines WHERE doc_id=? ORDER BY id", (source_id,))
+        dst_lines = rows(db, "SELECT * FROM lines WHERE doc_id=? ORDER BY id", (target_id,))
+        selected = [l for l in src_lines if l["id"] in set(line_ids)]
+        if len(selected) != len(line_ids):
+            raise Conflict("Строки источника изменились. Откройте перенос заново")
+        if dst["status"] == "draft" and dst_lines:
+            raise Conflict("Получатель-черновик должен быть пустым. Иначе сперва завершите получение КМ")
+        codes_by_doc = {}
+        for document, lines in ((src, src_lines), (dst, dst_lines)):
+            codes = rows(
+                db, "SELECT * FROM codes WHERE doc_id=? ORDER BY id", (document["id"],)
+            )
+            if len(codes) != sum(l["labels"] for l in lines):
+                raise Conflict("Количество КМ не совпадает с составом одной из накладных")
+            by_tuple = Counter(self._line_key(c) for c in codes)
+            lines_by_tuple = Counter()
+            for l in lines:
+                lines_by_tuple[self._line_key(l)] += l["labels"]
+            if by_tuple != lines_by_tuple:
+                raise Conflict("Назначения КМ не соответствуют PN, GTIN, количеству и ТН ВЭД")
+            if any(
+                c["external_status"] != "EMITTED"
+                or c["local_state"] != "reserved"
+                or c["atk_id"] is not None
+                or c["reuse_allowed"] != 1
+                for c in codes
+            ):
+                raise Conflict("Есть нанесённые, агрегированные или недоступные для переноса КМ")
+            for code in codes:
+                assignment = one(
+                    db, "SELECT doc_id,pn,quantity,tnved FROM assignments "
+                        "WHERE code_id=? AND active=1", (code["id"],)
+                )
+                if not assignment or any(
+                    assignment[key] != value
+                    for key, value in (
+                        ("doc_id", document["id"]),
+                        ("pn", code["pn"]),
+                        ("quantity", code["quantity"]),
+                        ("tnved", code["tnved"]),
+                    )
+                ):
+                    raise Conflict("История назначений КМ требует сверки перед переносом")
+            codes_by_doc[document["id"]] = codes
+
+        # Full selected rows only. With matching signatures, move an exact
+        # number of codes, not an arbitrary number of codes sharing a GTIN.
+        chosen = Counter()
+        for line in selected:
+            chosen[self._line_key(line)] += line["labels"]
+        moved_ids = []
+        for code in codes_by_doc[source_id]:
+            key = self._line_key(code)
+            if chosen[key] > 0:
+                moved_ids.append(code["id"])
+                chosen[key] -= 1
+        if any(chosen.values()):
+            raise Conflict("Не найдены КМ выбранных строк")
+        remaining = [l for l in src_lines if l["id"] not in set(line_ids)]
+        combined = dst_lines + selected
+        counts = Counter()
+        for l in combined:
+            counts[self._line_key(l)] += l["labels"]
+        target_lines = [
+            {"pn": key[0], "gtin": key[1], "quantity": key[2],
+             "tnved": key[3], "labels": count}
+            for key, count in counts.items()
+        ]
+        # This must obey the same PN/GTIN rules as ordinary row editing.
+        check = validate_rows([
+            [l["pn"], l["gtin"], l["quantity"], l["labels"], l["tnved"]]
+            for l in target_lines
+        ])
+        if check["errors"]:
+            raise Conflict("Итоговый состав получателя не прошёл проверку", check)
+        plan = {
+            "source": {"id": src["id"], "number": src["number"],
+                       "revision": src["revision"]},
+            "target": {"id": dst["id"], "number": dst["number"],
+                       "revision": dst["revision"]},
+            "lines": [
+                {"id": l["id"], "pn": l["pn"], "gtin": l["gtin"],
+                 "quantity": l["quantity"], "labels": l["labels"],
+                 "tnved": l["tnved"]}
+                for l in selected
+            ],
+            "code_ids": moved_ids,
+            "all_codes": {
+                doc_id: [(c["id"], c["cis"], c["external_status"], c["local_state"])
+                         for c in codes]
+                for doc_id, codes in codes_by_doc.items()
+            },
+            "remaining": remaining,
+            "target_lines": target_lines,
+            "codes_for_verification": sum(codes_by_doc.values(), []),
+        }
+        plan["fingerprint"] = sha256(
+            dumps({
+                "source": plan["source"], "target": plan["target"],
+                "lines": plan["lines"], "all_codes": plan["all_codes"],
+            }).encode()
+        ).hexdigest()
+        return plan
+
+    def move_lines_preview(self, source_id, target_id, line_ids, actor, admin=False):
+        with self.store.read() as db:
+            plan = self._line_move_plan(db, source_id, target_id, line_ids, actor, admin)
+        return {
+            "source": plan["source"], "target": plan["target"],
+            "lines": plan["lines"], "codes": len(plan["code_ids"]),
+            "units": sum(l["labels"] * l["quantity"] for l in plan["lines"]),
+            "remaining_lines": len(plan["remaining"]),
+            "fingerprint": plan["fingerprint"],
+            "warning": "Пересоздаются версии этикеток обеих накладных. "
+                       "Ранее переданные поставщику PDF становятся неактуальными. "
+                       "После переноса подтвердите передачу новых этикеток.",
+        }
+
+    def move_lines(self, source_id, target_id, line_ids, fingerprint, actor, admin=False):
+        with self.store.read() as db:
+            initial = self._line_move_plan(db, source_id, target_id, line_ids, actor, admin)
+        if fingerprint != initial["fingerprint"]:
+            raise Conflict("Состав накладных изменился. Повторите предпросмотр")
+        # Read-only external verification before write lock, no new emissions.
+        if initial["codes_for_verification"]:
+            self.gateway.verify(initial["codes_for_verification"], "EMITTED")
+        with self.store.transaction() as db:
+            plan = self._line_move_plan(db, source_id, target_id, line_ids, actor, admin)
+            if plan["fingerprint"] != fingerprint:
+                raise Conflict("КМ или строки изменились во время проверки ЧЗ. Повторите перенос")
+            selected_ids = set(line_ids)
+            stamp = now()
+            moved_codes = set(plan["code_ids"])
+            # Retire active assignments for both documents. prepare_labels
+            # creates a new immutable assignment history on both sides.
+            for doc_id in (source_id, target_id):
+                db.execute(
+                    "UPDATE assignments SET active=0,ended=? WHERE doc_id=? AND active=1",
+                    (stamp, doc_id),
+                )
+            for code_id in moved_codes:
+                result = db.execute(
+                    "UPDATE codes SET doc_id=? WHERE id=? AND doc_id=? "
+                    "AND local_state='reserved' AND external_status='EMITTED' "
+                    "AND atk_id IS NULL",
+                    (target_id, code_id, source_id),
+                )
+                if result.rowcount != 1:
+                    raise Conflict("КМ был занят другим процессом. Перенос отменён")
+            db.execute(
+                "DELETE FROM lines WHERE doc_id=? AND id IN ("
+                + ",".join("?" for _ in selected_ids) + ")",
+                (source_id, *selected_ids),
+            )
+            db.execute("DELETE FROM lines WHERE doc_id=?", (target_id,))
+            for line in plan["target_lines"]:
+                db.execute(
+                    "INSERT INTO lines(doc_id,pn,gtin,quantity,labels,tnved) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (target_id, line["pn"], line["gtin"], line["quantity"],
+                     line["labels"], line["tnved"]),
+                )
+            for doc_id in (source_id, target_id):
+                db.execute(
+                    "UPDATE documents SET revision=revision+1,updated=?,"
+                    "transferred_version=NULL,last_error=NULL WHERE id=?",
+                    (stamp, doc_id),
+                )
+            if plan["remaining"]:
+                self.prepare_labels(db, source_id, exact_assignments=True)
+            else:
+                db.execute(
+                    "UPDATE documents SET status='draft' WHERE id=?", (source_id,)
+                )
+            self.prepare_labels(db, target_id, exact_assignments=True)
+            summary = {
+                "from": source_id, "from_number": plan["source"]["number"],
+                "to": target_id, "to_number": plan["target"]["number"],
+                "lines": plan["lines"], "codes_count": len(moved_codes),
+                "units": sum(l["labels"] * l["quantity"] for l in plan["lines"]),
+                "code_ids": sorted(moved_codes),
+            }
+            audit(db, actor, "Строки и КМ переданы в другую накладную", source_id, summary)
+            audit(db, actor, "Получены строки и КМ из другой накладной", target_id, summary)
+        return {"ok": True, "source_id": source_id, "target_id": target_id,
+                "codes": len(moved_codes), "lines": len(line_ids)}
 
     def transferred(self, doc_id, actor, version, admin=False):
         with self.store.transaction() as db:
