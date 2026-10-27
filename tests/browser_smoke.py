@@ -369,6 +369,22 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
             expect(page.get_by_role("button", name="Завершить накладную", exact=True)).to_be_visible()
             expect(page.get_by_role("button", name="Завершить накладную", exact=True)).to_be_in_viewport(ratio=1)
+            # The action column remains visible without horizontal table scrolling
+            # at all supported desktop viewport widths.
+            for width, height in ((1366, 768), (1920, 1080), (2560, 1440)):
+                page.set_viewport_size({"width": width, "height": height})
+                visible_on_right = page.evaluate("""
+                  () => {
+                    const wrap = document.querySelector('.registry-table-scroll');
+                    const button = document.querySelector('#atk-table td:last-child button');
+                    wrap.scrollLeft = 0;
+                    const w = wrap.getBoundingClientRect();
+                    const b = button.getBoundingClientRect();
+                    return b.left >= w.left - 1 && b.right <= w.right + 1;
+                  }
+                """)
+                assert visible_on_right, f"Завершение недоступно по горизонтали при {width}x{height}"
+            page.set_viewport_size({"width": 1440, "height": 1000})
             page.locator("#atk-search").fill("UNAVAILABLE")
             page.get_by_role("button", name="Применить фильтры", exact=True).click()
             page.get_by_role("heading", name="Реестр АТК", exact=True).wait_for()
