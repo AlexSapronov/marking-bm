@@ -1128,7 +1128,7 @@ async function action(name, id, b) {
       break;
     case "move-lines": {
       if (documentDirty) throw new Error("Сначала сохраните изменения строк");
-      const ids = $(".move-line:checked").map(input => Number(input.value));
+      const ids = $$(".move-line:checked").map(input => Number(input.value));
       if (!ids.length) throw new Error("Отметьте галочками строки, которые нужно перенести");
       await moveLinesModal(ids);
       break;
