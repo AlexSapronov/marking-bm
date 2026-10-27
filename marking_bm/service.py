@@ -426,56 +426,100 @@ class Service:
         }
 
     def legacy_archive_candidates(self, db, parsed):
-        """Preview and authorize an atomic transfer from archived invoices."""
-        current = rows(db, "SELECT id FROM documents WHERE number=? COLLATE NOCASE AND status!='archive'", (parsed["number"],))
+        """Find transferable archived CIS, including definitively rejected reports.
+
+        The independent True API check still requires each CIS to be EMITTED
+        and owned by our organization at preview and import.
+        """
+        current = rows(
+            db, "SELECT id FROM documents WHERE number=? COLLATE NOCASE "
+                "AND status!='archive'", (parsed["number"],)
+        )
         source = {}
         for offset in range(0, len(parsed["items"]), 400):
-            part = [r["cis"] for r in parsed["items"][offset:offset+400]]
+            part = [r["cis"] for r in parsed["items"][offset:offset + 400]]
             for c in rows(
-                db, "SELECT c.*,d.status source_status,a.doc_id active_doc FROM codes c "
+                db, "SELECT c.*,d.status source_status,d.number source_number,"
+                    "a.doc_id active_doc FROM codes c "
                     "LEFT JOIN documents d ON d.id=c.doc_id "
                     "LEFT JOIN assignments a ON a.code_id=c.id AND a.active=1 "
-                    "WHERE c.cis IN ("
-                    + ",".join("?" for _ in part) + ")", part
+                    "WHERE c.cis IN (" + ",".join("?" for _ in part) + ")",
+                part,
             ):
                 source[c["cis"]] = c
+
+        archive_checks = {}
+        def archive_reason(doc_id):
+            if doc_id not in archive_checks:
+                ops = rows(
+                    db, "SELECT kind,state,external_id FROM operations "
+                        "WHERE doc_id=?", (doc_id,)
+                )
+                reports = [o for o in ops if o["kind"] == "report"]
+                unsafe = any(
+                    o["state"] not in ("done", "rejected", "partial", "cancelled")
+                    or (o["state"] == "cancelled" and o["external_id"])
+                    for o in ops
+                )
+                accepted = any(o["state"] == "done" for o in reports)
+                unconfirmed = any(
+                    o["state"] not in ("rejected", "partial")
+                    or not o["external_id"]
+                    for o in reports
+                )
+                no_report_batch = not reports and bool(
+                    one(db, "SELECT batch_id FROM batch_docs WHERE doc_id=?", (doc_id,))
+                )
+                if unsafe or unconfirmed:
+                    reason = "Есть незавершённая или неподтверждённая операция"
+                elif accepted:
+                    reason = "В архиве есть успешно обработанный отчёт"
+                elif no_report_batch:
+                    reason = "Пакет обработки не имеет окончательного результата"
+                else:
+                    reason = None
+                archive_checks[doc_id] = {
+                    "reason": reason,
+                    "terminal_report": bool(reports) and not unconfirmed,
+                }
+            return archive_checks[doc_id]
+
         transferable, blocked = {}, []
         for item in parsed["items"]:
             old = source.get(item["cis"])
-            if old is None:
+            if not old:
                 continue
-            if (
-                old["source_status"] != "archive"
-                or old["active_doc"] != old["doc_id"]
-                or old["external_status"] != "EMITTED"
-                or old["local_state"] != "reserved"
-                or old["atk_id"] is not None
-                or old["reuse_allowed"] != 1
-                or old["raw"] != item["raw"]
-                or old["gtin"] != item["gtin"]
-            ):
-                blocked.append(item["cis"])
+            if old["source_status"] != "archive":
+                reason = "КМ находится в действующей накладной"
+            elif old["active_doc"] != old["doc_id"]:
+                reason = "Активное назначение КМ не принадлежит архивной накладной"
+            elif old["external_status"] != "EMITTED":
+                reason = "Локальный статус КМ: " + str(old["external_status"])
+            elif old["atk_id"] is not None or old["reuse_allowed"] != 1:
+                reason = "КМ участвует в агрегации или запрещён к повторному использованию"
+            elif old["raw"] != item["raw"] or old["gtin"] != item["gtin"]:
+                reason = "Криптохвост или GTIN отличается от сохранённого"
+            elif old["local_state"] not in ("reserved", "reporting"):
+                reason = "Локальный этап КМ: " + str(old["local_state"])
+            else:
+                check = archive_reason(old["doc_id"])
+                reason = check["reason"]
+                if not reason and old["local_state"] == "reporting" and not check["terminal_report"]:
+                    reason = "Отчёт о нанесении не имеет подтверждённого отказа"
+            if reason:
+                blocked.append({
+                    "cis": item["cis"], "gtin": item["gtin"],
+                    "pn": item["pn"], "source_number": old["source_number"] or "—",
+                    "reason": reason,
+                })
             else:
                 transferable[item["cis"]] = old
-        # Never move KMs out of an archived document with a history of
-        # report submission, even if our locally stored status is stale.
-        for doc_id in {c["doc_id"] for c in transferable.values()}:
-            if (
-                one(db, "SELECT batch_id FROM batch_docs WHERE doc_id=?", (doc_id,))
-                or one(db, "SELECT id FROM operations WHERE doc_id=? "
-                           "AND (kind='report' OR state IN "
-                           "('dispatching','submitted','checking','unknown')) LIMIT 1",
-                           (doc_id,))
-            ):
-                for cis, code in list(transferable.items()):
-                    if code["doc_id"] == doc_id:
-                        blocked.append(cis)
-                        del transferable[cis]
         return {
             "duplicate_invoice": bool(current),
             "archived_codes": len(transferable),
             "blocked_codes": len(blocked),
-            "blocked_examples": blocked[:25],
+            "blocked_examples": [r["cis"] for r in blocked[:25]],
+            "blocked_details": blocked[:50],
             "transferable": transferable,
         }
 
@@ -506,8 +550,12 @@ class Service:
             if review["duplicate_invoice"]:
                 raise Conflict("Накладная уже есть среди активных документов")
             if review["blocked_codes"]:
-                raise Conflict("КМ уже используются в ERP либо не могут быть безопасно "
-                               "перенесены из архива. Проверьте историю операций")
+                problem = review["blocked_details"][0]
+                raise Conflict(
+                    "Импорт запрещён: " + str(review["blocked_codes"]) +
+                    " КМ не прошли проверку ERP. Архивная накладная " +
+                    problem["source_number"] + ": " + problem["reason"]
+                )
             transfer = review["transferable"]
             supplier_name = supplier.strip()
             supplier_row = one(
@@ -563,7 +611,7 @@ class Service:
                     result = db.execute(
                         "UPDATE codes SET doc_id=?,pn=?,quantity=?,tnved=?,checked=?,"
                         "local_state='reserved' WHERE id=? AND doc_id=? "
-                        "AND external_status='EMITTED' AND local_state='reserved' "
+                        "AND external_status='EMITTED' AND local_state IN ('reserved','reporting') "
                         "AND atk_id IS NULL AND reuse_allowed=1",
                         (doc_id, item["pn"], item["quantity"], item["tnved"],
                          stamp, code_id, old["doc_id"]),
