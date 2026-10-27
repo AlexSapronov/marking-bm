@@ -75,10 +75,10 @@ with tempfile.TemporaryDirectory() as tmp:
             page.locator("#username").fill("smoke-logist")
             page.locator("#new-user-role").select_option("logistics")
             page.locator("#user-form button").click()
-            page.get_by_text("smoke-logist", exact=True).wait_for()
+            page.get_by_role("cell", name="smoke-logist", exact=True).wait_for()
             page.locator('[data-section-search="users"]').fill("smoke-logist")
-            expect(page.get_by_text("smoke-user", exact=True)).not_to_be_visible()
-            expect(page.get_by_text("smoke-logist", exact=True)).to_be_visible()
+            expect(page.get_by_role("cell", name="smoke-user", exact=True)).not_to_be_visible()
+            expect(page.get_by_role("cell", name="smoke-logist", exact=True)).to_be_visible()
             page.locator('[data-section-search="users"]').fill("")
             assert (
                 page.locator('.user-role[data-user="smoke-logist"]').input_value()
