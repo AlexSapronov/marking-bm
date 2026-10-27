@@ -470,16 +470,15 @@ function lineRow(l = {}, move = false) {
   return `<tr>${move ? `<td>${l.id ? `<input type="checkbox" class="move-line" value="${e(l.id)}" aria-label="Перенести строку ${e(l.pn)}">` : ""}</td>` : ""}<td class="pn"><input class="pn-input" aria-label="PN" value="${e(l.pn)}" maxlength="120"></td><td class="gtin"><input class="gtin-input" aria-label="GTIN" value="${e(l.gtin)}" maxlength="14"></td><td><input class="qty-input" aria-label="Штук в этикетке" type="number" min="1" max="99999999" value="${e(l.quantity || 1)}"></td><td><input class="labels-input" aria-label="Этикеток" type="number" min="1" value="${e(l.labels || 1)}"></td><td class="tnved"><input class="tnved-input" aria-label="ТН ВЭД" value="${e(l.tnved)}" maxlength="10"></td><td><button data-action="remove-line" class="danger" aria-label="Удалить строку">×</button></td></tr>`;
 }
 function gatherRows() {
-  return $$("#edit-rows tr").map((tr) => {
-    const values = [...tr.querySelectorAll("input")].map((x) => x.value);
-    return [
-      values[0],
-      values[1],
-      Number(values[2]),
-      Number(values[3]),
-      values[4],
-    ];
-  });
+  // Transfer checkboxes are not part of the product composition. Read the
+  // explicitly named fields so selection controls cannot shift PN/GTIN data.
+  return $("#edit-rows tr").map(tr => [
+    tr.querySelector(".pn-input").value,
+    tr.querySelector(".gtin-input").value,
+    Number(tr.querySelector(".qty-input").value),
+    Number(tr.querySelector(".labels-input").value),
+    tr.querySelector(".tnved-input").value,
+  ]);
 }
 async function open(id) {
   registryMode = false;
