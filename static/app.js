@@ -110,7 +110,7 @@ function adminStatusSignature(items) {
 async function pollStatuses() {
   if (statusPollBusy || !user || document.hidden || documentDirty ||
       $("#modal")?.open || $("#app").querySelector("form:focus-within") ||
-      $(".doc-select:checked, .atk-select:checked, .move-line:checked").length) return;
+      $$(".doc-select:checked, .atk-select:checked, .move-line:checked").length) return;
   statusPollBusy = true;
   const activeDocId = doc?.id;
   const wasArchive = archive;
@@ -146,7 +146,7 @@ async function pollStatuses() {
       const incoming = await api("/logistics/atks?" + new URLSearchParams(registryFilters));
       if (!registryMode || $("#modal").open ||
           $("#app").querySelector("form:focus-within") ||
-          $(".atk-select:checked").length) return;
+          $$(".atk-select:checked").length) return;
       if (logisticsStatusSignature(incoming) !== logisticsStatusSignature(registryRows)) {
         const scroll = window.scrollY;
         await logisticsPage();
