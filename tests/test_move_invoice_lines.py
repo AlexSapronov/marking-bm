@@ -49,6 +49,16 @@ def test_move_selected_line_with_codes_rebuilds_both_label_versions(env):
     assert plan.status_code == 200, plan.text
     assert plan.json()["codes"] == 1
     assert plan.json()["units"] == 9
+    assert plan.json()["impact"] == {
+        "source": {
+            "before": {"lines": 2, "codes": 3, "units": 19},
+            "after": {"lines": 1, "codes": 2, "units": 10},
+        },
+        "target": {
+            "before": {"lines": 1, "codes": 2, "units": 10},
+            "after": {"lines": 2, "codes": 3, "units": 19},
+        },
+    }
     result = manager.post(
         f"/api/documents/{source}/move-lines",
         json={**params, "fingerprint": plan.json()["fingerprint"]},
@@ -96,6 +106,9 @@ def test_move_all_lines_to_empty_draft_source_becomes_draft(env):
     line = service.get(source, "alice")["lines"][0]
     plan = service.move_lines_preview(source, target, [line["id"]], "alice")
     assert plan["codes"] == 2
+    assert plan["impact"]["source"]["after"] == {"lines": 0, "codes": 0, "units": 0}
+    assert plan["impact"]["target"]["before"] == {"lines": 0, "codes": 0, "units": 0}
+    assert plan["impact"]["target"]["after"]["codes"] == 2
     service.move_lines(source, target, [line["id"]], plan["fingerprint"], "alice")
     src, dst = service.get(source, "alice"), service.get(target, "alice")
     assert src["status"] == "draft" and not src["lines"] and not src["codes"]

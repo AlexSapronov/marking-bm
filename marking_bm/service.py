@@ -1261,6 +1261,7 @@ class Service:
             },
             "remaining": remaining,
             "target_lines": target_lines,
+            "target_original_rows": len(dst_lines),
             "codes_for_verification": sum(codes_by_doc.values(), []),
         }
         plan["fingerprint"] = sha256(
@@ -1274,10 +1275,31 @@ class Service:
     def move_lines_preview(self, source_id, target_id, line_ids, actor, admin=False):
         with self.store.read() as db:
             plan = self._line_move_plan(db, source_id, target_id, line_ids, actor, admin)
+        def totals(lines):
+            return {
+                "lines": len(lines),
+                "codes": sum(line["labels"] for line in lines),
+                "units": sum(line["labels"] * line["quantity"] for line in lines),
+            }
+
+        moved_units = sum(line["labels"] * line["quantity"] for line in plan["lines"])
+        moved_codes = len(plan["code_ids"])
+        source_before = totals(plan["remaining"] + plan["lines"])
+        source_after = totals(plan["remaining"])
+        target_after = totals(plan["target_lines"])
+        target_before = {
+            "lines": plan["target_original_rows"],
+            "codes": target_after["codes"] - moved_codes,
+            "units": target_after["units"] - moved_units,
+        }
         return {
             "source": plan["source"], "target": plan["target"],
-            "lines": plan["lines"], "codes": len(plan["code_ids"]),
-            "units": sum(l["labels"] * l["quantity"] for l in plan["lines"]),
+            "lines": plan["lines"], "codes": moved_codes,
+            "units": moved_units,
+            "impact": {
+                "source": {"before": source_before, "after": source_after},
+                "target": {"before": target_before, "after": target_after},
+            },
             "remaining_lines": len(plan["remaining"]),
             "fingerprint": plan["fingerprint"],
             "warning": "Пересоздаются версии этикеток обеих накладных. "
