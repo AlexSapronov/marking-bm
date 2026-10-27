@@ -378,6 +378,127 @@ class Service:
             d["units"] = sum(l["labels"] * l["quantity"] for l in d["lines"])
             return d
 
+    def import_legacy_pack(self, actor, owner, supplier, filename, content, parsed):
+        # One atomic transaction; no remote requests, KM emission or label rendering.
+        if not isinstance(supplier, str) or not 1 <= len(supplier.strip()) <= 160:
+            raise ValueError("Укажите поставщика")
+        number = parsed["number"]
+        if not parsed["items"] or not parsed["lines"]:
+            raise ValueError("Нет строк для импорта")
+        with self.store.transaction() as db:
+            manager = one(
+                db, "SELECT username FROM users WHERE username=? AND enabled=1 AND role='manager'",
+                (owner,),
+            )
+            if not manager:
+                raise ValueError("Ответственный должен быть активным бренд-менеджером")
+            if one(db, "SELECT id FROM documents WHERE number=? COLLATE NOCASE", (number,)):
+                raise Conflict("Накладная с таким номером уже есть. Импорт остановлен")
+            existing_cis = [item["cis"] for item in parsed["items"]]
+            for offset in range(0, len(existing_cis), 500):
+                chunk = existing_cis[offset:offset + 500]
+                if one(
+                    db, "SELECT cis FROM codes WHERE cis IN (" + ",".join("?" for _ in chunk) + ") LIMIT 1",
+                    chunk,
+                ):
+                    raise Conflict("Некоторые КМ уже есть в ERP. Повторно импортировать их нельзя")
+            supplier_name = supplier.strip()
+            supplier_row = one(
+                db, "SELECT * FROM suppliers WHERE name=?", (supplier_name,)
+            )
+            if supplier_row and supplier_row["merged_into"]:
+                supplier_row = one(
+                    db, "SELECT * FROM suppliers WHERE id=?", (supplier_row["merged_into"],)
+                )
+            if not supplier_row:
+                supplier_row = {"id": uid()}
+                db.execute(
+                    "INSERT INTO suppliers(id,name) VALUES(?,?)",
+                    (supplier_row["id"], supplier_name),
+                )
+            for line in parsed["lines"]:
+                known = one(db, "SELECT tnved FROM catalog WHERE gtin=?", (line["gtin"],))
+                if known and known["tnved"] != line["tnved"]:
+                    raise Conflict(
+                        "GTIN " + line["gtin"] + " уже привязан к другому ТН ВЭД. "
+                        "Проверьте справочник перед импортом"
+                    )
+            doc_id = uid()
+            stamp = now()
+            db.execute(
+                "INSERT INTO documents(id,number,supplier_id,owner,status,revision,created,updated,"
+                "current_version,transferred_version) VALUES(?,?,?,?,'transferred',1,?,?,0,0)",
+                (doc_id, number, supplier_row["id"], owner, stamp, stamp),
+            )
+            for line in parsed["lines"]:
+                db.execute(
+                    "INSERT OR IGNORE INTO catalog VALUES(?,?)",
+                    (line["gtin"], line["tnved"]),
+                )
+                db.execute(
+                    "INSERT OR IGNORE INTO pn_map VALUES(?,?)",
+                    (line["gtin"], line["pn"]),
+                )
+                db.execute(
+                    "INSERT INTO lines(doc_id,pn,gtin,quantity,labels,tnved) VALUES(?,?,?,?,?,?)",
+                    (doc_id, line["pn"], line["gtin"], line["quantity"],
+                     line["labels"], line["tnved"]),
+                )
+            for item in parsed["items"]:
+                code_id = uid()
+                db.execute(
+                    "INSERT INTO codes(id,raw,cis,gtin,serial,source_op,external_status,checked,"
+                    "local_state,doc_id,pn,quantity,tnved) "
+                    "VALUES(?,?,?,?,?,?,'EMITTED',NULL,'reserved',?,?,?,?)",
+                    (code_id, item["raw"], item["cis"], item["gtin"], item["serial"],
+                     "legacy:" + doc_id, doc_id, item["pn"], item["quantity"], item["tnved"]),
+                )
+                db.execute(
+                    "INSERT INTO assignments(code_id,doc_id,pn,quantity,tnved,active,created) "
+                    "VALUES(?,?,?,?,?,1,?)",
+                    (code_id, doc_id, item["pn"], item["quantity"], item["tnved"], stamp),
+                )
+            self.artifact(
+                db, filename, content, "source", doc_id=doc_id, version=1,
+                snapshot={"legacy_import": True, "code_count": parsed["codes_count"]},
+            )
+            audit(
+                db, actor, "Импортирована историческая накладная", doc_id,
+                {"number": number, "supplier": supplier_name, "owner": owner,
+                 "codes": parsed["codes_count"], "units": parsed["units"],
+                 "no_labels_generated": True},
+            )
+        return {"id": doc_id, "number": number, "owner": owner, "status": "transferred",
+                "codes": parsed["codes_count"], "units": parsed["units"]}
+
+    def add_legacy_pdf(self, actor, doc_id, filename, content):
+        if not content.startswith(b"%PDF-"):
+            raise ValueError("Загруженный файл не является PDF")
+        if len(content) > 20 * 1024 * 1024:
+            raise ValueError("PDF больше 20 МБ")
+        try:
+            reader = PdfReader(BytesIO(content), strict=True)
+            if not reader.pages:
+                raise ValueError("PDF не содержит страниц")
+        except Exception as exc:
+            raise ValueError("Невозможно прочитать исходный PDF маркировки") from exc
+        with self.store.transaction() as db:
+            document = self.document(db, doc_id, actor, admin=True)
+            if document["status"] not in ("transferred", "ready"):
+                raise Conflict("Добавление исходных PDF доступно до отправки отчёта")
+            previous = one(
+                db, "SELECT MAX(version) AS version FROM artifacts WHERE doc_id=? AND kind='legacy_pdf'",
+                (doc_id,),
+            )
+            version = (previous["version"] or 0) + 1
+            file_id = self.artifact(
+                db, filename, content, "legacy_pdf", doc_id=doc_id, version=version,
+                snapshot={"legacy_pdf": True},
+            )
+            audit(db, actor, "Добавлен исходный PDF старой маркировки", doc_id,
+                  {"artifact": file_id, "filename": filename, "version": version})
+        return {"id": file_id, "version": version}
+
     def create(self, actor, number, supplier, parent_id=None, admin=False):
         if not isinstance(number, str) or not 1 <= len(number.strip()) <= 120:
             raise ValueError("Заполните номер накладной")
@@ -889,7 +1010,28 @@ class Service:
                     "SELECT * FROM artifacts WHERE doc_id=? AND version=? AND kind='labels'",
                     (d["id"], d["current_version"]),
                 )
-                snapshot = json.loads(art["snapshot"])
+                if art:
+                    snapshot = json.loads(art["snapshot"])
+                elif d["current_version"] == 0 and d["transferred_version"] == 0:
+                    # Imported historical packs have no generated label PDF.
+                    # Assemble the immutable report from exact imported KMs.
+                    imported = rows(
+                        db, "SELECT * FROM codes WHERE doc_id=? ORDER BY id", (d["id"],)
+                    )
+                    if len(imported) != sum(
+                        line["labels"] for line in rows(
+                            db, "SELECT labels FROM lines WHERE doc_id=?", (d["id"],)
+                        )
+                    ) or not imported:
+                        raise Conflict("Состав исторических КМ не соответствует накладной")
+                    if any(x["external_status"] != "EMITTED" for x in imported):
+                        raise Conflict("Импортированные КМ изменили статус, требуется проверка")
+                    snapshot = [
+                        {"full": with_quantity(c["raw"], c["quantity"])}
+                        for c in imported
+                    ]
+                else:
+                    raise Conflict("Нет действующей версии этикеток. Проверьте файлы")
                 payload = {
                     "productGroup": "radio",
                     "sntins": [c["full"] for c in snapshot],
