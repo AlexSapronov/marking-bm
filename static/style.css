@@ -993,5 +993,5 @@ main > .topbar p { margin-bottom: 0; }
 @media (min-width: 1100px) {
   .document-list .table-wrap { max-height: min(66vh, 760px); }
   [data-admin-panel="operations"] .table-wrap { max-height: 66vh; }
-  #atk-table .table-wrap { max-height: 66vh; }
+  .registry-table-scroll { max-height: min(66vh, 760px); }
 }
