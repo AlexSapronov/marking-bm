@@ -82,6 +82,12 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.locator("#setup-code-issued")).to_be_visible()
             logist_setup_code = page.locator("#setup-code-issued").inner_text()
             page.locator("#modal [data-action=close]").click()
+            # Administrator can invalidate the first code and issue a reset code.
+            page.once("dialog", lambda dialog: dialog.accept())
+            page.locator('[data-action="reset-password"][data-id="smoke-user"]').click()
+            expect(page.locator("#setup-code-issued")).to_be_visible()
+            manager_setup_code = page.locator("#setup-code-issued").inner_text()
+            page.locator("#modal [data-action=close]").click()
             page.locator('[data-section-search="users"]').fill("smoke-logist")
             expect(page.get_by_role("cell", name="smoke-user", exact=True)).not_to_be_visible()
             expect(page.get_by_role("cell", name="smoke-logist", exact=True)).to_be_visible()
