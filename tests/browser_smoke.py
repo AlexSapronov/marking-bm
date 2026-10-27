@@ -303,6 +303,10 @@ with tempfile.TemporaryDirectory() as tmp:
                     )
             page.get_by_role("button", name="Администрирование", exact=True).click()
             page.locator('.section-nav [data-id="operations"]').click()
+            assert page.evaluate("adminOperationPending({state:'queued', stopped:false})")
+            assert not page.evaluate("adminOperationPending({state:'unknown', stopped:false})")
+            assert not page.evaluate("adminOperationPending({state:'rejected', stopped:false})")
+            assert page.evaluate("adminOperationNeedsAttention({state:'unknown', attention_resolved_at:null})")
             expect(page.locator("#operation-page-label")).to_contain_text("Строки 1–50")
             def displayed_operations():
                 return page.evaluate("""
