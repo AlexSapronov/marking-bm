@@ -62,7 +62,7 @@ sudo apt-get install -y git curl ca-certificates fonts-dejavu-core
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 uv python install 3.12
-git clone --branch feat/wsl-localhost-marking-bm \
+git clone --branch main \
   https://github.com/AlexSapronov/marking-bm.git "$HOME/marking-bm"
 cd "$HOME/marking-bm"
 uv venv --python 3.12 .venv
@@ -114,7 +114,7 @@ WSL2 автоматически пробрасывает сервисы Linux н
 
 ```powershell
 $dir = "$env:USERPROFILE\marking-bm-signer"
-$base = "https://raw.githubusercontent.com/AlexSapronov/marking-bm/feat/wsl-localhost-marking-bm/signer"
+$base = "https://raw.githubusercontent.com/AlexSapronov/marking-bm/main/signer"
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 Invoke-WebRequest -Uri "$base/Start-Signer.ps1" -OutFile "$dir\Start-Signer.ps1"
 Invoke-WebRequest -Uri "$base/Sign-Payload.vbs" -OutFile "$dir\Sign-Payload.vbs"
