@@ -5,6 +5,7 @@ from pathlib import Path
 import socket
 import sqlite3
 import hashlib
+import json
 from uuid import uuid4
 from datetime import datetime, timezone
 import subprocess
