@@ -460,10 +460,13 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         conflict = store.one(
             "SELECT id FROM documents WHERE number=? COLLATE NOCASE", (parsed["number"],)
         )
+        # Read-only True API verification is mandatory even for preview.
+        verification = service.check_legacy_codes(parsed)
         return {
             "number": parsed["number"], "codes": parsed["codes_count"],
             "units": parsed["units"], "lines": parsed["lines"],
             "duplicate_invoice": bool(conflict),
+            "verification": verification,
         }
 
     @app.post("/api/admin/legacy/import")
