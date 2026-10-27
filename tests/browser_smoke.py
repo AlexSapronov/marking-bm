@@ -454,6 +454,31 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.locator("#registry-selection-summary")).to_contain_text("Файлов Excel: 2")
             expect(page.locator("#registry-selection-summary")).to_contain_text("LOGISTICS-READY")
             page.locator(".atk-select").uncheck()
+            # A historical RESULT file must not be presented as current.
+            with sqlite3.connect(Path(tmp) / "marking-bm.sqlite3") as db:
+                group = db.execute(
+                    "SELECT batch_id || ':' || supplier_id FROM atks LIMIT 1"
+                ).fetchone()[0]
+                original = db.execute(
+                    "SELECT content,sha256,snapshot,created FROM artifacts "
+                    "WHERE group_id=? AND kind='result' ORDER BY version DESC LIMIT 1",
+                    (group,),
+                ).fetchone()
+                assert original is not None
+                db.execute(
+                    "INSERT INTO artifacts(id,doc_id,group_id,version,kind,"
+                    "name,content,sha256,snapshot,created) "
+                    "VALUES(?,NULL,?,0,'result',?,?,?,?,?)",
+                    (uuid4().hex, group, "ux-outdated-RESULT.xlsx", *original),
+                )
+            page.locator("#atk-table .registry-code").click()
+            expect(page.locator("#modal")).to_contain_text("Актуальные файлы АТК + RESULT")
+            expect(page.locator("#modal")).to_contain_text("Последнее изменение операции:")
+            expect(page.locator("#modal .outdated-artifact")).to_have_count(1)
+            expect(page.locator("#modal .outdated-artifact")).to_contain_text("ux-outdated-RESULT.xlsx")
+            expect(page.locator("#modal .outdated-artifact")).to_contain_text("Устаревшая версия")
+            expect(page.locator("#modal .files a:not(.outdated-artifact)")).to_have_count(2)
+            page.locator("#modal [data-action='close']").click()
             expect(page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
             expect(page.get_by_role("button", name="Завершить накладную", exact=True)).to_be_visible()
             expect(page.get_by_role("button", name="Завершить накладную", exact=True)).to_be_in_viewport(ratio=1)
