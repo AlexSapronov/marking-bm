@@ -101,10 +101,8 @@ async function api(url, body, method) {
   }
   return data;
 }
-function toast(message) {
-  $("#toast").textContent = message;
-  $("#toast").style.display = "block";
-  setTimeout(() => ($("#toast").style.display = "none"), 6500);
+function toast(message, kind = "error") {
+  window.BmUX.notify(message, kind);
 }
 function bind() {
   document.onclick = async (ev) => {
@@ -185,7 +183,7 @@ function login(admin = false, setup = false) {
         });
         login();
         $("#login-value").value = username;
-        toast("Пароль установлен. Теперь войдите с новым паролем");
+        toast("Пароль установлен. Теперь войдите с новым паролем", "success");
         return;
       }
       user = await api("/session", admin
@@ -220,7 +218,7 @@ async function changeOwnPassword() {
     try {
       await api("/users/change-password", values);
       $("#modal").close();
-      toast("Пароль изменён");
+      toast("Пароль изменён", "success");
     } catch (err) { toast(err.message); }
   };
 }
@@ -283,14 +281,16 @@ function updateDocumentSelection() {
   if ($('[data-action="batch"]')) $('[data-action="batch"]').disabled = !count;
 }
 function modal(content) {
-  $("#modal").innerHTML = content;
-  $("#modal").showModal();
+  const dialog = $("#modal");
+  dialog.innerHTML = content;
+  dialog.showModal();
 }
 async function newDoc(parent) {
   const suppliers = await api("/suppliers");
   modal(
     `<h2>${parent ? "Дополнение к накладной " + e(doc.number) : "Новая накладная"}</h2><form id="new-form"><div class="fields"><label>Номер накладной<input id="number" required maxlength="120"></label><label>Поставщик<input id="new-supplier" list="supplier-list" value="${parent ? e(doc.supplier) : ""}" required maxlength="160" ${parent ? "readonly" : ""}><datalist id="supplier-list">${suppliers.map((s) => `<option value="${e(s.name)}">`).join("")}</datalist></label></div><div class="actions"><button class="primary">Создать черновик</button><button type="button" data-action="close">Отмена</button></div></form>`,
   );
+  window.BmUX.supplierPicker($("#new-supplier"), suppliers);
   $("#new-form").onsubmit = async (ev) => {
     ev.preventDefault();
     try {
@@ -383,7 +383,7 @@ function renderDoc() {
     try {
       await api("/admin/legacy/" + encodeURIComponent(doc.id) + "/pdf", form);
       await open(doc.id);
-      toast("Исходный PDF сохранён в истории файлов");
+      toast("Исходный PDF сохранён в истории файлов", "success");
     } catch(err) { toast(err.message); }
   };
   if (editable) {
@@ -421,7 +421,7 @@ async function doSave(raw, confirmation) {
     $("#modal").close();
     documentDirty = false;
     renderDoc();
-    toast("Состав сохранён");
+    toast("Состав сохранён", "success");
   } catch (err) {
     toast(err.message);
   }
@@ -474,7 +474,7 @@ async function runExcelImport(context, options = {}) {
       `<h2>Excel загружен</h2>${result.warnings.map((w) => `<p class="notice">${e(w)}</p>`).join("")}<p>Проверьте значения в таблице накладной и сохраните состав.</p><button data-action="close">Продолжить</button>`,
     );
   }
-  toast("Excel загружен в предпросмотр. Проверьте строки и сохраните состав.");
+  toast("Excel загружен в предпросмотр. Проверьте строки и сохраните состав.", "success");
 }
 function excelMapping(context, inspection, previous = {}) {
   context.inspection = inspection;
@@ -634,7 +634,7 @@ async function moveLinesModal(lineIds) {
           });
           $("#modal").close();
           await open(sourceId);
-          toast("Строки и КМ перенесены. Отправьте новые версии этикеток поставщику");
+          toast("Строки и КМ перенесены. Отправьте новые версии этикеток поставщику", "success");
         } catch(error) {
           button.disabled = false;
           toast(error.message);
@@ -657,7 +657,7 @@ async function batchModal(ids) {
       });
       $("#modal").close();
       doc ? await open(doc.id) : await list();
-      toast("Отчёты поставлены в очередь подписи");
+      toast("Отчёты поставлены в очередь подписи", "success");
     } catch (err) {
       toast(err.message);
     }
@@ -683,7 +683,7 @@ async function transformModal(id, kind) {
         codes: $$(".code-select:checked").map((x) => x.value),
       });
       $("#modal").close();
-      toast("Заявка отправлена администратору");
+      toast("Заявка отправлена администратору", "success");
     } catch (err) {
       toast(err.message);
     }
@@ -757,6 +757,7 @@ function setupAdminDocumentPanel() {
     </form>`;
   panel.prepend(legacy);
   $('[data-admin-panel="users"]').after(panel);
+  window.BmUX.supplierPicker($("#legacy-import-form [name=supplier]"), overview.suppliers.filter(s => !s.merged_into));
   let previewReady = false;
   const input = $("#legacy-file");
   const submit = $("#legacy-import-submit");
@@ -802,7 +803,7 @@ function setupAdminDocumentPanel() {
     submit.disabled = true;
     try {
       const result = await api("/admin/legacy/import", form);
-      toast("Накладная " + result.number + " импортирована: " + result.codes + " КМ");
+      toast("Накладная " + result.number + " импортирована: " + result.codes + " КМ", "success");
       await open(result.id);
     } catch(err) {
       submit.disabled = false;
@@ -870,7 +871,7 @@ async function adminPage() {
             role: select.value,
           });
           await adminPage();
-          toast("Роль пользователя обновлена");
+          toast("Роль пользователя обновлена", "success");
         } catch (err) {
           select.value = u.role;
           toast(err.message);
@@ -898,7 +899,7 @@ async function adminPage() {
     body.template_id = Number(body.template_id);
     try {
       await api("/admin/config", body, "PUT");
-      toast("Настройки сохранены");
+      toast("Настройки сохранены", "success");
     } catch (err) {
       toast(err.message);
     }
@@ -907,7 +908,7 @@ async function adminPage() {
     ev.preventDefault();
     try {
       await api("/admin/catalog", Object.fromEntries(new FormData(ev.target)));
-      toast("Справочник исправлен");
+      toast("Справочник исправлен", "success");
     } catch (err) {
       toast(err.message);
     }
@@ -942,7 +943,7 @@ async function action(name, id, b) {
       if (!confirm("Передать накладную " + number + " от " + previous + " сотруднику " + owner + "?")) break;
       await api("/admin/documents/" + encodeURIComponent(id) + "/owner", {owner}, "PUT");
       await loadAdminDocuments();
-      toast("Накладная " + number + " передана сотруднику " + owner);
+      toast("Накладная " + number + " передана сотруднику " + owner, "success");
       break;
     }
     case "admin-section":
@@ -971,7 +972,7 @@ async function action(name, id, b) {
       await api("/logistics/documents/" + encodeURIComponent(id) + "/complete", {});
       $("#modal").close();
       await logisticsPage();
-      toast("Накладная завершена и перемещена в архив");
+      toast("Накладная завершена и перемещена в архив", "success");
       break;
     case "registry-detail":
       await logisticsDetail(id);
@@ -1033,7 +1034,7 @@ async function action(name, id, b) {
         field.remove();
         if (!copied) throw new Error("Не удалось скопировать. Выделите код вручную.");
       }
-      toast("Код скопирован");
+      toast("Код скопирован", "success");
       break;
     }
     case "change-password":
@@ -1074,7 +1075,7 @@ async function action(name, id, b) {
           $("#modal").close();
           documentDirty = false;
           await open(context.id);
-          toast("Обработка остановлена. Накладная перемещена в архив");
+          toast("Обработка остановлена. Накладная перемещена в архив", "success");
         } catch (error) {
           $("#stop-document-error").hidden = false;
           $("#stop-document-error").textContent = error.message;
@@ -1094,7 +1095,7 @@ async function action(name, id, b) {
           await api("/admin/documents/" + encodeURIComponent(id) + "/restore", Object.fromEntries(new FormData(event.target)));
           $("#modal").close();
           await open(id);
-          toast("Накладная возвращена из архива");
+          toast("Накладная возвращена из архива", "success");
         } catch (error) {
           $("#restore-document-error").hidden = false;
           $("#restore-document-error").textContent = error.message;
@@ -1178,38 +1179,38 @@ async function action(name, id, b) {
     case "auth":
       await api("/admin/auth/" + id, {});
       await adminPage();
-      toast("Авторизация ожидает подписи на Windows-ПК");
+      toast("Авторизация ожидает подписи на Windows-ПК", "success");
       break;
     case "retry-local":
       if (!confirm("Это локальная ошибка до отправки в ЧЗ. Повторить операцию после исправления подключения?")) break;
       await api("/admin/operations/" + id + "/retry-local", {});
       await adminPage();
-      toast("Операция повторно поставлена в очередь");
+      toast("Операция повторно поставлена в очередь", "success");
       break;
     case "retry-report":
       if (!confirm("Отправить новый отчёт? При частичной обработке будут включены только КМ, которые ГИС МТ подтвердит как ещё не нанесённые.")) break;
       await api("/admin/operations/" + id + "/retry", {});
       await adminPage();
-      toast("Новый отчёт ожидает подписи на Windows-ПК");
+      toast("Новый отчёт ожидает подписи на Windows-ПК", "success");
       break;
     case "retry-report-doc":
       if (!confirm("Повторить отчёт после проверки карточек в НК? Уже нанесённые КМ не будут отправлены повторно.")) break;
       await api("/documents/" + encodeURIComponent(doc.id) + "/report/" + encodeURIComponent(id) + "/retry", {});
       await open(doc.id);
-      toast("Повторная отправка ожидает подписи на Windows-ПК");
+      toast("Повторная отправка ожидает подписи на Windows-ПК", "success");
       break;
     case "resolve-op": {
       const reason = prompt("Причина скрытия предупреждения (операция в ЧЗ останется без изменений):", "Рассмотрено администратором");
       if (reason === null) break;
       await api("/admin/operations/" + id + "/attention", {resolved: true, reason});
       await adminPage();
-      toast("Предупреждение скрыто. История операции сохранена");
+      toast("Предупреждение скрыто. История операции сохранена", "success");
       break;
     }
     case "unresolve-op":
       await api("/admin/operations/" + id + "/attention", {resolved: false});
       await adminPage();
-      toast("Предупреждение возвращено в список");
+      toast("Предупреждение возвращено в список", "success");
       break;
     case "check-op":
       await api("/admin/operations/" + id + "/check", {});
