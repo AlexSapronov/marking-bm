@@ -75,6 +75,10 @@ let user,
   documentTab = "content",
   documentDirty = false,
   documentFilters = {search: "", status: "", supplier: "", from: "", to: "", stage: "all"};
+let documentPage = 0;
+let documentPageSize = 50;
+let documentSort = "newest";
+const documentSelectedIds = new Set();
 let statusLastChecked = null;
 let statusPollBusy = false;
 const STATUS_POLL_MS = 30000;
@@ -321,7 +325,9 @@ async function list() {
     documentFilters.stage = "all";
     documentFilters.status = "";
     documentListArchive = archive;
+    documentPage = 0;
   }
+  documentSelectedIds.clear();
   if (user.role === "logistics" && !user.admin) return logisticsPage();
   registryMode = false;
   history.replaceState(null, "", location.pathname + (archive ? "#archive" : "#documents"));
@@ -337,41 +343,101 @@ function renderList() {
   <div class="stage-filters" aria-label="Этапы накладных">${Object.entries(stages).map(([key, stage]) => `<button data-stage="${key}" aria-pressed="${documentFilters.stage === key}">${stage.title}<b>${docs.filter(d => stage.matches(d)).length}</b></button>`).join("")}</div>
   <section class="card document-list"><h2>${archive ? "Архивные документы" : "Рабочие документы"}</h2><div class="document-filters"><label>Номер накладной<input id="search" placeholder="Поиск по номеру" value="${e(documentFilters.search)}"></label><label>Поставщик<select id="supplier"><option value="">Все поставщики</option>${[...new Set(docs.map(d => d.supplier))].sort().map(v => `<option ${v === documentFilters.supplier ? "selected" : ""}>${e(v)}</option>`).join("")}</select></label><label>Статус<select id="status"><option value="">Все статусы</option>${[...new Set(docs.map(d => d.display_status || d.status))].map(v => `<option value="${e(v)}" ${v === documentFilters.status ? "selected" : ""}>${e(states[v] || v)}</option>`).join("")}</select></label><label>Создана с<input type="date" id="from" value="${e(documentFilters.from)}"></label><label>Создана по<input type="date" id="to" value="${e(documentFilters.to)}"></label></div>
   <div class="list-caption"><span id="document-count" class="muted" role="status"></span><button class="linkbutton" data-action="reset-doc-filters">Сбросить фильтры</button></div>
-  <div class="table-wrap"><table><thead><tr><th><input id="select-all" type="checkbox" aria-label="Выбрать все доступные для нанесения"></th><th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Штук</th><th>Создана</th>${user.admin ? "<th>Владелец</th>" : ""}</tr></thead><tbody id="doc-rows"></tbody></table></div>
-  ${archive ? "" : '<div class="selection-bar"><div><b id="selected-count">Накладные не выбраны</b><span class="cell-sub">Выберите документы со статусом «Ожидает нанесения».</span></div><button class="primary" data-action="batch" disabled>Подтвердить нанесение и сформировать АТК</button></div>'}</section>`);
+  <div class="register-controls"><label>Сортировка<select id="document-sort"><option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option><option value="number">По номеру накладной</option><option value="supplier">По поставщику</option><option value="status">По статусу</option><option value="units">По количеству товара</option></select></label><label>Строк на странице<select id="document-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label></div>
+  <div class="table-wrap invoice-register-scroll"><table><thead><tr><th><input id="select-all" type="checkbox" aria-label="Выбрать все доступные для нанесения на текущей странице"></th><th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Штук</th><th>Создана</th>${user.admin ? "<th>Владелец</th>" : ""}</tr></thead><tbody id="doc-rows"></tbody></table></div>
+  <div class="register-pager"><span id="document-page-label" role="status"></span><div class="actions"><button id="document-prev" type="button">Предыдущая</button><button id="document-next" type="button">Следующая</button></div></div>
+  ${archive ? "" : '<div class="selection-bar"><div><b id="selected-count">Накладные не выбраны</b><span class="cell-sub" id="selection-description">Выберите документы со статусом «Ожидает нанесения».</span></div><button type="button" id="clear-doc-selection" hidden>Снять выбор</button><button class="primary" data-action="batch" disabled>Подтвердить нанесение и сформировать АТК</button></div>'}</section>`);
+  $("#document-sort").value = documentSort;
+  $("#document-page-size").value = String(documentPageSize);
   filterRows();
   for (const key of ["search", "status", "supplier", "from", "to"])
     $("#" + key).oninput = () => {
       documentFilters[key] = $("#" + key).value;
+      documentPage = 0;
       filterRows();
     };
+  $("#document-sort").onchange = event => {
+    documentSort = event.target.value;
+    documentPage = 0;
+    filterRows();
+  };
+  $("#document-page-size").onchange = event => {
+    documentPageSize = Number(event.target.value);
+    documentPage = 0;
+    filterRows();
+  };
+  $("#document-prev").onclick = () => { documentPage--; filterRows(); };
+  $("#document-next").onclick = () => { documentPage++; filterRows(); };
+  if ($("#clear-doc-selection")) $("#clear-doc-selection").onclick = () => {
+    documentSelectedIds.clear();
+    filterRows();
+  };
   $$("[data-stage]").forEach(button => button.onclick = () => {
     documentFilters.stage = button.dataset.stage;
-    $$("[data-stage]").forEach(b => b.setAttribute("aria-pressed", b === button));
+    documentPage = 0;
+    $("[data-stage]").forEach(b => b.setAttribute("aria-pressed", b === button));
     filterRows();
   });
-  $("#select-all").onchange = () => {
-    $$(".doc-select:not(:disabled)").forEach(x => x.checked = $("#select-all").checked);
+  $("#select-all").onchange = event => {
+    $(".doc-select:not(:disabled)").forEach(input => {
+      input.checked = event.target.checked;
+      if (input.checked) documentSelectedIds.add(input.value);
+      else documentSelectedIds.delete(input.value);
+    });
     updateDocumentSelection();
   };
 }
 function filterRows() {
   const f = documentFilters;
+  // Drop assignments that are no longer eligible after status refresh.
+  const eligibleIds = new Set(docs.filter(d => d.status === "transferred" && !archive && !d.stopped)
+    .map(d => String(d.id)));
+  for (const id of documentSelectedIds) if (!eligibleIds.has(id)) documentSelectedIds.delete(id);
   const ds = docs.filter(d => documentStages[f.stage].matches(d) &&
     (!f.search || d.number.toLowerCase().includes(f.search.toLowerCase())) &&
     (!f.status || (d.display_status || d.status) === f.status) && (!f.supplier || d.supplier === f.supplier) &&
     (!f.from || d.created.slice(0, 10) >= f.from) && (!f.to || d.created.slice(0, 10) <= f.to));
+  ds.sort((a, b) => {
+    const textSort = (key) => String(a[key] || "").localeCompare(String(b[key] || ""), "ru", {numeric: true});
+    if (documentSort === "oldest") return String(a.created).localeCompare(String(b.created)) || textSort("number");
+    if (documentSort === "number") return textSort("number");
+    if (documentSort === "supplier") return textSort("supplier") || textSort("number");
+    if (documentSort === "status") return String(states[a.display_status || a.status] || a.status)
+      .localeCompare(String(states[b.display_status || b.status] || b.status), "ru") || textSort("number");
+    if (documentSort === "units") return Number(b.units || 0) - Number(a.units || 0) || textSort("number");
+    return String(b.created).localeCompare(String(a.created)) || textSort("number");
+  });
+  const pages = Math.max(1, Math.ceil(ds.length / documentPageSize));
+  documentPage = Math.max(0, Math.min(documentPage, pages - 1));
+  const from = documentPage * documentPageSize;
+  const visible = ds.slice(from, from + documentPageSize);
   $("#document-count").textContent = `Показано ${ds.length} из ${docs.length}`;
-  $("#doc-rows").innerHTML = ds.length ? ds.map(d => `<tr><td><input type="checkbox" class="doc-select" value="${e(d.id)}" ${d.status === "transferred" && !archive ? "" : 'disabled title="Доступно после передачи этикеток поставщику"'} aria-label="Выбрать ${e(d.number)}"></td><td><button class="linkbutton" data-action="open" data-id="${e(d.id)}"><b>${e(d.number)}</b></button></td><td>${e(d.supplier)}</td><td>${d.stopped ? badge("cancelled") : badge(d.display_status || d.status)}</td><td>${fmt(d.units)}</td><td>${date(d.created)}</td>${user.admin ? `<td>${e(d.owner)}</td>` : ""}</tr>`).join("") : `<tr><td colspan="${user.admin ? 7 : 6}"><div class="empty"><b>${docs.length ? "По выбранным условиям ничего не найдено" : archive ? "Архив пока пуст" : "Накладных пока нет"}</b>${docs.length ? "Сбросьте фильтры или выберите другой этап." : archive ? "Здесь появятся завершённые документы." : "Создайте накладную и загрузите состав из Excel."}</div></td></tr>`;
-  $$(".doc-select").forEach(x => x.onchange = updateDocumentSelection);
+  $("#document-page-label").textContent = ds.length ?
+    `Строки ${from + 1}–${from + visible.length} из ${ds.length} · страница ${documentPage + 1} из ${pages}` :
+    "Подходящих накладных нет";
+  $("#document-prev").disabled = documentPage === 0;
+  $("#document-next").disabled = documentPage + 1 >= pages;
+  $("#doc-rows").innerHTML = visible.length ? visible.map(d => `<tr><td><input type="checkbox" class="doc-select" value="${e(d.id)}" ${eligibleIds.has(String(d.id)) ? "" : 'disabled title="Доступно только после передачи этикеток поставщику"'} ${documentSelectedIds.has(String(d.id)) ? "checked" : ""} aria-label="Выбрать ${e(d.number)}"></td><td><button class="linkbutton" data-action="open" data-id="${e(d.id)}"><b>${e(d.number)}</b></button></td><td>${e(d.supplier)}</td><td>${d.stopped ? badge("cancelled") : badge(d.display_status || d.status)}</td><td>${fmt(d.units)}</td><td>${date(d.created)}</td>${user.admin ? `<td>${e(d.owner)}</td>` : ""}</tr>`).join("") : `<tr><td colspan="${user.admin ? 7 : 6}"><div class="empty"><b>${docs.length ? "По выбранным условиям ничего не найдено" : archive ? "Архив пока пуст" : "Накладных пока нет"}</b>${docs.length ? "Сбросьте фильтры или выберите другой этап." : archive ? "Здесь появятся завершённые документы." : "Создайте накладную и загрузите состав из Excel."}</div></td></tr>`;
+  $$(".doc-select").forEach(input => input.onchange = () => {
+    if (input.checked) documentSelectedIds.add(input.value);
+    else documentSelectedIds.delete(input.value);
+    updateDocumentSelection();
+  });
   updateDocumentSelection();
 }
 function updateDocumentSelection() {
-  const eligible = $$(".doc-select:not(:disabled)"), count = $$(".doc-select:checked").length;
+  const eligible = $$(".doc-select:not(:disabled)");
+  const localCount = eligible.filter(input => input.checked).length;
+  const count = documentSelectedIds.size;
   $("#select-all").disabled = !eligible.length;
-  $("#select-all").checked = !!eligible.length && count === eligible.length;
-  $("#select-all").indeterminate = count > 0 && count < eligible.length;
-  if ($("#selected-count")) $("#selected-count").textContent = count ? `Выбрано накладных: ${count}` : "Накладные не выбраны";
+  $("#select-all").checked = !!eligible.length && localCount === eligible.length;
+  $("#select-all").indeterminate = localCount > 0 && localCount < eligible.length;
+  if ($("#selected-count")) $("#selected-count").textContent = count ?
+    `Выбрано накладных: ${count} (на текущей странице: ${localCount})` : "Накладные не выбраны";
+  if ($("#selection-description")) $("#selection-description").textContent = count > localCount ?
+    `В том числе на других страницах или вне текущих фильтров: ${count - localCount}. Все выбранные накладные будут показаны при подтверждении.` :
+    "Выберите накладные со статусом «Ожидает нанесения». Выбор сохраняется при перелистывании.";
+  if ($("#clear-doc-selection")) $("#clear-doc-selection").hidden = !count;
   if ($('[data-action="batch"]')) $('[data-action="batch"]').disabled = !count;
 }
 function modal(content) {
