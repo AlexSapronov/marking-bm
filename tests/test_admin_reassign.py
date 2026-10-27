@@ -67,10 +67,11 @@ def test_reassignment_guards_invalid_users_and_supports_archive(env):
     assert service.store.one("SELECT status FROM documents WHERE id=?", (doc_id,))["status"] == "archive"
 
 
-def test_zip_download_uses_primary_button_styling():
+def test_zip_download_is_secondary_to_next_workflow_action():
     js = Path("static/app.js").read_text()
     css = Path("static/style.css").read_text()
     workspace = Path("static/workspace.js").read_text()
-    assert '<a class="button primary" href="/api/files/${e(currentFile.id)}">' in js
+    assert '<a class="button" href="/api/files/${e(currentFile.id)}">' in js
+    assert '<button class="primary" data-action="report">Подтвердить нанесение</button>' in js
     assert ".button.primary" in css
     assert 'documents: ["Документы"' in workspace
