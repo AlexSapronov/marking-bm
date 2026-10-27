@@ -153,6 +153,28 @@ function organizeDocument(editable) {
     order.insertAdjacentHTML("afterend",
       '<span id="order-block-reason" class="muted">Чтобы заказать КМ, сначала добавьте и сохраните строки.</span>');
   }
+  // Files retained for audit are accessible, but old label sets must never
+  // look interchangeable with the current printable version.
+  const historyLinks = [...processing.querySelectorAll("details .files a")];
+  doc.artifacts.forEach(file => {
+    if (file.kind !== "labels" || file.version === doc.current_version) return;
+    const link = historyLinks.find(a => a.getAttribute("href") === "/api/files/" + file.id);
+    if (!link) return;
+    link.classList.add("outdated-artifact");
+    link.insertAdjacentHTML("beforeend",
+      '<span class="file-warning">Устаревшая версия · не передавать поставщику</span>');
+  });
+
+  if (["ready", "transferred"].includes(doc.status) && !flowActions.querySelector('[data-action="move-lines"]')) {
+    const why = doc.stopped ? "обработка накладной остановлена" :
+      doc.group_stop ? "обработка общей группы остановлена" :
+      doc.parent_id ? "для накладной-дополнения перенос не предусмотрен" :
+      doc.operations.some(op => ["report", "atk", "transform"].includes(op.kind)) ?
+        "уже создан отчёт, АТК или трансформация" :
+      "условия безопасного переноса не выполнены";
+    next.firstElementChild.insertAdjacentHTML("beforeend",
+      `<p class="workflow-block-reason">Перенос строк и КМ недоступен: ${why}.</p>`);
+  }
   selectDocumentTab(documentTab);
 }
 function selectDocumentTab(key) {

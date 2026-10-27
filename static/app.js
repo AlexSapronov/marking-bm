@@ -808,7 +808,10 @@ function renderOperationRow(o) {
   if (attention) {
     buttons.push(`<button data-action="${resolved ? "unresolve-op" : "resolve-op"}" data-id="${e(o.id)}">${resolved ? "Вернуть предупреждение" : "Скрыть предупреждение"}</button>`);
   }
-  return `<tr><td>${e(kinds[o.kind])}<br><span class="muted">${date(o.created)}</span></td><td>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)}${resolved ? '<span class="cell-sub">Предупреждение скрыто</span>' : ""}</td><td class="mono">${e(o.external_id || "—")}</td><td class="filename">${e(o.error || "")}</td><td><div class="download-actions">${buttons.join("")}</div></td></tr>`;
+  const invoice = o.doc_id && o.doc_number
+    ? `<span class="cell-sub"><button class="linkbutton" data-action="open" data-id="${e(o.doc_id)}">Накладная ${e(o.doc_number)}</button></span>`
+    : "";
+  return `<tr><td>${e(kinds[o.kind])}<br><span class="muted">${date(o.created)}</span>${invoice}</td><td>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)}${resolved ? '<span class="cell-sub">Предупреждение скрыто</span>' : ""}</td><td class="mono">${e(o.external_id || "—")}</td><td class="filename">${e(o.error || "")}</td><td><div class="download-actions">${buttons.join("")}</div></td></tr>`;
 }
 async function loadAdminDocuments() {
   const result = $("#admin-doc-results");
