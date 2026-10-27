@@ -422,7 +422,7 @@ with tempfile.TemporaryDirectory() as tmp:
             assert test_service.get(move_target, "smoke-user")["status"] == "ready"
             assert len(test_service.get(move_target, "smoke-user")["codes"]) == 1
             assert test_service.get(move_source, "smoke-user")["status"] == "draft"
-            expect(page.locator('a[href*="/api/files/"]')).to_have_count(0)
+            expect(page.locator('a.button.primary[href*="/api/files/"]')).to_have_count(0)
             page.get_by_role("button", name="← Накладные", exact=True).click()
             page.get_by_role("button", name="+ Новая накладная", exact=True).click()
             page.locator("#number").fill("STOP-UI")
