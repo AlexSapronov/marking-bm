@@ -812,9 +812,15 @@ async function moveLinesModal(lineIds) {
   };
 }
 async function batchModal(ids) {
+  // A cross-page selection must always be fully visible before submitting
+  // an irreversible external report operation.
+  const selected = docs.filter(d => ids.includes(String(d.id)));
+  if (selected.length !== ids.length || selected.some(d => d.status !== "transferred" || d.stopped)) {
+    throw new Error("Состав выбранных накладных изменился. Обновите реестр и повторите выбор");
+  }
   if (!ids.length) throw new Error("Выберите накладные");
   modal(
-    `<h2>Подтверждение нанесения</h2><p>Поставщик подтвердил нанесение актуальных этикеток по выбранным накладным (${ids.length}). По каждой накладной будет отправлен отдельный отчёт, затем сформированы АТК.</p><p class="muted">КПП и ФИАС места деятельности будут взяты из настроек организации в админке.</p><form id="report-form"><label>Дата производства<input id="production-date" type="date" required></label><div class="actions"><button class="primary">Подтвердить и начать обработку</button><button type="button" data-action="close">Отмена</button></div></form>`,
+    `<h2>Подтверждение нанесения</h2><p>Поставщик подтвердил нанесение актуальных этикеток по выбранным накладным (${ids.length}). По каждой накладной будет отправлен отдельный отчёт, затем сформированы АТК.</p><p class="muted">КПП и ФИАС места деятельности будут взяты из настроек организации в админке.</p><details open><summary>Накладные, которые будут обработаны: ${ids.length}</summary><div class="batch-preview">${selected.map(d => `<div><b>${e(d.number)}</b><span class="muted">${e(d.supplier)}</span></div>`).join("")}</div></details><form id="report-form"><label>Дата производства<input id="production-date" type="date" required></label><div class="actions"><button class="primary">Подтвердить и начать обработку</button><button type="button" data-action="close">Отмена</button></div></form>`,
   );
   $("#report-form").onsubmit = async (ev) => {
     ev.preventDefault();
@@ -825,6 +831,7 @@ async function batchModal(ids) {
       });
       $("#modal").close();
       doc ? await open(doc.id) : await list();
+      documentSelectedIds.clear();
       toast("Отчёты поставлены в очередь подписи", "success");
     } catch (err) {
       toast(err.message);
@@ -1125,6 +1132,7 @@ async function action(name, id, b) {
       break;
     case "reset-doc-filters":
       documentFilters = {search: "", status: "", supplier: "", from: "", to: "", stage: "all"};
+      documentPage = 0;
       renderList();
       break;
     case "logistics":
@@ -1329,7 +1337,7 @@ async function action(name, id, b) {
       await batchModal([doc.id]);
       break;
     case "batch":
-      await batchModal($$(".doc-select:checked").map((x) => x.value));
+      await batchModal([...documentSelectedIds]);
       break;
     case "atk":
       await atkModal(id);
