@@ -77,6 +77,17 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("heading", name="Администрирование", exact=True).wait_for()
             expect(page.locator('[data-admin-panel="overview"]')).to_be_visible()
             expect(page.locator("#user-form")).not_to_be_visible()
+            # Escape is equivalent to cancellation in the shared confirmation UI.
+            page.evaluate("document.body.dataset.confirmOutcome = 'pending'; void confirmAction('UX test', 'Check cancellation').then(value => document.body.dataset.confirmOutcome = String(value))")
+            expect(page.get_by_role("heading", name="UX test")).to_be_visible()
+            page.keyboard.press("Escape")
+            expect(page.locator("#modal")).not_to_be_visible()
+            expect(page.locator("body")).to_have_attribute("data-confirm-outcome", "false")
+            page.evaluate("document.body.dataset.reasonOutcome = 'pending'; void attentionReasonDialog().then(value => document.body.dataset.reasonOutcome = value || 'cancelled')")
+            expect(page.get_by_role("heading", name="Скрыть предупреждение?")).to_be_visible()
+            page.locator("#attention-reason").fill("Сверено с результатом ЧЗ")
+            page.get_by_role("button", name="Скрыть предупреждение").click()
+            expect(page.locator("body")).to_have_attribute("data-reason-outcome", "Сверено с результатом ЧЗ")
             page.locator('.section-nav [data-id="users"]').click()
             page.locator("#username").fill("smoke-user")
             page.locator("#user-form button").click()
@@ -92,8 +103,10 @@ with tempfile.TemporaryDirectory() as tmp:
             logist_setup_code = page.locator("#setup-code-issued").inner_text()
             page.locator("#modal [data-action=close]").click()
             # Administrator can invalidate the first code and issue a reset code.
-            page.once("dialog", lambda dialog: dialog.accept())
             page.locator('[data-action="reset-password"][data-id="smoke-user"]').click()
+            expect(page.get_by_role("heading", name="Сбросить пароль сотрудника?")).to_be_visible()
+            expect(page.locator("#confirm-action")).to_have_text("Сбросить пароль")
+            page.locator("#confirm-action").click()
             expect(page.locator("#setup-code-issued")).to_be_visible()
             manager_setup_code = page.locator("#setup-code-issued").inner_text()
             page.locator("#modal [data-action=close]").click()
@@ -186,7 +199,10 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("button", name="Состав", exact=True).click()
             expect(page.locator(".pn-input")).to_have_value("L-132XYD")
             page.evaluate("batchModal([doc.id])")
-            page.get_by_role("heading", name="Подтверждение нанесения", exact=True).wait_for()
+            page.get_by_role("heading", name="Подтвердить нанесение и создать отчёт", exact=True).wait_for()
+            expect(page.locator("#report-form button.primary")).to_have_text(
+                "Подтвердить и поставить отчёт в очередь подписи"
+            )
             expect(page.locator("#report-form input")).to_have_count(1)
             expect(page.locator("#production-date")).to_be_visible()
             expect(page.locator("#report-form")).not_to_contain_text("КПП места деятельности")
@@ -290,8 +306,9 @@ with tempfile.TemporaryDirectory() as tmp:
             )
             expect(page.locator("#modal")).not_to_be_visible()
             # Preserve edits on a cancelled navigation, then save before leaving.
-            page.once("dialog", lambda dialog: dialog.dismiss())
             page.get_by_role("button", name="Накладные", exact=True).click()
+            expect(page.get_by_role("heading", name="Покинуть документ?")).to_be_visible()
+            page.locator("#modal [data-action='close']").click()
             expect(page.locator(".pn-input")).to_have_value("MAPPED-PN")
             page.get_by_role("button", name="Проверить и сохранить состав", exact=True).click()
             expect(page.locator("#document-save-state")).to_contain_text("сохранены")
@@ -406,8 +423,9 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.locator("#admin-doc-results tbody tr")).to_have_count(1)
             expect(page.locator("#admin-doc-results tbody tr td").nth(3)).to_have_text("administrator")
             page.locator("#admin-doc-results select.user-role").select_option("smoke-user")
-            page.once("dialog", lambda dialog: dialog.accept())
             page.locator('[data-action="reassign-document"]').click()
+            expect(page.get_by_role("heading", name="Сменить ответственного за накладную?")).to_be_visible()
+            page.locator("#confirm-action").click()
             expect(page.locator("#admin-doc-results tbody tr td").nth(3)).to_have_text("smoke-user")
             page.screenshot(path=str(out / "admin-documents.png"), full_page=True)
             page.locator('.section-nav [data-id="organization"]').click()
@@ -597,8 +615,9 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.locator("#registry-selection-summary")).to_contain_text("Выбрано АТК: 1")
             # Filtering must never silently discard a ready ZIP selection.
             page.locator("#atk-search").fill("nothing")
-            page.once("dialog", lambda dialog: dialog.dismiss())
             page.get_by_role("button", name="Применить фильтры").click()
+            expect(page.get_by_role("heading", name="Применить фильтры АТК?")).to_be_visible()
+            page.locator("#modal [data-action='close']").click()
             expect(page.locator("#atk-search")).to_have_value("")
             expect(page.locator("#registry-selection-summary")).to_contain_text("Выбрано АТК: 1")
             page.locator("#atk-next").click()
@@ -732,6 +751,27 @@ with tempfile.TemporaryDirectory() as tmp:
             assert len(test_service.get(move_target, "smoke-user")["codes"]) == 1
             assert test_service.get(move_source, "smoke-user")["status"] == "draft"
             expect(page.locator('a.button.primary[href*="/api/files/"]')).to_have_count(0)
+            page.get_by_role("button", name="← Накладные", exact=True).click()
+            expect(page.locator('[data-action="batch"]')).to_have_text("Нанесение и отчёты в СУЗ")
+            page.get_by_role("button", name="MOVE-EMPTY", exact=True).click()
+            expect(page.get_by_role("button", name="Подтвердить передачу этикеток", exact=True)).to_be_visible()
+            page.get_by_role("button", name="Подтвердить передачу этикеток", exact=True).click()
+            expect(page.get_by_role("heading", name="Подтвердить передачу этикеток поставщику?")).to_be_visible()
+            expect(page.locator("#modal")).to_contain_text("версия")
+            page.locator("#modal [data-action='close']").click()
+            assert test_service.get(move_target, "smoke-user")["status"] == "ready"
+            page.get_by_role("button", name="Подтвердить передачу этикеток", exact=True).click()
+            page.get_by_role("button", name="Передача подтверждена", exact=True).click()
+            try:
+                expect(page.locator('[data-action="report"]')).to_have_text(
+                    "Нанесение и отчёт в СУЗ", timeout=8000
+                )
+            except Exception as exc:
+                raise AssertionError(
+                    f"Передача после подтверждения не завершилась: "
+                    f"toast={page.locator('#toast').inner_text()}, errors={errors}"
+                ) from exc
+            assert test_service.get(move_target, "smoke-user")["status"] == "transferred"
             page.get_by_role("button", name="← Накладные", exact=True).click()
             page.get_by_role("button", name="+ Новая накладная", exact=True).click()
             page.locator("#number").fill("STOP-UI")

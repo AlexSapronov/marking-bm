@@ -220,7 +220,8 @@ function bind() {
     const b = ev.target.closest("[data-action]");
     if (!b) return;
     try {
-      if (documentDirty && ["list", "archive", "logistics", "admin", "refresh-page", "refresh-doc", "logout"].includes(b.dataset.action) && !confirm("В составе есть несохранённые изменения. Покинуть документ?")) return;
+      if (documentDirty && ["list", "archive", "logistics", "admin", "refresh-page", "refresh-doc", "logout"].includes(b.dataset.action) &&
+          !await confirmAction("Покинуть документ?", "Изменения состава не сохранены. Если продолжить, они будут потеряны.", "Покинуть без сохранения", true)) return;
       b.disabled = true;
       await action(b.dataset.action, b.dataset.id, b);
     } catch (err) {
@@ -368,7 +369,7 @@ function renderList() {
   <div class="register-controls"><label>Сортировка<select id="document-sort"><option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option><option value="number">По номеру накладной</option><option value="supplier">По поставщику</option><option value="status">По статусу</option><option value="units">По количеству товара</option></select></label><label>Строк на странице<select id="document-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label></div>
   <div class="table-wrap invoice-register-scroll"><table><thead><tr><th><input id="select-all" type="checkbox" aria-label="Выбрать все доступные для нанесения на текущей странице"></th><th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Штук</th><th>Создана</th>${user.admin ? "<th>Владелец</th>" : ""}</tr></thead><tbody id="doc-rows"></tbody></table></div>
   <div class="register-pager"><span id="document-page-label" role="status"></span><div class="actions"><button id="document-prev" type="button">Предыдущая</button><button id="document-next" type="button">Следующая</button></div></div>
-  ${archive ? "" : '<div class="selection-bar"><div><b id="selected-count">Накладные не выбраны</b><span class="cell-sub" id="selection-description">Выберите документы со статусом «Ожидает нанесения».</span></div><button type="button" id="clear-doc-selection" hidden>Снять выбор</button><button class="primary" data-action="batch" disabled>Подтвердить нанесение</button></div>'}</section>`);
+  ${archive ? "" : '<div class="selection-bar"><div><b id="selected-count">Накладные не выбраны</b><span class="cell-sub" id="selection-description">Выберите документы со статусом «Ожидает нанесения».</span></div><button type="button" id="clear-doc-selection" hidden>Снять выбор</button><button class="primary" data-action="batch" disabled>Нанесение и отчёты в СУЗ</button></div>'}</section>`);
   $("#document-sort").value = documentSort;
   $("#document-page-size").value = String(documentPageSize);
   filterRows();
@@ -470,6 +471,37 @@ function modal(content) {
   dialog.innerHTML = content;
   dialog.showModal();
 }
+// All confirmations use the same visible, keyboard-accessible dialog; closing
+// via Cancel, Escape or the dialog close button never performs the action.
+function confirmAction(title, description, actionLabel = "Подтвердить", dangerous = false) {
+  return new Promise(resolve => {
+    const dialog = $("#modal");
+    const onClose = () => resolve(false);
+    dialog.addEventListener("close", onClose, {once: true});
+    modal(`<h2>${e(title)}</h2><p>${e(description)}</p><div class="actions"><button id="confirm-action" type="button" class="${dangerous ? "danger" : "primary"}">${e(actionLabel)}</button><button type="button" data-action="close">Отмена</button></div>`);
+    $("#confirm-action").onclick = () => {
+      dialog.removeEventListener("close", onClose);
+      dialog.close();
+      resolve(true);
+    };
+  });
+}
+function attentionReasonDialog() {
+  return new Promise(resolve => {
+    const dialog = $("#modal");
+    const onClose = () => resolve(null);
+    dialog.addEventListener("close", onClose, {once: true});
+    modal('<h2>Скрыть предупреждение?</h2><p>Это только отметка администратора. Статус внешней операции в ЧЗ/СУЗ не изменится.</p><form id="attention-reason-form"><label>Причина скрытия<input id="attention-reason" required maxlength="1000" value="Рассмотрено администратором"></label><div class="actions"><button type="submit" class="primary">Скрыть предупреждение</button><button type="button" data-action="close">Отмена</button></div></form>');
+    $("#attention-reason-form").onsubmit = event => {
+      event.preventDefault();
+      const value = $("#attention-reason").value.trim();
+      if (!value) return;
+      dialog.removeEventListener("close", onClose);
+      dialog.close();
+      resolve(value);
+    };
+  });
+}
 async function newDoc(parent) {
   const suppliers = await api("/suppliers");
   modal(
@@ -556,7 +588,7 @@ function renderDoc() {
       )
       .join(
         "",
-      )}${doc.status === "receiving" ? '<div class="notice">PDF станет доступен после получения полного комплекта КМ. Повторный заказ не требуется.</div>' : ""}<div class="card"><div class="topbar"><h2>Состав накладной</h2>${editable ? '<div class="actions"><a href="/api/template">Скачать шаблон Excel</a><button data-action="import">Загрузить Excel</button><input type="file" id="excel-file" accept=".xlsx" hidden></div>' : ""}</div><div class="table-wrap"><table><thead><tr>${canMoveLines ? "<th>Перенести</th>" : ""}<th>PN</th><th>GTIN</th><th>Штук в этикетке</th><th>Этикеток</th><th>ТН ВЭД</th>${editable ? "<th></th>" : ""}</tr></thead><tbody id="edit-rows">${editable ? doc.lines.map(l => lineRow(l, canMoveLines)).join("") : doc.lines.map((l) => `<tr><td>${e(l.pn)}</td><td>${e(l.gtin)}</td><td>${fmt(l.quantity)}</td><td>${fmt(l.labels)}</td><td>${e(l.tnved)}</td></tr>`).join("")}</tbody></table></div>${editable ? '<div class="actions"><button data-action="add-line">+ Добавить строку</button><button data-action="save-lines">Проверить и сохранить состав</button></div>' : ""}<div class="actions">${canMoveLines ? '<button data-action="move-lines">Перенести строки и КМ</button>' : ""}${!doc.stopped && !doc.group_stop && reportIssue ? `<button class="primary" data-action="retry-report-doc" data-id="${e(reportIssue.id)}">Отправить повторно</button>` : ""}${user.admin && doc.status === "transferred" && doc.current_version === 0 ? '<button data-action="upload-legacy-pdf">Загрузить PDF</button><input type="file" id="legacy-pdf-file" accept=".pdf,application/pdf" hidden>' : ""}${doc.status === "draft" ? '<button class="primary" data-action="order">Заказать КМ</button>' : ""}${currentFile && doc.required > 0 && doc.codes.length === doc.required && !["draft", "repack", "receiving"].includes(doc.status) ? `<a class="button" href="/api/files/${e(currentFile.id)}">↓ Скачать ZIP с этикетками · v${doc.current_version}</a>` : ""}${["ready", "transferred"].includes(doc.status) ? `<button class="${doc.status === "ready" ? "primary" : ""}" data-action="transfer">${doc.status === "transferred" ? "Повторно подтвердить передачу" : "Подтвердить передачу этикеток"}</button>` : ""}${doc.status === "transferred" ? '<button class="primary" data-action="report">Подтвердить нанесение</button>' : ""}${!doc.stopped && ["done", "archive", "reported"].includes(doc.status) ? '<button data-action="supplement">Создать дополнение</button>' : ""}${!doc.stopped ? '<button class="danger" data-action="stop-document">Остановить и архивировать</button>' : ""}${user.admin && doc.status === "archive" ? '<button data-action="restore-document">Вернуть из архива</button>' : ""}<button data-action="refresh-doc">Обновить состояние</button></div></div>${doc.atks.length ? `<div class="card"><h2>Таможенные коды</h2>${doc.atks.map((a) => `<div class="toolbar"><span>ТН ВЭД <b>${e(a.tnved)}</b> · ${a.code ? e(a.code) : "Ожидает формирования"}</span>${a.state === "done" ? `<button data-action="atk" data-id="${e(a.id)}">Состав и трансформации</button>` : badge(a.state)}</div>`).join("")}<div class="files">${doc.exports.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div></div>` : ""}<div class="split"><div class="card"><h2>Обработка</h2>${doc.operations.length ? doc.operations.map((o) => `<div class="history"><b>${e(kinds[o.kind])}</b>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)} <span class="muted">${date(o.updated)}</span>${o.error ? `<p class="muted">${e(o.error)}</p>` : ""}${!o.stopped && o.id === reportIssue?.id && o.kind === "report" && ["rejected", "partial"].includes(o.state) ? `<div class="actions"><button class="primary" data-action="retry-report-doc" data-id="${e(o.id)}">Повторить отправку отчёта</button></div>` : ""}</div>`).join("") : '<p class="muted">Внешние операции ещё не запускались.</p>'}<details><summary>История файлов и прежние версии</summary><p class="muted">Скачанные поставщиком старые этикетки технически отозвать нельзя.</p><div class="files">${doc.artifacts.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · ${e(f.kind === "source" ? "Исходный Excel" : "v" + f.version)}</a>`).join("")}</div></details></div><div class="card"><h2>История документа</h2>${doc.history.map((h) => `<div class="history"><b>${e(h.action)}</b><span class="muted">${date(h.created)} · ${e(h.actor)}</span></div>`).join("")}</div></div>`,
+      )}${doc.status === "receiving" ? '<div class="notice">PDF станет доступен после получения полного комплекта КМ. Повторный заказ не требуется.</div>' : ""}<div class="card"><div class="topbar"><h2>Состав накладной</h2>${editable ? '<div class="actions"><a href="/api/template">Скачать шаблон Excel</a><button data-action="import">Загрузить Excel</button><input type="file" id="excel-file" accept=".xlsx" hidden></div>' : ""}</div><div class="table-wrap"><table><thead><tr>${canMoveLines ? "<th>Перенести</th>" : ""}<th>PN</th><th>GTIN</th><th>Штук в этикетке</th><th>Этикеток</th><th>ТН ВЭД</th>${editable ? "<th></th>" : ""}</tr></thead><tbody id="edit-rows">${editable ? doc.lines.map(l => lineRow(l, canMoveLines)).join("") : doc.lines.map((l) => `<tr><td>${e(l.pn)}</td><td>${e(l.gtin)}</td><td>${fmt(l.quantity)}</td><td>${fmt(l.labels)}</td><td>${e(l.tnved)}</td></tr>`).join("")}</tbody></table></div>${editable ? '<div class="actions"><button data-action="add-line">+ Добавить строку</button><button data-action="save-lines">Проверить и сохранить состав</button></div>' : ""}<div class="actions">${canMoveLines ? '<button data-action="move-lines">Перенести строки и КМ</button>' : ""}${!doc.stopped && !doc.group_stop && reportIssue ? `<button class="primary" data-action="retry-report-doc" data-id="${e(reportIssue.id)}">Отправить повторно</button>` : ""}${user.admin && doc.status === "transferred" && doc.current_version === 0 ? '<button data-action="upload-legacy-pdf">Загрузить PDF</button><input type="file" id="legacy-pdf-file" accept=".pdf,application/pdf" hidden>' : ""}${doc.status === "draft" ? '<button class="primary" data-action="order">Заказать КМ</button>' : ""}${currentFile && doc.required > 0 && doc.codes.length === doc.required && !["draft", "repack", "receiving"].includes(doc.status) ? `<a class="button" href="/api/files/${e(currentFile.id)}">↓ Скачать ZIP с этикетками · v${doc.current_version}</a>` : ""}${["ready", "transferred"].includes(doc.status) ? `<button class="${doc.status === "ready" ? "primary" : ""}" data-action="transfer">${doc.status === "transferred" ? "Повторно подтвердить передачу" : "Подтвердить передачу этикеток"}</button>` : ""}${doc.status === "transferred" ? '<button class="primary" data-action="report">Нанесение и отчёт в СУЗ</button>' : ""}${!doc.stopped && ["done", "archive", "reported"].includes(doc.status) ? '<button data-action="supplement">Создать дополнение</button>' : ""}${!doc.stopped ? '<button class="danger" data-action="stop-document">Остановить и архивировать</button>' : ""}${user.admin && doc.status === "archive" ? '<button data-action="restore-document">Вернуть из архива</button>' : ""}<button data-action="refresh-doc">Обновить состояние</button></div></div>${doc.atks.length ? `<div class="card"><h2>Таможенные коды</h2>${doc.atks.map((a) => `<div class="toolbar"><span>ТН ВЭД <b>${e(a.tnved)}</b> · ${a.code ? e(a.code) : "Ожидает формирования"}</span>${a.state === "done" ? `<button data-action="atk" data-id="${e(a.id)}">Состав и трансформации</button>` : badge(a.state)}</div>`).join("")}<div class="files">${doc.exports.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div></div>` : ""}<div class="split"><div class="card"><h2>Обработка</h2>${doc.operations.length ? doc.operations.map((o) => `<div class="history"><b>${e(kinds[o.kind])}</b>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)} <span class="muted">${date(o.updated)}</span>${o.error ? `<p class="muted">${e(o.error)}</p>` : ""}${!o.stopped && o.id === reportIssue?.id && o.kind === "report" && ["rejected", "partial"].includes(o.state) ? `<div class="actions"><button class="primary" data-action="retry-report-doc" data-id="${e(o.id)}">Повторить отправку отчёта</button></div>` : ""}</div>`).join("") : '<p class="muted">Внешние операции ещё не запускались.</p>'}<details><summary>История файлов и прежние версии</summary><p class="muted">Скачанные поставщиком старые этикетки технически отозвать нельзя.</p><div class="files">${doc.artifacts.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · ${e(f.kind === "source" ? "Исходный Excel" : "v" + f.version)}</a>`).join("")}</div></details></div><div class="card"><h2>История документа</h2>${doc.history.map((h) => `<div class="history"><b>${e(h.action)}</b><span class="muted">${date(h.created)} · ${e(h.actor)}</span></div>`).join("")}</div></div>`,
   );
   organizeDocument(editable);
   if ($("#legacy-pdf-file")) $("#legacy-pdf-file").onchange = async ev => {
@@ -845,8 +877,9 @@ async function batchModal(ids) {
     throw new Error("Состав выбранных накладных изменился. Обновите реестр и повторите выбор");
   }
   if (!ids.length) throw new Error("Выберите накладные");
+  const single = ids.length === 1;
   modal(
-    `<h2>Подтверждение нанесения</h2><p>Поставщик подтвердил нанесение актуальных этикеток по выбранным накладным (${ids.length}). По каждой накладной будет отправлен отдельный отчёт, затем сформированы АТК.</p><p class="muted">КПП и ФИАС места деятельности будут взяты из настроек организации в админке.</p><details open><summary>Накладные, которые будут обработаны: ${ids.length}</summary><div class="batch-preview">${selected.map(d => `<div><b>${e(d.number)}</b><span class="muted">${e(d.supplier)}</span></div>`).join("")}</div></details><form id="report-form"><label>Дата производства<input id="production-date" type="date" required></label><div class="actions"><button class="primary">Подтвердить и начать обработку</button><button type="button" data-action="close">Отмена</button></div></form>`,
+    `<h2>${single ? "Подтвердить нанесение и создать отчёт" : "Подтвердить нанесение и создать отчёты"}</h2><p>Поставщик подтвердил нанесение актуальных этикеток по выбранным накладным (${ids.length}). По каждой накладной будет отправлен отдельный отчёт, затем сформированы АТК.</p><p class="muted">КПП и ФИАС места деятельности будут взяты из настроек организации в админке.</p><details open><summary>Накладные, которые будут обработаны: ${ids.length}</summary><div class="batch-preview">${selected.map(d => `<div><b>${e(d.number)}</b><span class="muted">${e(d.supplier)}</span></div>`).join("")}</div></details><form id="report-form"><label>Дата производства<input id="production-date" type="date" required></label><div class="actions"><button class="primary">${single ? "Подтвердить и поставить отчёт в очередь подписи" : "Подтвердить и поставить отчёты в очередь подписи"}</button><button type="button" data-action="close">Отмена</button></div></form>`,
   );
   $("#report-form").onsubmit = async (ev) => {
     ev.preventDefault();
@@ -1156,7 +1189,7 @@ async function action(name, id, b) {
       if (!owner) throw new Error("Выберите нового ответственного");
       const number = row.dataset.number;
       const previous = row.dataset.owner;
-      if (!confirm("Передать накладную " + number + " от " + previous + " сотруднику " + owner + "?")) break;
+      if (!await confirmAction("Сменить ответственного за накладную?", "Накладная " + number + ": ответственный " + previous + " будет заменён на " + owner + ". Прежний сотрудник потеряет доступ.", "Передать накладную")) break;
       await api("/admin/documents/" + encodeURIComponent(id) + "/owner", {owner}, "PUT");
       await loadAdminDocuments();
       toast("Накладная " + number + " передана сотруднику " + owner, "success");
@@ -1195,7 +1228,7 @@ async function action(name, id, b) {
       await logisticsDetail(id);
       break;
     case "registry-reset":
-      if (registrySelectedIds.size && !confirm("Сброс фильтров снимет выбор АТК для ZIP. Продолжить?")) break;
+      if (registrySelectedIds.size && !await confirmAction("Сбросить фильтры АТК?", "Выбор АТК для ZIP на всех страницах будет снят.", "Сбросить фильтры")) break;
       registryPage = 0;
       registrySelectedIds.clear();
       registryFilters = {
@@ -1232,7 +1265,7 @@ async function action(name, id, b) {
       login(false, true);
       break;
     case "reset-password": {
-      if (!confirm("Сбросить пароль пользователя " + id + "? Все его сессии завершатся.")) break;
+      if (!await confirmAction("Сбросить пароль сотрудника?", "Пользователь " + id + " должен будет установить новый пароль. Все действующие сеансы завершатся.", "Сбросить пароль", true)) break;
       const setup = await api("/admin/users/" + encodeURIComponent(id) + "/reset-password", {});
       await adminPage();
       showSetupCode(id, setup);
@@ -1368,12 +1401,19 @@ async function action(name, id, b) {
       $("#modal").close();
       renderDoc();
       break;
-    case "transfer":
+    case "transfer": {
+      const repeated = doc.status === "transferred";
+      if (!await confirmAction(repeated ? "Подтвердить повторную передачу этикеток?" : "Подтвердить передачу этикеток поставщику?",
+        "Убедитесь, что поставщику действительно передана версия " + doc.current_version +
+        " этикеток для накладной " + doc.number + ". После подтверждения документ перейдёт к ожиданию нанесения.",
+        repeated ? "Подтвердить повторную передачу" : "Передача подтверждена")) break;
       await api("/documents/" + doc.id + "/transferred", {
         version: doc.current_version,
       });
       await open(doc.id);
+      toast("Передача версии " + doc.current_version + " этикеток поставщику подтверждена", "success");
       break;
+    }
     case "report":
       await batchModal([doc.id]);
       break;
@@ -1402,25 +1442,25 @@ async function action(name, id, b) {
       toast("Авторизация ожидает подписи на Windows-ПК", "success");
       break;
     case "retry-local":
-      if (!confirm("Это локальная ошибка до отправки в ЧЗ. Повторить операцию после исправления подключения?")) break;
+      if (!await confirmAction("Повторить локальную операцию?", "Операция не дошла до ЧЗ. Повторяйте её только после исправления подключения.", "Повторить операцию")) break;
       await api("/admin/operations/" + id + "/retry-local", {});
       await adminPage();
       toast("Операция повторно поставлена в очередь", "success");
       break;
     case "retry-report":
-      if (!confirm("Отправить новый отчёт? При частичной обработке будут включены только КМ, которые ГИС МТ подтвердит как ещё не нанесённые.")) break;
+      if (!await confirmAction("Повторить отчёт о нанесении?", "При частичной обработке в новый отчёт войдут только КМ, которые ГИС МТ подтвердит как ещё не нанесённые.", "Поставить отчёт в очередь")) break;
       await api("/admin/operations/" + id + "/retry", {});
       await adminPage();
       toast("Новый отчёт ожидает подписи на Windows-ПК", "success");
       break;
     case "retry-report-doc":
-      if (!confirm("Повторить отчёт после проверки карточек в НК? Уже нанесённые КМ не будут отправлены повторно.")) break;
+      if (!await confirmAction("Повторить отчёт о нанесении?", "Сначала проверьте карточки в Национальном каталоге. КМ с подтверждённым нанесением повторно не отправляются.", "Повторить отчёт")) break;
       await api("/documents/" + encodeURIComponent(doc.id) + "/report/" + encodeURIComponent(id) + "/retry", {});
       await open(doc.id);
       toast("Повторная отправка ожидает подписи на Windows-ПК", "success");
       break;
     case "resolve-op": {
-      const reason = prompt("Причина скрытия предупреждения (операция в ЧЗ останется без изменений):", "Рассмотрено администратором");
+      const reason = await attentionReasonDialog();
       if (reason === null) break;
       await api("/admin/operations/" + id + "/attention", {resolved: true, reason});
       await adminPage();
@@ -1609,7 +1649,7 @@ async function logisticsPage() {
   );
   $("#registry-filters").onsubmit = async (ev) => {
     ev.preventDefault();
-    if (registrySelectedIds.size && !confirm("Применение фильтров снимет выбор АТК для ZIP. Продолжить?")) {
+    if (registrySelectedIds.size && !await confirmAction("Применить фильтры АТК?", "Выбор АТК для ZIP на всех страницах будет снят.", "Применить фильтры")) {
       await logisticsPage();
       return;
     }
