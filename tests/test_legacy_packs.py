@@ -136,3 +136,36 @@ def test_legacy_pdf_attachment_does_not_generate_label_zip(env):
     assert not any(x["kind"] == "labels" for x in doc["artifacts"])
     assert client(app, "alice").post(f"/api/admin/legacy/{doc_id}/pdf",
                                     files={"file": ("a.pdf", pdf.getvalue())}).status_code == 403
+
+
+def test_editing_imported_document_enables_normal_label_generation(env):
+    app, service, registry = env
+    admin = client(app, "administrator", True)
+    content = make_xlsx(make_rows(1))
+    created = admin.post("/api/admin/legacy/import",
+                         files={"file": ("result_EDITME.xlsx", content)},
+                         data={"supplier": "Supplier", "owner": "alice"})
+    assert created.status_code == 200, created.text
+    doc_id = created.json()["id"]
+    stored = service.store.one("SELECT * FROM codes WHERE doc_id=?", (doc_id,))
+    registry.codes[stored["cis"]] = {
+        "cis": stored["cis"], "requestedCis": stored["cis"], "gtin": GTIN,
+        "status": "EMITTED", "ownerInn": "7700000000",
+        "emissionType": "FOREIGN", "statusEx": None, "tnVedEaes": TN, "parent": None,
+    }
+    assert not service.store.one(
+        "SELECT id FROM artifacts WHERE kind='labels' AND doc_id=?", (doc_id,)
+    )
+    new_rows = [["PN-REVISED", GTIN, 3000, 1, TN]]
+    preview = service.preview(doc_id, "alice", new_rows)
+    after = service.save_lines(
+        doc_id, "alice", new_rows, revision=1,
+        confirmation=preview["fingerprint"],
+    )
+    assert after["status"] == "ready"
+    assert after["current_version"] == 1
+    labels = service.store.one(
+        "SELECT name,kind FROM artifacts WHERE kind='labels' AND doc_id=?", (doc_id,)
+    )
+    assert labels and labels["name"].endswith("-v1.zip")
+    assert not registry.orders  # Existing legacy KM reused instead of emission
