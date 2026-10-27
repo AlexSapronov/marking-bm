@@ -72,6 +72,6 @@ def test_zip_download_is_secondary_to_next_workflow_action():
     css = Path("static/style.css").read_text()
     workspace = Path("static/workspace.js").read_text()
     assert '<a class="button" href="/api/files/${e(currentFile.id)}">' in js
-    assert '<button class="primary" data-action="report">Подтвердить нанесение</button>' in js
+    assert '<button class="primary" data-action="report">Нанесение и отчёт в СУЗ</button>' in js
     assert ".button.primary" in css
     assert 'documents: ["Документы"' in workspace
