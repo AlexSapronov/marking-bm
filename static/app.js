@@ -664,13 +664,15 @@ function setupAdminDocumentPanel() {
       const statusSummary = Object.entries(verification.status_counts)
         .map(([status, count]) => e(status) + ": " + fmt(count)).join(" · ");
       $("#legacy-preview").innerHTML = `<b>Накладная ${e(result.number)}</b> · ${fmt(result.codes)} КМ · ${fmt(result.units)} шт. · ${result.lines.length} позиций
-        ${result.duplicate_invoice ? '<p class="error">Накладная с этим номером уже существует. Импорт запрещён.</p>' : ""}
+        ${result.duplicate_invoice ? '<p class="error">Накладная с этим номером уже есть среди активных документов. Импорт запрещён.</p>' : ""}
+        ${result.archived_codes ? `<p class="muted">В архиве найдено ${fmt(result.archived_codes)} КМ. При импорте они будут перенесены в новую рабочую накладную без создания дублей. Архив и история назначений сохранятся.</p>` : ""}
+        ${result.blocked_codes ? `<p class="error">${fmt(result.blocked_codes)} КМ уже используются или не могут быть безопасно перенесены из архива. Импорт запрещён.</p>` : ""}
         <p class="${verification.allowed ? "muted" : "error"}"><b>Проверка ЧЗ:</b> ${verification.allowed ? "Все " + fmt(verification.checked) + " КМ имеют статус EMITTED и принадлежат нашей организации. Импорт разрешён." : "Импорт запрещён: " + fmt(verification.errors_count) + " КМ не соответствуют требованиям."}</p>
         <p class="muted">Статусы: ${statusSummary}</p>
         ${verification.errors.length ? `<div class="table-wrap"><table><thead><tr><th>PN</th><th>GTIN</th><th>КМ (CIS)</th><th>Статус ЧЗ</th><th>Причина</th></tr></thead><tbody>${verification.errors.map(item=>`<tr><td>${e(item.pn)}</td><td>${e(item.gtin)}</td><td class="mono">${e(item.cis)}</td><td>${e(item.status)}</td><td>${e(item.reason)}</td></tr>`).join("")}</tbody></table></div>${verification.errors_count > verification.errors.length ? '<p class="muted">Показаны первые 100 проблемных КМ.</p>' : ""}` : ""}
         <div class="table-wrap"><table><thead><tr><th>PN</th><th>GTIN</th><th>В этикетке</th><th>Этикеток</th></tr></thead><tbody>${result.lines.slice(0, 20).map(line=>`<tr><td>${e(line.pn)}</td><td>${e(line.gtin)}</td><td>${fmt(line.quantity)}</td><td>${fmt(line.labels)}</td></tr>`).join("")}</tbody></table></div>
         ${result.lines.length>20 ? '<p class="muted">Показаны первые 20 позиций</p>' : ""}`;
-      previewReady = !result.duplicate_invoice && verification.allowed;
+      previewReady = !result.duplicate_invoice && !result.blocked_codes && verification.allowed;
       submit.disabled = !previewReady;
     } catch (err) {
       $("#legacy-preview").textContent = err.message;
