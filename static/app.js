@@ -615,6 +615,7 @@ async function moveLinesModal(lineIds) {
       const preview = await api("/documents/" + sourceId + "/move-lines/preview", {
         target_id: targetId, line_ids: lineIds,
       });
+      $("#modal").close();
       modal(`<h2>Подтвердить перенос</h2>
         <p><b>${e(preview.source.number)}</b> → <b>${e(preview.target.number)}</b></p>
         <p>${fmt(preview.lines.length)} строк · ${fmt(preview.codes)} КМ · ${fmt(preview.units)} единиц товара</p>
