@@ -354,9 +354,10 @@ td button {
   font-weight: 650;
 }
 .badge.logistics {
-  background: var(--warn-bg);
-  color: var(--warn);
-  border-color: var(--warn-border);
+  /* The export package exists; this is not an error or proof of delivery. */
+  background: var(--surface-2);
+  color: var(--primary);
+  border-color: var(--border);
 }
 .badge.ready,
 .badge.done {
