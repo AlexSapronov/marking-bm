@@ -74,7 +74,7 @@ function documentBadge(d) {
   const status = d.stopped ? "cancelled" : d.status === "done" ? "logistics" : d.display_status || d.status;
   return `<span class="badge ${e(status)}">${e(documentStatusLabel(d))}</span>`;
 }
-  fmt = (n) => Number(n || 0).toLocaleString("ru-RU"),
+const fmt = (n) => Number(n || 0).toLocaleString("ru-RU"),
   date = (s) => (s ? new Date(s).toLocaleString("ru-RU") : "—");
 let user,
   docs = [],
