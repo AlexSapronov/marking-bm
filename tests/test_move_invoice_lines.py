@@ -193,7 +193,7 @@ def test_move_target_nonempty_draft_rejected_and_duplicate_rows_rejected(env):
     line_id = service.get(source, "alice")["lines"][0]["id"]
     with pytest.raises(Conflict, match="пустым"):
         service.move_lines_preview(source, destination, [line_id], "alice")
-    with pytest.raises(ValueError, match="уникаль"):
+    with pytest.raises(ValueError, match="другую накладную"):
         service.move_lines_preview(source, source, [line_id], "alice")
     with pytest.raises(ValueError, match="Выберите"):
         service.move_lines_preview(source, destination, [], "alice")
