@@ -154,8 +154,18 @@ with tempfile.TemporaryDirectory() as tmp:
             page.locator(".qty-input").fill("5")
             page.locator(".labels-input").fill("3")
             page.locator(".tnved-input").fill("8536699008")
+            prepared_rows = page.evaluate("gatherRows()")
+            assert prepared_rows == [["L-132XYD", "04640638349704", 5, 3, "8536699008"]], prepared_rows
             page.get_by_role("button", name="Проверить и сохранить состав").click()
-            page.get_by_text("Состав сохранён", exact=True).wait_for()
+            try:
+                page.get_by_text("Состав сохранён", exact=True).wait_for(timeout=6000)
+            except Exception as exc:
+                raise AssertionError(
+                    f"Сохранение состава: {exc}; modal={page.locator('#modal').inner_text()}; "
+                    f"toast={page.locator('#toast').inner_text()}; "
+                    f"dialog_open={page.locator('#modal').evaluate('(el) => el.open')}; "
+                    f"page_errors={errors}; rows={prepared_rows}"
+                ) from exc
             page.reload()
             page.get_by_role("heading", name="Накладная SMOKE-001").wait_for()
             assert page.locator(".pn-input").input_value() == "L-132XYD"
