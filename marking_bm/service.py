@@ -476,6 +476,12 @@ class Service:
             raise ValueError("Загруженный файл не является PDF")
         if len(content) > 20 * 1024 * 1024:
             raise ValueError("PDF больше 20 МБ")
+        try:
+            reader = PdfReader(BytesIO(content), strict=True)
+            if not reader.pages:
+                raise ValueError("PDF не содержит страниц")
+        except Exception as exc:
+            raise ValueError("Невозможно прочитать исходный PDF маркировки") from exc
         with self.store.transaction() as db:
             document = self.document(db, doc_id, actor, admin=True)
             if document["status"] not in ("transferred", "ready"):
