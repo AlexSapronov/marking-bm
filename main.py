@@ -256,7 +256,17 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         archive: bool = False,
         s=Depends(manager),
     ):
-        sql = "SELECT d.*,EXISTS(SELECT 1 FROM document_stops h WHERE h.doc_id=d.id AND h.resumed_at IS NULL) stopped,p.name supplier,(SELECT SUM(quantity*labels) FROM lines WHERE doc_id=d.id) units FROM documents d JOIN suppliers p ON p.id=d.supplier_id WHERE 1=1"
+        sql = (
+            "SELECT d.*,EXISTS(SELECT 1 FROM document_stops h WHERE h.doc_id=d.id "
+            "AND h.resumed_at IS NULL) stopped,p.name supplier,"
+            "(SELECT SUM(quantity*labels) FROM lines WHERE doc_id=d.id) units,"
+            "CASE WHEN d.status='reporting' AND NOT EXISTS("
+            "SELECT 1 FROM document_stops h WHERE h.doc_id=d.id AND h.resumed_at IS NULL"
+            ") AND (SELECT o.state FROM operations o WHERE o.doc_id=d.id "
+            "AND o.kind='report' ORDER BY o.rowid DESC LIMIT 1) IN ('rejected','partial') "
+            "THEN 'report_error' ELSE d.status END display_status "
+            "FROM documents d JOIN suppliers p ON p.id=d.supplier_id WHERE 1=1"
+        )
         args = []
         if not s["admin"]:
             sql += " AND owner=?"
