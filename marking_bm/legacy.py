@@ -38,6 +38,10 @@ def parse_legacy_pack(content, filename):
         raise ValueError("Excel больше 10 МБ")
     if not zipfile.is_zipfile(BytesIO(content)):
         raise ValueError("Нужен настоящий файл XLSX")
+    with zipfile.ZipFile(BytesIO(content)) as archive:
+        entries = archive.infolist()
+        if len(entries) > 100 or sum(entry.file_size for entry in entries) > 40 * 1024 * 1024:
+            raise ValueError("Excel содержит слишком большие вложенные данные")
     try:
         book = openpyxl.load_workbook(BytesIO(content), read_only=True, data_only=True)
         try:
