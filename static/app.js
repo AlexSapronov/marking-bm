@@ -1099,7 +1099,7 @@ async function adminPage(freshOverview = null) {
       .filter((s) => !s.merged_into)
       .map(
         (s) =>
-          `<div class="toolbar"><span>${e(s.name)}</span><button data-action="supplier-edit" data-id="${e(s.id)}">Изменить</button></div>`,
+          `<div class="toolbar"><span>${e(s.name)}</span><button data-action="supplier-edit" data-id="${e(s.id)}">Изменить / объединить</button></div>`,
       )
       .join(
         "",
@@ -1430,6 +1430,10 @@ async function action(name, id, b) {
       await transformModal(id, "REMOVING");
       break;
     case "user-toggle":
+      if (b.dataset.enabled !== "1" && !await confirmAction(
+        "Отключить доступ сотрудника?",
+        "Пользователь " + id + " потеряет доступ к системе, а его действующие сеансы будут завершены. Сохранённые накладные не удаляются.",
+        "Отключить доступ", true)) break;
       await api("/admin/users", {
         username: id,
         enabled: b.dataset.enabled === "1",
@@ -1561,13 +1565,21 @@ async function action(name, id, b) {
           .map((x) => `<option value="${e(x.id)}">${e(x.name)}</option>`)
           .join(
             "",
-          )}</select></label><div class="actions"><button class="primary">Сохранить</button><button type="button" data-action="close">Отмена</button></div></form>`,
+          )}</select></label><div class="actions"><button class="primary">Сохранить изменения поставщика</button><button type="button" data-action="close">Отмена</button></div></form>`,
       );
       $("#supplier-form").onsubmit = async (ev) => {
         ev.preventDefault();
         const body = Object.fromEntries(new FormData(ev.target));
         body.id = id;
         body.merge_into = body.merge_into || null;
+        if (body.merge_into) {
+          const target = overview.suppliers.find(supplier => supplier.id === body.merge_into);
+          if (!await confirmAction(
+            "Объединить записи поставщиков?",
+            "Поставщик «" + s.name + "» будет объединён с «" + (target?.name || body.merge_into) +
+              "». Новые накладные будут использовать общую запись. Исторические АТК и файлы сохранятся.",
+            "Объединить поставщиков", true)) return;
+        }
         try {
           await api("/admin/suppliers", body);
           $("#modal").close();
@@ -1587,7 +1599,7 @@ function logisticsNextAction(a) {
   if (a.status === "processing") return "Дождитесь формирования АТК";
   if (!a.download_ready) return "Дождитесь комплекта АТК + RESULT";
   if (a.documents.some(d => d.can_complete)) return "Проверьте комплект и закройте накладные в системе";
-  if (a.archived) return "Комплект доступен в архиве";
+  if (a.archived) return "Документы сохранены в архиве";
   return "Скачать комплект АТК + RESULT";
 }
 async function logisticsPage() {
@@ -1629,8 +1641,8 @@ async function logisticsPage() {
     groupCounts.set(a.group_id, (groupCounts.get(a.group_id) || 0) + 1);
   });
   const registryLabels = {
-    done: "Готов",
-    processing: "Формируется",
+    done: "АТК сформирован",
+    processing: "АТК формируется",
     attention: "Требует проверки",
     transforming: "Трансформация",
     stopped: "Обработка остановлена",
@@ -1684,7 +1696,7 @@ async function logisticsPage() {
     tbody.innerHTML = onPage.map((a, i) =>
       `${i === 0 || onPage[i - 1].supplier_id !== a.supplier_id
         ? `<tr class="registry-supplier-row"><th colspan="9" scope="colgroup">${e(a.supplier)} · всего ${fmt(supplierCounts.get(a.supplier_id))} АТК</th></tr>` : ""}
-        <tr><td><input type="checkbox" class="atk-select" value="${e(a.id)}" ${a.download_ready ? "" : "disabled"} aria-label="Выбрать АТК ${e(a.code || a.id)}"></td><td><button class="linkbutton registry-code" data-action="registry-detail" data-id="${e(a.id)}">${a.code ? e(a.code) : "АТК формируется"}</button><span class="cell-sub">${e(a.supplier)}</span></td><td>${a.invoices.map(e).join(", ")}<span class="cell-sub">${a.owners.map(e).join(", ")}</span></td><td>${e(a.tnved)}</td><td><b>${fmt(a.units)}</b><span class="cell-sub">${fmt(a.labels)} КМ</span></td><td><span class="badge ${e(a.status)}">${registryLabels[a.status]}</span><span class="cell-sub">${date(a.created)}</span>${a.error ? `<span class="cell-sub">${e(a.error)}</span>` : ""}</td><td><div class="download-actions">${a.files.map((f) => `<a href="/api/files/${e(f.id)}" class="button" title="${e(f.name)}">${f.kind === "atk" ? "АТК" : "RESULT"} · v${f.version}</a>`).join("")}</div>${a.download_ready ? "" : '<span class="cell-sub">Комплект ещё не готов</span>'}<span class="cell-sub">${groupCounts.get(a.group_id) > 1 ? "Общий комплект · " + fmt(groupCounts.get(a.group_id)) + " АТК" : "Отдельный комплект"}</span></td><td class="registry-next-action">${e(logisticsNextAction(a))}</td><td>${a.documents.some(d => d.can_complete) ? `<button data-action="registry-detail" data-id="${e(a.id)}">Открыть для закрытия накладных</button>` : a.status === "stopped" ? '<span class="badge cancelled">Остановлена</span>' : a.archived ? '<span class="badge done">Завершены</span>' : '<span class="muted">Ожидание готовности</span>'}</td></tr>`).join("");
+        <tr><td><input type="checkbox" class="atk-select" value="${e(a.id)}" ${a.download_ready ? "" : "disabled"} aria-label="Выбрать АТК ${e(a.code || a.id)}"></td><td><button class="linkbutton registry-code" data-action="registry-detail" data-id="${e(a.id)}">${a.code ? e(a.code) : "АТК формируется"}</button><span class="cell-sub">${e(a.supplier)}</span></td><td>${a.invoices.map(e).join(", ")}<span class="cell-sub">${a.owners.map(e).join(", ")}</span></td><td>${e(a.tnved)}</td><td><b>${fmt(a.units)}</b><span class="cell-sub">${fmt(a.labels)} КМ</span></td><td><span class="badge ${e(a.status)}">${registryLabels[a.status]}</span><span class="cell-sub">${date(a.created)}</span>${a.error ? `<span class="cell-sub">${e(a.error)}</span>` : ""}</td><td><div class="download-actions">${a.files.map((f) => `<a href="/api/files/${e(f.id)}" class="button" title="${e(f.name)}">${f.kind === "atk" ? "АТК" : "RESULT"} · v${f.version}</a>`).join("")}</div>${a.download_ready ? "" : '<span class="cell-sub">Комплект ещё не готов</span>'}<span class="cell-sub">${groupCounts.get(a.group_id) > 1 ? "Общий комплект · " + fmt(groupCounts.get(a.group_id)) + " АТК" : "Отдельный комплект"}</span></td><td class="registry-next-action">${e(logisticsNextAction(a))}</td><td>${a.documents.some(d => d.can_complete) ? `<button data-action="registry-detail" data-id="${e(a.id)}">Открыть для закрытия накладных</button>` : a.status === "stopped" ? '<span class="badge cancelled">Остановлена</span>' : a.archived ? '<span class="badge done">В архиве</span>' : '<span class="muted">Ожидание готовности</span>'}</td></tr>`).join("");
     $("#atk-page-label").textContent = groupedItems.length
       ? `АТК ${from + 1}–${from + onPage.length} из ${groupedItems.length} · страница ${registryPage + 1} из ${pages}`
       : "АТК по выбранным фильтрам нет";
