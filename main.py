@@ -786,8 +786,10 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         # when more than 200 newer operations are created.
         operations = store.all(
             "SELECT o.id,o.kind,o.doc_id,o.group_id,o.state,o.external_id,o.error,"
-            "o.created,o.updated,a.resolved_at AS attention_resolved_at "
+            "o.created,o.updated,a.resolved_at AS attention_resolved_at,"
+            "d.number AS doc_number "
             "FROM operations o LEFT JOIN operation_attention a ON a.op_id=o.id "
+            "LEFT JOIN documents d ON d.id=o.doc_id "
             "WHERE o.id IN ("
             "SELECT id FROM (SELECT id FROM operations ORDER BY created DESC LIMIT 200) "
             "UNION "
