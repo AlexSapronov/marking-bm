@@ -375,11 +375,11 @@ function renderList() {
   $$("[data-stage]").forEach(button => button.onclick = () => {
     documentFilters.stage = button.dataset.stage;
     documentPage = 0;
-    $("[data-stage]").forEach(b => b.setAttribute("aria-pressed", b === button));
+    document.querySelectorAll("[data-stage]").forEach(b => b.setAttribute("aria-pressed", b === button));
     filterRows();
   });
   $("#select-all").onchange = event => {
-    $(".doc-select:not(:disabled)").forEach(input => {
+    document.querySelectorAll(".doc-select:not(:disabled)").forEach(input => {
       input.checked = event.target.checked;
       if (input.checked) documentSelectedIds.add(input.value);
       else documentSelectedIds.delete(input.value);
@@ -472,7 +472,7 @@ function lineRow(l = {}, move = false) {
 function gatherRows() {
   // Transfer checkboxes are not part of the product composition. Read the
   // explicitly named fields so selection controls cannot shift PN/GTIN data.
-  return $("#edit-rows tr").map(tr => [
+  return [...document.querySelectorAll("#edit-rows tr")].map(tr => [
     tr.querySelector(".pn-input").value,
     tr.querySelector(".gtin-input").value,
     Number(tr.querySelector(".qty-input").value),
