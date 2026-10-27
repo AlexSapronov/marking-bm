@@ -118,6 +118,13 @@ with tempfile.TemporaryDirectory() as tmp:
                 page.locator('.user-role[data-user="smoke-logist"]').input_value()
                 == "logistics"
             )
+            # Disabling an employee is an access-revocation operation; Cancel
+            # must not affect active sessions or the persisted enabled flag.
+            page.locator('[data-action="user-toggle"][data-id="smoke-logist"]').click()
+            expect(page.get_by_role("heading", name="Отключить доступ сотрудника?")).to_be_visible()
+            expect(page.locator("#modal")).to_contain_text("сеансы будут завершены")
+            page.locator("#modal [data-action='close']").click()
+            expect(page.get_by_role("row").filter(has_text="smoke-logist")).to_contain_text("Активен")
             page.get_by_role("button", name="Накладные", exact=True).click()
             page.reload()
             page.get_by_role("heading", name="Накладные", exact=True).wait_for()
