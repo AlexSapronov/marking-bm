@@ -1896,8 +1896,8 @@ class Service:
         if not invoice_numbers:
             raise Conflict("Для комплекта АТК не найдены номера накладных")
         filename = safe_name(
-            "АТК-и-RESULT-" + "-".join(sorted(invoice_numbers)) + ".zip"
-        )
+            "АТК-и-RESULT-" + "-".join(sorted(invoice_numbers)), limit=165
+        ) + ".zip"
         buf = BytesIO()
         filenames = set()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -1905,7 +1905,7 @@ class Service:
                 # Flat archive: two Excel workbooks per supplier group.
                 # If two groups have identically named exports, preserve BOTH.
                 for name, content in files:
-                    clean_name = safe_name(name)
+                    clean_name = safe_name(name, limit=240)
                     unique_name = clean_name
                     suffix = 2
                     while unique_name in filenames:
