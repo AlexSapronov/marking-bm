@@ -118,6 +118,13 @@ with tempfile.TemporaryDirectory() as tmp:
                 page.locator('.user-role[data-user="smoke-logist"]').input_value()
                 == "logistics"
             )
+            # Disabling an employee is an access-revocation operation; Cancel
+            # must not affect active sessions or the persisted enabled flag.
+            page.locator('[data-action="user-toggle"][data-id="smoke-logist"]').click()
+            expect(page.get_by_role("heading", name="Отключить доступ сотрудника?")).to_be_visible()
+            expect(page.locator("#modal")).to_contain_text("сеансы будут завершены")
+            page.locator("#modal [data-action='close']").click()
+            expect(page.get_by_role("row").filter(has_text="smoke-logist")).to_contain_text("Активен")
             page.get_by_role("button", name="Накладные", exact=True).click()
             page.reload()
             page.get_by_role("heading", name="Накладные", exact=True).wait_for()
@@ -506,8 +513,8 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.locator("#modal .files a:not(.outdated-artifact)")).to_have_count(2)
             page.locator("#modal [data-action='close']").click()
             expect(page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
-            expect(page.get_by_role("button", name="Завершить накладную", exact=True)).to_be_visible()
-            expect(page.get_by_role("button", name="Завершить накладную", exact=True)).to_be_in_viewport(ratio=1)
+            expect(page.get_by_role("button", name="Открыть для закрытия накладных", exact=True)).to_be_visible()
+            expect(page.get_by_role("button", name="Открыть для закрытия накладных", exact=True)).to_be_in_viewport(ratio=1)
             # The action column remains visible without horizontal table scrolling
             # at all supported desktop viewport widths.
             for width, height in ((1366, 768), (1920, 1080), (2560, 1440)):
@@ -543,18 +550,22 @@ with tempfile.TemporaryDirectory() as tmp:
             )
             assert not errors, errors
             page.set_viewport_size({"width": 1440, "height": 1000})
-            page.get_by_role("button", name="Завершить накладную", exact=True).click()
+            page.get_by_role("button", name="Открыть для закрытия накладных", exact=True).click()
+            expect(page.locator("#modal")).to_contain_text("Закрыть накладную")
+            # Opening an ATK detail is navigation, not completion.
+            assert test_service.get(logistics_doc, "alice")["status"] == "done"
             page.locator('#modal [data-action="logistics-complete"]').click()
+            expect(page.locator("#modal")).to_contain_text("не подтверждает фактическую доставку")
             page.get_by_role("button", name="Отмена", exact=True).click()
             expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row)')).to_have_count(1)
-            page.get_by_role("button", name="Завершить накладную", exact=True).click()
+            page.get_by_role("button", name="Открыть для закрытия накладных", exact=True).click()
             page.locator('#modal [data-action="logistics-complete"]').click()
             page.locator('#modal [data-action="confirm-logistics-complete"]').click()
             expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row)')).to_have_count(0)
             page.locator("#atk-archive").check()
             expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row)')).to_have_count(1)
             expect(page.locator('#atk-table')).to_contain_text("LOGISTICS-READY")
-            expect(page.get_by_role("button", name="Завершить накладную", exact=True)).to_have_count(0)
+            expect(page.get_by_role("button", name="Открыть для закрытия накладных", exact=True)).to_have_count(0)
             page.reload()
             # Archive choice is an in-session filter; the completed invoice stays out of work.
             expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row)')).to_have_count(0)
@@ -667,20 +678,20 @@ with tempfile.TemporaryDirectory() as tmp:
                      "smoke-user", "done", 0, stamp, stamp, stamp, 0),
                 )
             page.reload()
-            expect(page.locator('[data-stage="logistics"]')).to_contain_text("У логиста")
+            expect(page.locator('[data-stage="logistics"]')).to_contain_text("Комплект сформирован")
             expect(page.locator("#doc-rows")).to_contain_text("HANDOFF-TO-LOGISTICS")
             handoff_row = page.locator("#doc-rows tr").filter(has_text="HANDOFF-TO-LOGISTICS")
-            expect(handoff_row.locator(".badge.logistics")).to_have_text("У логиста")
+            expect(handoff_row.locator(".badge.logistics")).to_have_text("Комплект сформирован")
             assert page.evaluate("states.done === 'Завершён'")
             page.locator('[data-stage="logistics"]').click()
             expect(page.locator("#document-count")).to_have_text("Показано 1 из 2")
             expect(page.locator("#doc-rows")).to_contain_text("HANDOFF-TO-LOGISTICS")
-            expect(page.locator("#status option[value='done']")).to_have_text("У логиста")
+            expect(page.locator("#status option[value='done']")).to_have_text("Комплект сформирован")
             page.get_by_role("button", name="HANDOFF-TO-LOGISTICS", exact=True).click()
-            expect(page.locator(".doc-status-meta .badge.logistics")).to_have_text("У логиста")
-            expect(page.get_by_role("heading", name="Комплект передан на этап логистики")).to_be_visible()
-            expect(page.get_by_text("Движение товара по маршруту здесь не отслеживается.", exact=False)).to_be_visible()
-            expect(page.locator(".steps .step.current")).to_have_text("Логистика")
+            expect(page.locator(".doc-status-meta .badge.logistics")).to_have_text("Комплект сформирован")
+            expect(page.get_by_role("heading", name="АТК и RESULT сформированы")).to_be_visible()
+            expect(page.get_by_text("перевозка и доставка в системе не подтверждены.", exact=False)).to_be_visible()
+            expect(page.locator(".steps .step.current")).to_have_text("АТК/RESULT")
             page.get_by_role("button", name="← Накладные", exact=True).click()
             page.locator('[data-stage="all"]').click()
             # Check the new full-row transfer interaction against real API and DB.
@@ -752,7 +763,7 @@ with tempfile.TemporaryDirectory() as tmp:
             assert test_service.get(move_source, "smoke-user")["status"] == "draft"
             expect(page.locator('a.button.primary[href*="/api/files/"]')).to_have_count(0)
             page.get_by_role("button", name="← Накладные", exact=True).click()
-            expect(page.locator('[data-action="batch"]')).to_have_text("Нанесение и отчёты в СУЗ")
+            expect(page.locator('[data-action="batch"]')).to_have_text("Подтвердить нанесение и создать отчёты")
             page.get_by_role("button", name="MOVE-EMPTY", exact=True).click()
             expect(page.get_by_role("button", name="Подтвердить передачу этикеток", exact=True)).to_be_visible()
             page.get_by_role("button", name="Подтвердить передачу этикеток", exact=True).click()
@@ -764,7 +775,7 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("button", name="Передача подтверждена", exact=True).click()
             try:
                 expect(page.locator('[data-action="report"]')).to_have_text(
-                    "Нанесение и отчёт в СУЗ", timeout=8000
+                    "Подтвердить нанесение и создать отчёт", timeout=8000
                 )
             except Exception as exc:
                 raise AssertionError(
@@ -843,7 +854,7 @@ with tempfile.TemporaryDirectory() as tmp:
             row.get_by_role("button", name="STOP-UI").click()
             expect(page.locator(".topbar .badge")).to_have_text("Ошибка")
             expect(page.get_by_role("heading", name="Ошибка отчёта о нанесении")).to_be_visible()
-            expect(page.locator('.next-step [data-action="retry-report-doc"]')).to_have_text("Отправить повторно")
+            expect(page.locator('.next-step [data-action="retry-report-doc"]')).to_have_text("Повторить отчёт о нанесении")
             page.screenshot(path=str(out / "report-error-retry.png"), full_page=True)
             assert not errors, errors
             browser.close()
