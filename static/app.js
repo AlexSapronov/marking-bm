@@ -958,7 +958,20 @@ async function action(name, id, b) {
     }
     case "copy-setup-code": {
       const code = $("#setup-code-issued")?.textContent || "";
-      await navigator.clipboard.writeText(code);
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(code);
+      } else {
+        // Corporate HTTP environments may not allow Clipboard API.
+        const field = document.createElement("textarea");
+        field.value = code;
+        field.style.position = "fixed";
+        field.style.opacity = "0";
+        document.body.append(field);
+        field.select();
+        const copied = document.execCommand("copy");
+        field.remove();
+        if (!copied) throw new Error("Не удалось скопировать. Выделите код вручную.");
+      }
       toast("Код скопирован");
       break;
     }
