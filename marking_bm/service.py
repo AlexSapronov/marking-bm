@@ -1864,11 +1864,12 @@ class Service:
             )
             return result
 
-    def logistics_download(self, atk_ids):
+    def logistics_download(self, atk_ids, *, with_filename=False):
         if not atk_ids or len(atk_ids) > 200:
             raise ValueError("Выберите от 1 до 200 АТК")
         groups = {}
-        # Capture the complete file selection in one consistent DB snapshot.
+        invoice_numbers = set()
+        # Capture complete file selection and invoice numbers in one DB snapshot.
         with self.store.read() as db:
             for atk_id in sorted(set(atk_ids)):
                 a = one(db, "SELECT * FROM atks WHERE id=?", (atk_id,))
@@ -1890,10 +1891,27 @@ class Service:
                         )
                         for f in summary["files"]
                     ]
+                    # Shared ATK/RESULT files can cover several invoices.
+                    invoice_numbers.update(summary["invoices"])
+        if not invoice_numbers:
+            raise Conflict("Для комплекта АТК не найдены номера накладных")
+        filename = safe_name(
+            "АТК-и-RESULT-" + "-".join(sorted(invoice_numbers)), limit=165
+        ) + ".zip"
         buf = BytesIO()
+        filenames = set()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
-            for group, files in groups.items():
-                # One supplier workbook may cover multiple ATKs: include each pair once.
+            for files in groups.values():
+                # Flat archive: two Excel workbooks per supplier group.
+                # If two groups have identically named exports, preserve BOTH.
                 for name, content in files:
-                    archive.writestr(safe_name(group) + "/" + name, content)
-        return buf.getvalue()
+                    clean_name = safe_name(name, limit=240)
+                    unique_name = clean_name
+                    suffix = 2
+                    while unique_name in filenames:
+                        stem, ext = clean_name.rsplit(".", 1)
+                        unique_name = safe_name(f"{stem}-{suffix}.{ext}")
+                        suffix += 1
+                    filenames.add(unique_name)
+                    archive.writestr(unique_name, content)
+        return (buf.getvalue(), filename) if with_filename else buf.getvalue()
