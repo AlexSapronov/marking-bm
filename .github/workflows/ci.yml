@@ -15,3 +15,12 @@ jobs:
       - run: node --check static/workspace.js
       - run: python -m pytest -q
       - run: python tests/browser_smoke.py
+
+      - name: Attach browser-rendered screenshots for Word guides
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: marking-bm-browser-screenshots
+          path: docs/screenshots/*.png
+          if-no-files-found: warn
+          retention-days: 7
