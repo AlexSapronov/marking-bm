@@ -9,7 +9,7 @@ import zipfile
 from pypdf import PdfReader, PdfWriter
 from .db import now, uid, dumps, audit
 from .excel import validate_rows, xlsx
-from .codes import with_quantity
+from .codes import with_quantity, parse
 from .labels import render_label
 
 
@@ -905,35 +905,84 @@ class Service:
             return batch
 
     def retry_rejected_report(self, op_id, actor, admin=False):
-        # A fresh signed operation is safe only after SUZ returned REJECTED.
-        # For uncertain or blocked results, never re-send without reconciliation.
+        # A new signed report is allowed only after an explicit terminal result.
+        # PARTIALLY requires a read-only lookup of EACH CIS first: never replay
+        # codes that the registry already considers applied.
+        op = self.store.one("SELECT * FROM operations WHERE id=?", (op_id,))
+        if not op or op["kind"] != "report" or op["state"] not in ("rejected", "partial") or not op["external_id"]:
+            raise Conflict("Повторная отправка доступна после подтверждённого отказа или частичной обработки СУЗ")
+        payload = json.loads(op["payload"])
+        originals = {parse(raw).cis: raw for raw in payload["sntins"]}
+        if len(originals) != len(payload["sntins"]):
+            raise Conflict("В отчёте повторяются КМ. Требуется сверка")
+        remote = None
+        if op["state"] == "partial":
+            # Never hold a write transaction while making an external HTTP call.
+            remote = self.gateway.info(list(originals))
+            inn = self.config()["inn"]
+            if any(
+                remote[cis].get("status") not in ("EMITTED", "APPLIED")
+                or remote[cis].get("ownerInn") != inn
+                for cis in originals
+            ):
+                raise Conflict("Статусы или владельцы отдельных КМ не подтверждены ГИС МТ. Нужна сверка")
+            failed_cises = {cis for cis in originals if remote[cis]["status"] == "EMITTED"}
+            successful_cises = set(originals) - failed_cises
+            if not failed_cises or not successful_cises:
+                raise Conflict("Сведения ГИС МТ не подтверждают частичную обработку. Сверьте отчёт в ЛК СУЗ")
+        else:
+            failed_cises = set(originals)
+            successful_cises = set()
         with self.store.transaction() as db:
-            op = one(db, "SELECT * FROM operations WHERE id=?", (op_id,))
-            if not op or op["kind"] != "report" or op["state"] != "rejected" or not op["external_id"]:
-                raise Conflict("Повторная отправка разрешена только для отчёта, отклонённого СУЗ")
-            self.require_operation_active(db, op)
+            latest = one(
+                db, "SELECT id FROM operations WHERE kind='report' AND doc_id=? "
+                    "ORDER BY rowid DESC LIMIT 1", (op["doc_id"],)
+            )
+            current = one(db, "SELECT * FROM operations WHERE id=?", (op_id,))
+            if not latest or latest["id"] != op_id or not current or current["state"] != op["state"]:
+                raise Conflict("Отчёт изменился. Обновите страницу и проверьте состояние")
+            self.require_operation_active(db, current)
             document = one(db, "SELECT status,owner FROM documents WHERE id=?", (op["doc_id"],))
             if not document or (not admin and document["owner"] != actor):
                 raise PermissionError("Документ недоступен")
             if document["status"] != "reporting":
                 raise Conflict("Накладная уже перешла на другой этап. Проверьте состояние")
-            if one(db, "SELECT id FROM codes WHERE doc_id=? AND external_status='APPLIED' LIMIT 1",
-                   (op["doc_id"],)):
-                raise Conflict("Некоторые КМ уже нанесены в ЧЗ. Требуется сверка")
-            latest = one(
-                db, "SELECT id FROM operations WHERE kind='report' AND doc_id=? "
-                    "ORDER BY rowid DESC LIMIT 1", (op["doc_id"],)
+            codes = rows(
+                db, "SELECT cis,external_status FROM codes WHERE doc_id=?", (op["doc_id"],)
             )
-            if not latest or latest["id"] != op_id:
-                raise Conflict("Есть более новая попытка отчёта. Обновите страницу")
+            owned = {c["cis"]: c["external_status"] for c in codes}
+            if not set(originals).issubset(owned):
+                raise Conflict("Исходный состав КМ изменился. Нужна сверка")
+            if any(owned[cis] != "EMITTED" for cis in failed_cises):
+                raise Conflict("Часть КМ уже нанесена или изменила статус. Повторная отправка запрещена")
+            if remote is not None:
+                if any(owned[cis] not in ("EMITTED", "APPLIED") for cis in successful_cises):
+                    raise Conflict("Неожиданный локальный статус КМ")
+                # Record only successes explicitly confirmed by True API.
+                for cis in successful_cises:
+                    db.execute(
+                        "UPDATE codes SET external_status='APPLIED',local_state='applied',checked=? "
+                        "WHERE doc_id=? AND cis=?",
+                        (now(), op["doc_id"], cis),
+                    )
+            retry_payload = dict(payload)
+            retry_payload["sntins"] = [
+                raw for raw in payload["sntins"] if parse(raw).cis in failed_cises
+            ]
             new_id = self.queue(
                 db, "report", "report:retry:" + uid(),
-                json.loads(op["payload"]), op["doc_id"], op["group_id"]
+                retry_payload, op["doc_id"], op["group_id"]
             )
-            audit(db, actor, "Повторная отправка отклонённого отчёта", op["doc_id"],
-                  {"previous_operation": op_id, "new_operation": new_id,
-                   "external_id": op["external_id"]})
-            return {"id": new_id, "previous_id": op_id, "state": "signing"}
+            audit(
+                db, actor, "Повторная отправка отклонённого или частично принятого отчёта",
+                op["doc_id"],
+                {"previous_operation": op_id, "new_operation": new_id,
+                 "external_id": op["external_id"], "codes_for_retry": len(failed_cises),
+                 "codes_already_applied": len(successful_cises)},
+            )
+            return {"id": new_id, "previous_id": op_id, "state": "signing",
+                    "codes_for_retry": len(failed_cises),
+                    "codes_already_applied": len(successful_cises)}
 
     def create_atks(self, db):
         groups = rows(db, "SELECT DISTINCT batch_id,supplier_id FROM batch_docs")
