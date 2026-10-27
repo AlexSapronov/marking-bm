@@ -1495,7 +1495,7 @@ async function logisticsPage() {
   for (const selector of ["#atk-supplier", "#atk-status", "#atk-archive"])
     $(selector).onchange = () => $("#registry-filters").requestSubmit();
   function updateSelection() {
-    const selectedIds = new Set($(".atk-select:checked").map(input => input.value));
+    const selectedIds = new Set([...document.querySelectorAll(".atk-select:checked")].map(input => input.value));
     const selected = items.filter(a => selectedIds.has(String(a.id)));
     const groups = new Map(selected.map(a => [a.group_id, a]));
     const invoices = [...new Set([...groups.values()].flatMap(a => a.invoices))].sort((a, b) => a.localeCompare(b, "ru"));
@@ -1513,14 +1513,14 @@ async function logisticsPage() {
       summary.textContent = `Выбрано АТК: ${fmt(selected.length)} · Уникальных комплектов: ${fmt(groups.size)} · Файлов Excel: ${fmt(files.length)} · Накладных: ${fmt(invoices.length)}. Номера: ${invoiceLabel}.` +
         (withinLimit ? " Совпадающие комплекты попадут в ZIP один раз." : " Лимит: не более 200 АТК за скачивание.");
     }
-    const available = $(".atk-select:not(:disabled)");
+    const available = [...document.querySelectorAll(".atk-select:not(:disabled)")];
     const marked = available.filter(input => input.checked).length;
     $("#atk-select-all").checked = !!available.length && marked === available.length;
     $("#atk-select-all").indeterminate = marked > 0 && marked < available.length;
   }
   $$(".atk-select").forEach((input) => (input.onchange = updateSelection));
   $("#atk-select-all").onchange = (event) => {
-    $(".atk-select:not(:disabled)").forEach(
+    document.querySelectorAll(".atk-select:not(:disabled)").forEach(
       input => (input.checked = event.target.checked),
     );
     updateSelection();
