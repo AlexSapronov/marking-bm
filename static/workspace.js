@@ -227,6 +227,7 @@ function setupAdminFilters() {
     const section = document.querySelector(panel);
     const isOperations = key === "operations";
     const state = adminTableState[key];
+    const prefix = isOperations ? "operation" : `admin-${key}`;
     const toolbar = document.createElement("div");
     toolbar.className = "admin-filter-bar";
     const sortOptions = key === "operations"
@@ -234,7 +235,7 @@ function setupAdminFilters() {
       : key === "audit"
       ? '<option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option><option value="name">По сотруднику</option>'
       : '<option value="name">По названию</option><option value="reverse">По названию, Я–А</option>';
-    toolbar.innerHTML = `<label>Поиск в разделе<input data-section-search="${key}" placeholder="${key === "users" ? "Username или роль" : key === "suppliers" ? "Наименование поставщика" : isOperations ? "Операция, ID или пояснение" : "Сотрудник или действие"}"></label>${isOperations ? '<label>Показать<select id="operation-filter"><option value="all">Все операции</option><option value="attention">Требуют проверки</option><option value="pending">В очереди и обработке</option><option value="done">Завершённые</option><option value="stopped">Остановленные</option><option value="resolved">Скрытые предупреждения</option></select></label>' : ""}<label>Сортировка<select id="admin-${key}-sort">${sortOptions}</select></label><label>Строк на странице<select id="admin-${key}-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label><span class="muted" data-filter-count></span>`;
+    toolbar.innerHTML = `<label>Поиск в разделе<input data-section-search="${key}" placeholder="${key === "users" ? "Username или роль" : key === "suppliers" ? "Наименование поставщика" : isOperations ? "Операция, ID или пояснение" : "Сотрудник или действие"}"></label>${isOperations ? '<label>Показать<select id="operation-filter"><option value="all">Все операции</option><option value="attention">Требуют проверки</option><option value="pending">В очереди и обработке</option><option value="done">Завершённые</option><option value="stopped">Остановленные</option><option value="resolved">Скрытые предупреждения</option></select></label>' : ""}<label>Сортировка<select id="${prefix}-sort">${sortOptions}</select></label><label>Строк на странице<select id="${prefix}-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label><span class="muted" data-filter-count></span>`;
     section.querySelector("h2").after(toolbar);
     const rows = key === "suppliers"
       ? [...section.querySelectorAll(":scope > .toolbar")]
@@ -251,12 +252,12 @@ function setupAdminFilters() {
     }));
     const pager = document.createElement("div");
     pager.className = "admin-pager";
-    pager.innerHTML = `<span id="admin-${key}-page-label" role="status"></span><div class="actions"><button type="button" id="admin-${key}-previous">Предыдущая</button><button type="button" id="admin-${key}-next">Следующая</button></div>`;
+    pager.innerHTML = `<span id="${prefix}-page-label" role="status"></span><div class="actions"><button type="button" id="${prefix}-previous">Предыдущая</button><button type="button" id="${prefix}-next">Следующая</button></div>`;
     const tableWrap = section.querySelector(".table-wrap");
     if (tableWrap) tableWrap.after(pager);
     else section.append(pager);
-    toolbar.querySelector(`#admin-${key}-sort`).value = state.sort;
-    toolbar.querySelector(`#admin-${key}-page-size`).value = String(state.size);
+    toolbar.querySelector(`#${prefix}-sort`).value = state.sort;
+    toolbar.querySelector(`#${prefix}-page-size`).value = String(state.size);
     const update = () => {
       const query = toolbar.querySelector("input").value.trim().toLocaleLowerCase("ru-RU");
       const selection = isOperations ? toolbar.querySelector("#operation-filter").value : "all";
@@ -293,14 +294,14 @@ function setupAdminFilters() {
       entries.forEach(({row}) => { row.hidden = true; });
       const parent = dataRows[0]?.parentElement;
       selected.forEach(({row}) => {
-        if (parent) parent.append(row);
+        if (parent) parent.insertBefore(row, parent === section ? pager : null);
         row.hidden = false;
       });
-      pager.querySelector(`#admin-${key}-page-label`).textContent = filtered.length
+      pager.querySelector(`#${prefix}-page-label`).textContent = filtered.length
         ? `Строки ${from + 1}–${from + selected.length} из ${filtered.length} · страница ${state.page + 1} из ${pages}`
         : "Записей по выбранным фильтрам нет";
-      pager.querySelector(`#admin-${key}-previous`).disabled = state.page === 0;
-      pager.querySelector(`#admin-${key}-next`).disabled = state.page + 1 >= pages;
+      pager.querySelector(`#${prefix}-previous`).disabled = state.page === 0;
+      pager.querySelector(`#${prefix}-next`).disabled = state.page + 1 >= pages;
     };
     toolbar.querySelector("input").oninput = () => {
       state.page = 0;
@@ -310,18 +311,18 @@ function setupAdminFilters() {
       state.page = 0;
       update();
     });
-    toolbar.querySelector(`#admin-${key}-sort`).onchange = event => {
+    toolbar.querySelector(`#${prefix}-sort`).onchange = event => {
       state.sort = event.target.value;
       state.page = 0;
       update();
     };
-    toolbar.querySelector(`#admin-${key}-page-size`).onchange = event => {
+    toolbar.querySelector(`#${prefix}-page-size`).onchange = event => {
       state.size = Number(event.target.value);
       state.page = 0;
       update();
     };
-    pager.querySelector(`#admin-${key}-previous`).onclick = () => {state.page--; update();};
-    pager.querySelector(`#admin-${key}-next`).onclick = () => {state.page++; update();};
+    pager.querySelector(`#${prefix}-previous`).onclick = () => {state.page--; update();};
+    pager.querySelector(`#${prefix}-next`).onclick = () => {state.page++; update();};
     update();
   }
 }
