@@ -1250,10 +1250,20 @@ async function downloadRegistry(ids) {
     const value = await response.json();
     throw new Error(value.detail || "Не удалось скачать файлы");
   }
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const encodedFilename = disposition.match(/filename\\*=UTF-8''([^;]+)/i);
+  let filename = "АТК-и-RESULT.zip";
+  if (encodedFilename) {
+    try {
+      filename = decodeURIComponent(encodedFilename[1]);
+    } catch {
+      // Keep a safe generic fallback if a proxy sends a malformed header.
+    }
+  }
   const url = URL.createObjectURL(await response.blob());
   const link = document.createElement("a");
   link.href = url;
-  link.download = "АТК-и-RESULT.zip";
+  link.download = filename;
   document.body.append(link);
   link.click();
   link.remove();
