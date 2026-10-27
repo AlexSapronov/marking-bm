@@ -372,6 +372,9 @@ td button {
 .badge.unknown,
 .badge.blocked,
 .badge.attention,
+.badge.report_error,
+.badge.rejected,
+.badge.partial,
 .badge.preflight_blocked {
   background: var(--err-bg);
   color: var(--err);
