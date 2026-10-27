@@ -63,7 +63,15 @@ with tempfile.TemporaryDirectory() as tmp:
             page = browser.new_page(viewport={"width": 1440, "height": 1000})
             errors = []
             page.on("pageerror", lambda err: errors.append(str(err)))
-            page.goto(url + "/admin")
+            response = page.goto(url + "/admin")
+            try:
+                page.locator("#login-value").wait_for(timeout=8000)
+            except Exception as exc:
+                raise AssertionError(
+                    "Административный экран входа не загрузился: "
+                    f"HTTP={response.status if response else 'no response'}, "
+                    f"browser_errors={errors}, body={page.locator('body').inner_text()[:1000]}"
+                ) from exc
             page.locator("#login-value").fill("browser-smoke-password")
             page.locator("#login-form button").click()
             page.get_by_role("heading", name="Администрирование", exact=True).wait_for()
