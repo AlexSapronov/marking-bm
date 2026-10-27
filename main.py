@@ -19,6 +19,8 @@ from marking_bm.config import Settings
 from marking_bm.db import Store, now, uid, dumps, audit
 from marking_bm.auth import verify_password, digest, new_session
 from marking_bm.excel import import_file, template
+from marking_bm.legacy import parse_legacy_pack
+from marking_bm.service import safe_name
 from marking_bm.gateway import Gateway, RemoteError
 from marking_bm.service import Service, Conflict, one, rows
 from marking_bm.worker import Worker
@@ -450,6 +452,44 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
     @app.post("/api/documents/{doc_id}/stop")
     def stop_document(doc_id: str, body: StopDocument, s=Depends(manager)):
         return service.stop_document(doc_id, body.number, s["username"], s["admin"])
+
+    @app.post("/api/admin/legacy/preview")
+    async def legacy_preview(file: UploadFile = File(...), s=Depends(admin)):
+        content = await file.read(10 * 1024 * 1024 + 1)
+        parsed = parse_legacy_pack(content, file.filename)
+        conflict = store.one(
+            "SELECT id FROM documents WHERE number=? COLLATE NOCASE", (parsed["number"],)
+        )
+        return {
+            "number": parsed["number"], "codes": parsed["codes_count"],
+            "units": parsed["units"], "lines": parsed["lines"],
+            "duplicate_invoice": bool(conflict),
+        }
+
+    @app.post("/api/admin/legacy/import")
+    async def legacy_import(
+        file: UploadFile = File(...),
+        supplier: str = Form(...),
+        owner: str = Form(...),
+        s=Depends(admin),
+    ):
+        content = await file.read(10 * 1024 * 1024 + 1)
+        parsed = parse_legacy_pack(content, file.filename)
+        return service.import_legacy_pack(
+            s["username"], owner.strip(), supplier.strip(),
+            safe_name(file.filename, 120), content, parsed,
+        )
+
+    @app.post("/api/admin/legacy/{doc_id}/pdf")
+    async def legacy_pdf(
+        doc_id: str, file: UploadFile = File(...), s=Depends(admin),
+    ):
+        content = await file.read(20 * 1024 * 1024 + 1)
+        if not file.filename or not file.filename.lower().endswith(".pdf"):
+            raise ValueError("Выберите PDF")
+        return service.add_legacy_pdf(
+            s["username"], doc_id, safe_name(file.filename), content
+        )
 
     @app.get("/api/admin/documents")
     def admin_documents(q: str = "", s=Depends(admin)):
