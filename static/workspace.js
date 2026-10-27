@@ -21,13 +21,21 @@ const adminSections = {
   catalog: ["Коды и справочник", "Общий пул КМ, привязки GTIN и повторный подбор"],
   audit: ["Журнал действий", "История действий сотрудников и администратора"],
 };
+const adminAttentionStates = new Set(["unknown", "blocked", "preflight_blocked", "rejected", "partial"]);
+function adminOperationNeedsAttention(op) {
+  return adminAttentionStates.has(op.state) && !op.attention_resolved_at;
+}
+function adminOperationPending(op) {
+  return !op.stopped && !adminAttentionStates.has(op.state)
+    && !["done", "cancelled"].includes(op.state);
+}
 function organizeAdmin(hb) {
   const main = $("main");
   const stats = main.querySelector(".stats");
   const notice = main.querySelector(":scope > .notice");
-  const attention = overview.operations.filter(o => ["unknown", "blocked", "preflight_blocked", "rejected", "partial"].includes(o.state) && !o.attention_resolved_at);
+  const attention = overview.operations.filter(adminOperationNeedsAttention);
   const approvals = overview.transformations.filter(t => t.state === "approval");
-  const pending = overview.operations.filter(o => !["done", "rejected", "cancelled"].includes(o.state) && !o.stopped);
+  const pending = overview.operations.filter(adminOperationPending);
   const overviewPanel = document.createElement("section");
   overviewPanel.dataset.adminPanel = "overview";
   overviewPanel.innerHTML = `<div class="section-heading"><h2>Состояние системы</h2><p class="muted">Начните с задач, требующих решения. Настройки и история доступны в разделах слева.</p></div><div class="overview-tasks">${[
@@ -205,35 +213,108 @@ window.addEventListener("beforeunload", event => {
   }
 });
 
+let adminOperationsPage = 0;
+let adminOperationsPageSize = 50;
+let adminOperationsOrder = "newest";
+
 function setupAdminFilters() {
   for (const key of ["users", "operations", "audit", "suppliers"]) {
     const panel = $(`[data-admin-panel="${key}"]`);
+    const isOperations = key === "operations";
     const toolbar = document.createElement("div");
     toolbar.className = "admin-filter-bar";
-    toolbar.innerHTML = `<label>Поиск в разделе<input data-section-search="${key}" placeholder="${key === "users" ? "Username или роль" : key === "suppliers" ? "Наименование поставщика" : key === "operations" ? "Операция, ID или пояснение" : "Сотрудник или действие"}"></label>${key === "operations" ? '<label>Показать<select id="operation-filter"><option value="all">Все операции</option><option value="attention">Требуют проверки</option><option value="pending">В очереди и обработке</option><option value="done">Завершённые</option><option value="stopped">Остановленные</option><option value="resolved">Скрытые предупреждения</option></select></label>' : ""}<span class="muted" data-filter-count></span>`;
+    toolbar.innerHTML = `<label>Поиск в разделе<input data-section-search="${key}" placeholder="${key === "users" ? "Username или роль" : key === "suppliers" ? "Наименование поставщика" : isOperations ? "Операция, ID или пояснение" : "Сотрудник или действие"}"></label>${isOperations ? `<label>Показать<select id="operation-filter"><option value="all">Все операции</option><option value="attention">Требуют проверки</option><option value="pending">В очереди и обработке</option><option value="done">Завершённые</option><option value="stopped">Остановленные</option><option value="resolved">Скрытые предупреждения</option></select></label><label>Сортировка<select id="operation-sort"><option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option><option value="status">По статусу</option></select></label><label>Строк на странице<select id="operation-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label>` : ""}<span class="muted" data-filter-count></span>`;
     panel.querySelector("h2").after(toolbar);
-    const rows = key === "suppliers" ? [...panel.querySelectorAll(":scope > .toolbar")] : [...panel.querySelectorAll("table tbody tr")];
+    const rows = key === "suppliers"
+      ? [...panel.querySelectorAll(":scope > .toolbar")]
+      : [...panel.querySelectorAll("table tbody tr")];
     // Legacy operation/audit tables have their header in tbody.
     const dataRows = rows.filter(row => !row.querySelector("th"));
+    const entries = dataRows.map((row, index) =>
+      ({row, op: isOperations ? overview.operations[index] : null}));
+
+    let pager = null;
+    if (isOperations) {
+      toolbar.querySelector("#operation-sort").value = adminOperationsOrder;
+      toolbar.querySelector("#operation-page-size").value = String(adminOperationsPageSize);
+      pager = document.createElement("div");
+      pager.className = "admin-pager";
+      pager.innerHTML = '<span id="operation-page-label" role="status"></span><div class="actions"><button type="button" id="operation-previous">Предыдущая</button><button type="button" id="operation-next">Следующая</button></div>';
+      panel.querySelector(".table-wrap").after(pager);
+    }
+
     const update = () => {
       const query = toolbar.querySelector("input").value.trim().toLocaleLowerCase("ru-RU");
-      const state = $("#operation-filter")?.value || "all";
-      let visible = 0;
-      dataRows.forEach(row => {
-        const op = key === "operations" ? overview.operations[dataRows.indexOf(row)] : null;
-        const stateMatches = key !== "operations" || state === "all" ||
-          (state === "attention" && ["unknown", "blocked", "preflight_blocked", "rejected", "partial"].includes(op?.state) && !op?.attention_resolved_at) ||
-          (state === "pending" && !op?.stopped && !["done", "rejected", "cancelled"].includes(op?.state)) ||
+      const state = isOperations ? $("#operation-filter").value : "all";
+      const filtered = entries.filter(({row, op}) => {
+        const stateMatches = !isOperations || state === "all" ||
+          (state === "attention" && adminOperationNeedsAttention(op)) ||
+          (state === "pending" && adminOperationPending(op)) ||
           (state === "stopped" && (op?.stopped || op?.state === "cancelled")) ||
           (state === "resolved" && Boolean(op?.attention_resolved_at)) ||
           (state === "done" && op?.state === "done");
-        row.hidden = !stateMatches || !row.textContent.toLocaleLowerCase("ru-RU").includes(query);
-        if (!row.hidden) visible++;
+        return stateMatches && row.textContent.toLocaleLowerCase("ru-RU").includes(query);
       });
-      toolbar.querySelector("[data-filter-count]").textContent = `Показано ${visible} из ${dataRows.length}`;
+      toolbar.querySelector("[data-filter-count]").textContent = `Найдено ${filtered.length} из ${dataRows.length}`;
+
+      if (!isOperations) {
+        const visible = new Set(filtered.map(item => item.row));
+        dataRows.forEach(row => { row.hidden = !visible.has(row); });
+        return;
+      }
+
+      filtered.sort((a, b) => {
+        if (adminOperationsOrder === "status")
+          return (states[a.op?.state] || a.op?.state || "").localeCompare(
+            states[b.op?.state] || b.op?.state || "", "ru");
+        const newest = (b.op?.created || "").localeCompare(a.op?.created || "");
+        return adminOperationsOrder === "oldest" ? -newest : newest;
+      });
+      const pages = Math.max(1, Math.ceil(filtered.length / adminOperationsPageSize));
+      adminOperationsPage = Math.min(adminOperationsPage, pages - 1);
+      const from = adminOperationsPage * adminOperationsPageSize;
+      const pageRows = filtered.slice(from, from + adminOperationsPageSize);
+      entries.forEach(({row}) => { row.hidden = true; });
+      // Move only visible rows to the end in sorted order; retain hidden rows
+      // for filtering without replacing their DOM nodes or action bindings.
+      const body = dataRows[0]?.parentElement;
+      pageRows.forEach(({row}) => {
+        if (body) body.append(row);
+        row.hidden = false;
+      });
+      const last = Math.min(from + adminOperationsPageSize, filtered.length);
+      pager.querySelector("#operation-page-label").textContent =
+        filtered.length ? `Строки ${from + 1}–${last} из ${filtered.length} · страница ${adminOperationsPage + 1} из ${pages}`
+          : "Подходящих операций нет";
+      pager.querySelector("#operation-previous").disabled = adminOperationsPage === 0;
+      pager.querySelector("#operation-next").disabled = adminOperationsPage + 1 >= pages;
     };
-    toolbar.querySelector("input").oninput = update;
-    toolbar.querySelector("select")?.addEventListener("change", update);
+    toolbar.querySelector("input").oninput = () => {
+      if (isOperations) adminOperationsPage = 0;
+      update();
+    };
+    toolbar.querySelector("#operation-filter")?.addEventListener("change", () => {
+      adminOperationsPage = 0;
+      update();
+    });
+    toolbar.querySelector("#operation-sort")?.addEventListener("change", event => {
+      adminOperationsOrder = event.target.value;
+      adminOperationsPage = 0;
+      update();
+    });
+    toolbar.querySelector("#operation-page-size")?.addEventListener("change", event => {
+      adminOperationsPageSize = Number(event.target.value);
+      adminOperationsPage = 0;
+      update();
+    });
+    pager?.querySelector("#operation-previous").addEventListener("click", () => {
+      adminOperationsPage--;
+      update();
+    });
+    pager?.querySelector("#operation-next").addEventListener("click", () => {
+      adminOperationsPage++;
+      update();
+    });
     update();
   }
 }
