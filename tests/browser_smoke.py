@@ -762,8 +762,16 @@ with tempfile.TemporaryDirectory() as tmp:
             assert test_service.get(move_target, "smoke-user")["status"] == "ready"
             page.get_by_role("button", name="Подтвердить передачу этикеток", exact=True).click()
             page.get_by_role("button", name="Передача подтверждена", exact=True).click()
+            try:
+                expect(page.locator('[data-action="report"]')).to_have_text(
+                    "Нанесение и отчёт в СУЗ", timeout=8000
+                )
+            except Exception as exc:
+                raise AssertionError(
+                    f"Передача после подтверждения не завершилась: "
+                    f"toast={page.locator('#toast').inner_text()}, errors={errors}"
+                ) from exc
             assert test_service.get(move_target, "smoke-user")["status"] == "transferred"
-            expect(page.locator('[data-action="report"]')).to_have_text("Нанесение и отчёт в СУЗ")
             page.get_by_role("button", name="← Накладные", exact=True).click()
             page.get_by_role("button", name="+ Новая накладная", exact=True).click()
             page.locator("#number").fill("STOP-UI")
