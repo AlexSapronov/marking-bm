@@ -200,6 +200,12 @@ class Service:
             d = self.document(db, doc_id, actor, admin=True)
             if d["status"] != "archive":
                 raise Conflict("Накладная уже находится вне архива")
+            if one(
+                db, "SELECT a.id FROM assignments a JOIN codes c ON c.id=a.code_id "
+                    "WHERE a.doc_id=? AND c.doc_id!=? LIMIT 1", (doc_id, doc_id)
+            ):
+                raise Conflict("КМ этой накладной уже перенесены из архива. "
+                               "Вернуть старый документ нельзя без сверки")
             stopped = self.document_stopped(db, doc_id)
             operations = (
                 rows(
@@ -419,6 +425,54 @@ class Service:
             "errors": failures[:100],
         }
 
+    def legacy_archive_candidates(self, db, parsed):
+        """Preview and authorize an atomic transfer from archived invoices."""
+        current = rows(db, "SELECT id FROM documents WHERE number=? COLLATE NOCASE AND status!='archive'", (parsed["number"],))
+        source = {}
+        for offset in range(0, len(parsed["items"]), 400):
+            part = [r["cis"] for r in parsed["items"][offset:offset+400]]
+            for c in rows(
+                db, "SELECT c.*,d.status source_status FROM codes c "
+                    "LEFT JOIN documents d ON d.id=c.doc_id WHERE c.cis IN ("
+                    + ",".join("?" for _ in part) + ")", part
+            ):
+                source[c["cis"]] = c
+        transferable, blocked = {}, []
+        for item in parsed["items"]:
+            old = source.get(item["cis"])
+            if old is None:
+                continue
+            if (
+                old["source_status"] != "archive"
+                or old["external_status"] != "EMITTED"
+                or old["local_state"] != "reserved"
+                or old["atk_id"] is not None
+                or old["reuse_allowed"] != 1
+                or old["raw"] != item["raw"]
+                or old["gtin"] != item["gtin"]
+            ):
+                blocked.append(item["cis"])
+            else:
+                transferable[item["cis"]] = old
+        # Never move KMs out of an archived document with a history of
+        # report submission, even if our locally stored status is stale.
+        for doc_id in {c["doc_id"] for c in transferable.values()}:
+            if (
+                one(db, "SELECT batch_id FROM batch_docs WHERE doc_id=?", (doc_id,))
+                or one(db, "SELECT id FROM operations WHERE doc_id=? AND kind='report' LIMIT 1", (doc_id,))
+            ):
+                for cis, code in list(transferable.items()):
+                    if code["doc_id"] == doc_id:
+                        blocked.append(cis)
+                        del transferable[cis]
+        return {
+            "duplicate_invoice": bool(current),
+            "archived_codes": len(transferable),
+            "blocked_codes": len(blocked),
+            "blocked_examples": blocked[:25],
+            "transferable": transferable,
+        }
+
     def import_legacy_pack(self, actor, owner, supplier, filename, content, parsed):
         # Mandatory second read-only True API verification before any DB writes.
         verification = self.check_legacy_codes(parsed)
@@ -442,16 +496,13 @@ class Service:
             )
             if not manager:
                 raise ValueError("Ответственный должен быть активным бренд-менеджером")
-            if one(db, "SELECT id FROM documents WHERE number=? COLLATE NOCASE", (number,)):
-                raise Conflict("Накладная с таким номером уже есть. Импорт остановлен")
-            existing_cis = [item["cis"] for item in parsed["items"]]
-            for offset in range(0, len(existing_cis), 500):
-                chunk = existing_cis[offset:offset + 500]
-                if one(
-                    db, "SELECT cis FROM codes WHERE cis IN (" + ",".join("?" for _ in chunk) + ") LIMIT 1",
-                    chunk,
-                ):
-                    raise Conflict("Некоторые КМ уже есть в ERP. Повторно импортировать их нельзя")
+            review = self.legacy_archive_candidates(db, parsed)
+            if review["duplicate_invoice"]:
+                raise Conflict("Накладная уже есть среди активных документов")
+            if review["blocked_codes"]:
+                raise Conflict("КМ уже используются в ERP либо не могут быть безопасно "
+                               "перенесены из архива. Проверьте историю операций")
+            transfer = review["transferable"]
             supplier_name = supplier.strip()
             supplier_row = one(
                 db, "SELECT * FROM suppliers WHERE name=?", (supplier_name,)
@@ -494,20 +545,43 @@ class Service:
                     (doc_id, line["pn"], line["gtin"], line["quantity"],
                      line["labels"], line["tnved"]),
                 )
+            moved_from = Counter()
             for item in parsed["items"]:
-                code_id = uid()
-                db.execute(
-                    "INSERT INTO codes(id,raw,cis,gtin,serial,source_op,external_status,checked,"
-                    "local_state,doc_id,pn,quantity,tnved) "
-                    "VALUES(?,?,?,?,?,?,'EMITTED',?,'reserved',?,?,?,?)",
-                    (code_id, item["raw"], item["cis"], item["gtin"], item["serial"],
-                     "legacy:" + doc_id, stamp, doc_id, item["pn"], item["quantity"], item["tnved"]),
-                )
+                old = transfer.get(item["cis"])
+                if old:
+                    code_id = old["id"]
+                    db.execute(
+                        "UPDATE assignments SET active=0,ended=? WHERE code_id=? AND active=1",
+                        (stamp, code_id),
+                    )
+                    result = db.execute(
+                        "UPDATE codes SET doc_id=?,pn=?,quantity=?,tnved=?,checked=?,"
+                        "local_state='reserved' WHERE id=? AND doc_id=? "
+                        "AND external_status='EMITTED' AND local_state='reserved' "
+                        "AND atk_id IS NULL AND reuse_allowed=1",
+                        (doc_id, item["pn"], item["quantity"], item["tnved"],
+                         stamp, code_id, old["doc_id"]),
+                    )
+                    if result.rowcount != 1:
+                        raise Conflict("КМ изменился во время переноса из архива")
+                    moved_from[old["doc_id"]] += 1
+                else:
+                    code_id = uid()
+                    db.execute(
+                        "INSERT INTO codes(id,raw,cis,gtin,serial,source_op,external_status,checked,"
+                        "local_state,doc_id,pn,quantity,tnved) "
+                        "VALUES(?,?,?,?,?,?,'EMITTED',?,'reserved',?,?,?,?)",
+                        (code_id, item["raw"], item["cis"], item["gtin"], item["serial"],
+                         "legacy:" + doc_id, stamp, doc_id, item["pn"], item["quantity"], item["tnved"]),
+                    )
                 db.execute(
                     "INSERT INTO assignments(code_id,doc_id,pn,quantity,tnved,active,created) "
                     "VALUES(?,?,?,?,?,1,?)",
                     (code_id, doc_id, item["pn"], item["quantity"], item["tnved"], stamp),
                 )
+            for old_doc_id, amount in moved_from.items():
+                audit(db, actor, "КМ перенесены из архивной накладной", old_doc_id,
+                      {"to": doc_id, "number": number, "codes": amount})
             self.artifact(
                 db, filename, content, "source", doc_id=doc_id, version=1,
                 snapshot={"legacy_import": True, "code_count": parsed["codes_count"]},
@@ -517,6 +591,8 @@ class Service:
                 {"number": number, "supplier": supplier_name, "owner": owner,
                  "codes": parsed["codes_count"], "units": parsed["units"],
                  "no_labels_generated": True, "verified_emitted": verification["checked"],
+                 "transferred_from_archive": sum(moved_from.values()),
+                 "archive_source_ids": list(moved_from),
                  "status_source": "True API"},
             )
         return {"id": doc_id, "number": number, "owner": owner, "status": "transferred",
