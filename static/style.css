@@ -868,6 +868,17 @@ main > .topbar p { margin-bottom: 0; }
   border-color: var(--warn-border);
 }
 
+/* Desktop-only operational clarity: transfer comparison and logistics review. */
+.move-impact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 18px 0; }
+.move-impact { min-width: 0; padding: 14px; border: 1px solid var(--border); border-radius: 10px; }
+.move-impact h3 { margin: 0 0 12px; overflow-wrap: anywhere; }
+.move-impact table { width: 100%; }
+.move-impact td, .move-impact th { padding: 8px; text-align: right; }
+.move-impact th:first-child { text-align: left; }
+.registry-supplier-row th { text-align: left; padding: 12px 14px; background: var(--surface-2); border-top: 2px solid var(--border); }
+.registry-next-action { min-width: 175px; max-width: 230px; font-weight: 500; white-space: normal; }
+.registry-selection-summary { margin: 18px 0 10px; padding: 13px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); line-height: 1.6; overflow-wrap: anywhere; }
+
 /* Desktop UX: searchable supplier selection, visible errors, dense work tables. */
 .supplier-picker {
   position: fixed;
