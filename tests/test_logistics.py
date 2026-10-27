@@ -78,6 +78,30 @@ def test_logist_sees_all_owners_filters_and_downloads(env):
         assert all("/" not in name for name in z.namelist())
 
 
+def test_logistics_export_preserves_colliding_filenames_flat(env, monkeypatch):
+    app, service, _ = env
+    _, logistics, _ = prepare_atks(env)
+    atks = logistics.get("/api/logistics/atks").json()
+    real_summary = service._logistics_summary
+
+    def same_file_names(db, atk):
+        item = real_summary(db, atk)
+        for file in item["files"]:
+            file["name"] = file["kind"].upper() + ".xlsx"
+        return item
+
+    monkeypatch.setattr(service, "_logistics_summary", same_file_names)
+    result = logistics.post(
+        "/api/logistics/download", json={"atks": [item["id"] for item in atks]}
+    )
+    assert result.status_code == 200, result.text
+    with zipfile.ZipFile(BytesIO(result.content)) as bundle:
+        assert sorted(bundle.namelist()) == [
+            "ATK-2.xlsx", "ATK.xlsx", "RESULT-2.xlsx", "RESULT.xlsx"
+        ]
+        assert all(bundle.read(name) for name in bundle.namelist())
+
+
 def test_logist_cannot_mutate_or_download_labels_or_source(env):
     app, s, _ = env
     ids, c, _ = prepare_atks(env)
