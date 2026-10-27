@@ -82,7 +82,9 @@ function documentStatusSignature(d) {
   return JSON.stringify([
     d.status, d.display_status, d.revision, d.current_version,
     d.transferred_version, d.last_error, d.report_issue,
-    d.codes?.length, d.atks?.map(a => [a.id, a.state, a.code]),
+    d.owner, d.supplier, d.history?.length,
+    d.codes?.map(c => [c.id, c.external_status, c.local_state]),
+    d.atks?.map(a => [a.id, a.state, a.code]),
     d.operations?.map(o => [o.id, o.state, o.updated, o.error]),
     d.exports?.map(a => a.id), d.artifacts?.map(a => a.id),
     d.stopped, d.group_stop,
@@ -108,7 +110,7 @@ function adminStatusSignature(items) {
 async function pollStatuses() {
   if (statusPollBusy || !user || document.hidden || documentDirty ||
       $("#modal")?.open || $("#app").querySelector("form:focus-within") ||
-      $$(".doc-select:checked, .atk-select:checked").length) return;
+      $(".doc-select:checked, .atk-select:checked, .move-line:checked").length) return;
   statusPollBusy = true;
   const activeDocId = doc?.id;
   const wasArchive = archive;
@@ -121,6 +123,7 @@ async function pollStatuses() {
       if (documentStatusSignature(fresh) !== documentStatusSignature(doc)) {
         const scroll = window.scrollY;
         doc = fresh;
+        archive = doc.status === "archive";
         renderDoc();
         window.scrollTo(0, scroll);
       }
