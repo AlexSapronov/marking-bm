@@ -78,12 +78,12 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.locator('[data-admin-panel="overview"]')).to_be_visible()
             expect(page.locator("#user-form")).not_to_be_visible()
             # Escape is equivalent to cancellation in the shared confirmation UI.
-            page.evaluate("window.__confirmationResult = null; confirmAction('UX test', 'Check cancellation').then(value => window.__confirmationResult = value)")
+            page.evaluate("window.__confirmationResult = null; void confirmAction('UX test', 'Check cancellation').then(value => window.__confirmationResult = value)")
             expect(page.get_by_role("heading", name="UX test")).to_be_visible()
             page.keyboard.press("Escape")
             expect(page.locator("#modal")).not_to_be_visible()
             assert page.evaluate("window.__confirmationResult") is False
-            page.evaluate("window.__attentionReason = null; attentionReasonDialog().then(value => window.__attentionReason = value)")
+            page.evaluate("window.__attentionReason = null; void attentionReasonDialog().then(value => window.__attentionReason = value)")
             expect(page.get_by_role("heading", name="Скрыть предупреждение?")).to_be_visible()
             page.locator("#attention-reason").fill("Сверено с результатом ЧЗ")
             page.get_by_role("button", name="Скрыть предупреждение").click()
