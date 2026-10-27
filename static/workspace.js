@@ -6,7 +6,7 @@ const documentStages = {
   processing: {title: "В обработке", matches: d => ["ordering", "receiving", "reporting", "reported", "aggregating"].includes(d.display_status || d.status)},
   supplier: {title: "Поставщик", matches: d => ["ready", "transferred"].includes(d.status)},
   attention: {title: "Требуют проверки", matches: d => ["attention", "label_error", "report_error", "preflight_blocked", "unknown", "blocked"].includes(d.display_status || d.status)},
-  logistics: {title: "У логиста", matches: d => !d.stopped && d.status === "done"},
+  logistics: {title: "Комплект сформирован", matches: d => !d.stopped && d.status === "done"},
   archived: {title: "Закрыты", matches: d => !d.stopped && d.status === "archive"},
   stopped: {title: "Остановлены", matches: d => !!d.stopped},
 };
@@ -121,15 +121,15 @@ function organizeDocument(editable) {
     reported: ["Отчёт о нанесении принят", "Следующий этап — формирование АТК и подготовка итоговых файлов. Дождитесь завершения обработки."],
     aggregating: ["Формируется АТК", "Дождитесь завершения обработки в ЧЗ. Когда комплект будет готов, он появится в рабочем месте логиста."],
     repack: ["Формируем новые этикетки", "Старые PDF больше неактуальны. Новая версия появится после завершения подготовки. Повторно заказывать КМ не требуется."],
-    done: ["Комплект передан на этап логистики", "АТК и RESULT сформированы. Работа ОБМ на этом этапе завершена, но накладная ещё открыта: логист должен получить файлы и завершить её в реестре АТК. Движение товара по маршруту здесь не отслеживается."],
+    done: ["АТК и RESULT сформированы", "Комплект документов готов для работы логиста. Накладная ещё открыта: получение логистом, формирование физического груза, перевозка и доставка в системе не подтверждены. Закрытие выполняется отдельно в реестре АТК."],
     archive: ["Накладная в архиве", "Рабочая обработка завершена либо остановлена. Состав и сохранённые версии файлов доступны для просмотра."],
     label_error: ["Исправьте состав для этикеток", "Проверьте сообщение об ошибке и сохраните исправленный состав. Полученные коды сохраняются."],
-    report_error: ["Ошибка отчёта о нанесении", "СУЗ отклонила отчёт или обработала его частично. После проверки карточек в НК нажмите «Отправить повторно». Уже нанесённые КМ повторно отправлены не будут."],
+    report_error: ["Ошибка отчёта о нанесении", "СУЗ отклонила отчёт или обработала его частично. После сверки карточек НК и статусов КМ используйте действие «Повторить отчёт о нанесении». Подтверждённо нанесённые КМ не будут отправлены повторно."],
   };
   const [title, description] = (doc.stopped ? ["Обработка остановлена", "Документ в архиве. Возврат доступен только администратору; отправленные операции требуют сверки."] : guidance[doc.display_status || doc.status]) || ["Документ в обработке", "Проверьте состояние на вкладке «Обработка и файлы». Дополнительные действия выполняются после завершения текущего этапа."];
   const next = document.createElement("section");
   next.className = "next-step";
-  next.innerHTML = `<div><span class="eyebrow">Следующий шаг</span><h2>${title}</h2><p>${description}</p><span id="document-save-state" class="muted" role="status">${editable ? "Все изменения состава сохранены" : "Состав доступен для просмотра"}</span></div>`;
+  next.innerHTML = `<div><span class="eyebrow">${["done", "archive"].includes(doc.status) ? "Состояние накладной" : "Следующий шаг"}</span><h2>${title}</h2><p>${description}</p><span id="document-save-state" class="muted" role="status">${editable ? "Все изменения состава сохранены" : "Состав доступен для просмотра"}</span></div>`;
   flowActions.classList.add("workflow-actions");
   next.append(flowActions);
   composition.before(next);
