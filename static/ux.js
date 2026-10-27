@@ -51,6 +51,7 @@
     if (!input || input.dataset.pickerReady) return;
     input.dataset.pickerReady = "true";
     input.removeAttribute("list"); // native datalist cannot be positioned or styled
+    if (input.readOnly || input.disabled) return;
     const names = [...new Set((suppliers || []).map(s => typeof s === "string" ? s : s.name)
       .filter(Boolean))].sort((a, b) => a.localeCompare(b, "ru"));
     const host = input.closest("dialog") || document.body;
