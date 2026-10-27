@@ -150,7 +150,7 @@ async function pollStatuses() {
       const incoming = await api("/logistics/atks?" + new URLSearchParams(registryFilters));
       if (!registryMode || $("#modal").open ||
           $("#app").querySelector("form:focus-within") ||
-          $$(".atk-select:checked").length) return;
+          registrySelectedIds.size) return;
       if (logisticsStatusSignature(incoming) !== logisticsStatusSignature(registryRows)) {
         const scroll = window.scrollY;
         await logisticsPage();
@@ -222,6 +222,10 @@ const roleNames = {
   logistics: "Логист",
   admin: "Администратор",
 };
+let registryPage = 0;
+let registryPageSize = 50;
+let registrySort = "newest";
+const registrySelectedIds = new Set();
 let registryRequest = 0;
 let registryMode = false,
   registryRows = [],
@@ -1170,6 +1174,8 @@ async function action(name, id, b) {
       await logisticsDetail(id);
       break;
     case "registry-reset":
+      registryPage = 0;
+      registrySelectedIds.clear();
       registryFilters = {
         q: "",
         supplier: "",
@@ -1182,7 +1188,7 @@ async function action(name, id, b) {
       await logisticsPage();
       break;
     case "registry-download":
-      await downloadRegistry($$(".atk-select:checked").map((x) => x.value));
+      await downloadRegistry([...registrySelectedIds]);
       break;
     case "refresh-page":
       if (registryMode) await logisticsPage();
@@ -1525,6 +1531,10 @@ function logisticsNextAction(a) {
 async function logisticsPage() {
   if (!user.admin && user.role !== "logistics") return list();
   documentDirty = false;
+  if (!registryMode) {
+    registrySelectedIds.clear();
+    registryPage = 0;
+  }
   registryMode = true;
   adminMode = false;
   archive = false;
@@ -1538,8 +1548,18 @@ async function logisticsPage() {
   ]);
   if (generation !== registryRequest || !registryMode) return;
   registryRows = items;
-  const groupedItems = [...items].sort((a, b) =>
-    a.supplier.localeCompare(b.supplier, "ru") || b.created.localeCompare(a.created));
+  const readyIds = new Set(items.filter(a => a.download_ready).map(a => String(a.id)));
+  for (const id of registrySelectedIds) if (!readyIds.has(id)) registrySelectedIds.delete(id);
+  const bySupplierThenSort = (a, b) => {
+    const bySupplier = a.supplier.localeCompare(b.supplier, "ru");
+    if (bySupplier) return bySupplier;
+    if (registrySort === "oldest") return a.created.localeCompare(b.created) || String(a.id).localeCompare(String(b.id));
+    if (registrySort === "units") return b.units - a.units || String(a.id).localeCompare(String(b.id));
+    if (registrySort === "code") return String(a.code || "").localeCompare(String(b.code || ""), "ru", {numeric: true}) || String(a.id).localeCompare(String(b.id));
+    if (registrySort === "status") return String(a.status).localeCompare(String(b.status), "ru") || String(a.id).localeCompare(String(b.id));
+    return b.created.localeCompare(a.created) || String(a.id).localeCompare(String(b.id));
+  };
+  const groupedItems = [...items].sort(bySupplierThenSort);
   const supplierCounts = new Map();
   const groupCounts = new Map();
   items.forEach(a => {
@@ -1563,10 +1583,12 @@ async function logisticsPage() {
       )
       .join(
         "",
-      )}</select></label><label>ТН ВЭД<input id="atk-tnved" name="tnved" inputmode="numeric" maxlength="10" value="${e(registryFilters.tnved)}" placeholder="Полный код или часть"></label><div class="filter-row"><label>Создан с<input id="atk-from" type="date" name="date_from" value="${e(registryFilters.date_from)}"></label><label>Создан по<input id="atk-to" type="date" name="date_to" value="${e(registryFilters.date_to)}"></label><label class="check-label"><input id="atk-archive" name="archive" type="checkbox" ${registryFilters.archive ? "checked" : ""}>Архивные АТК</label><button class="primary" type="submit">Применить фильтры</button><button type="button" data-action="registry-reset">Сбросить</button></div></form><div class="table-wrap registry-table-scroll"><table id="atk-table"><thead><tr><th><input id="atk-select-all" type="checkbox" aria-label="Выбрать готовые АТК"></th><th>АТК / поставщик</th><th>Накладные / сотрудники</th><th>ТН ВЭД</th><th>Штук / КМ</th><th>Статус / создан</th><th>Файлы</th><th>Следующее действие</th><th>Завершение</th></tr></thead><tbody>${items.length ? groupedItems.map((a, i) => `${i === 0 || groupedItems[i - 1].supplier_id !== a.supplier_id ? `<tr class="registry-supplier-row"><th colspan="9" scope="colgroup">${e(a.supplier)} · ${fmt(supplierCounts.get(a.supplier_id))} АТК</th></tr>` : ""}<tr><td><input type="checkbox" class="atk-select" value="${e(a.id)}" ${a.download_ready ? "" : "disabled"} aria-label="Выбрать АТК ${e(a.code || a.id)}"></td><td><button class="linkbutton registry-code" data-action="registry-detail" data-id="${e(a.id)}">${a.code ? e(a.code) : "АТК формируется"}</button><span class="cell-sub">${e(a.supplier)}</span></td><td>${a.invoices.map(e).join(", ")}<span class="cell-sub">${a.owners.map(e).join(", ")}</span></td><td>${e(a.tnved)}</td><td><b>${fmt(a.units)}</b><span class="cell-sub">${fmt(a.labels)} КМ</span></td><td><span class="badge ${e(a.status)}">${registryLabels[a.status]}</span><span class="cell-sub">${date(a.created)}</span>${a.error ? `<span class="cell-sub">${e(a.error)}</span>` : ""}</td><td><div class="download-actions">${a.files.map((f) => `<a href="/api/files/${e(f.id)}" class="button" title="${e(f.name)}">${f.kind === "atk" ? "АТК" : "RESULT"} · v${f.version}</a>`).join("")}</div>${a.download_ready ? "" : '<span class="cell-sub">Комплект ещё не готов</span>'}<span class="cell-sub">${groupCounts.get(a.group_id) > 1 ? "Общий комплект · " + fmt(groupCounts.get(a.group_id)) + " АТК" : "Отдельный комплект"}</span></td><td class="registry-next-action">${e(logisticsNextAction(a))}</td><td>${a.documents.some(d => d.can_complete) ? `<button data-action="registry-detail" data-id="${e(a.id)}">${a.documents.length === 1 ? "Завершить накладную" : "Завершить накладные"}</button>` : a.status === "stopped" ? '<span class="badge cancelled">Остановлена</span>' : a.archived ? '<span class="badge done">Завершены</span>' : '<span class="muted">Ожидание готовности</span>'}</td></tr>`).join("") : ""}</tbody></table></div>${items.length ? "" : '<div class="empty"><b>АТК не найдены</b>Измените фильтры или дождитесь формирования таможенных кодов.</div>'}<p id="registry-selection-summary" class="registry-selection-summary" role="status" aria-live="polite">Выберите готовые АТК для просмотра состава ZIP.</p><div class="actions"><button class="primary" data-action="registry-download" disabled>Скачать выбранные · ZIP</button><span class="muted">Комплект АТК + RESULT на группу. Общие файлы включаются один раз.</span></div></section>`,
+      )}</select></label><label>ТН ВЭД<input id="atk-tnved" name="tnved" inputmode="numeric" maxlength="10" value="${e(registryFilters.tnved)}" placeholder="Полный код или часть"></label><div class="filter-row"><label>Создан с<input id="atk-from" type="date" name="date_from" value="${e(registryFilters.date_from)}"></label><label>Создан по<input id="atk-to" type="date" name="date_to" value="${e(registryFilters.date_to)}"></label><label class="check-label"><input id="atk-archive" name="archive" type="checkbox" ${registryFilters.archive ? "checked" : ""}>Архивные АТК</label><button class="primary" type="submit">Применить фильтры</button><button type="button" data-action="registry-reset">Сбросить</button></div></form><div class="register-controls registry-controls"><label>Сортировка внутри поставщика<select id="atk-sort"><option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option><option value="code">По коду АТК</option><option value="status">По статусу</option><option value="units">По количеству товара</option></select></label><label>АТК на странице<select id="atk-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label></div><div class="table-wrap registry-table-scroll"><table id="atk-table"><thead><tr><th><input id="atk-select-all" type="checkbox" aria-label="Выбрать готовые АТК"></th><th>АТК / поставщик</th><th>Накладные / сотрудники</th><th>ТН ВЭД</th><th>Штук / КМ</th><th>Статус / создан</th><th>Файлы</th><th>Следующее действие</th><th>Завершение</th></tr></thead><tbody id="atk-rows"></tbody></table></div>${items.length ? "" : '<div class="empty"><b>АТК не найдены</b>Измените фильтры или дождитесь формирования таможенных кодов.</div>'}<div class="register-pager registry-pager"><span id="atk-page-label" role="status"></span><div class="actions"><button id="atk-prev" type="button">Предыдущая</button><button id="atk-next" type="button">Следующая</button></div></div><p id="registry-selection-summary" class="registry-selection-summary" role="status" aria-live="polite">Выберите готовые АТК для просмотра состава ZIP.</p><div class="actions"><button type="button" id="clear-atk-selection" hidden>Снять выбор</button><button class="primary" data-action="registry-download" disabled>Скачать выбранные · ZIP</button><span class="muted">Комплект АТК + RESULT на группу. Общие файлы включаются один раз.</span></div></section>`,
   );
   $("#registry-filters").onsubmit = async (ev) => {
     ev.preventDefault();
+    registryPage = 0;
+    registrySelectedIds.clear();
     registryFilters = {
       q: $("#atk-search").value.trim(),
       supplier: $("#atk-supplier").value,
@@ -1584,38 +1606,83 @@ async function logisticsPage() {
   };
   for (const selector of ["#atk-supplier", "#atk-status", "#atk-archive"])
     $(selector).onchange = () => $("#registry-filters").requestSubmit();
+
+  $("#atk-sort").value = registrySort;
+  $("#atk-page-size").value = String(registryPageSize);
+  const tbody = $("#atk-rows");
+  const renderRows = () => {
+    const pages = Math.max(1, Math.ceil(groupedItems.length / registryPageSize));
+    registryPage = Math.max(0, Math.min(registryPage, pages - 1));
+    const from = registryPage * registryPageSize;
+    const onPage = groupedItems.slice(from, from + registryPageSize);
+    tbody.innerHTML = onPage.map((a, i) =>
+      `${i === 0 || onPage[i - 1].supplier_id !== a.supplier_id
+        ? `<tr class="registry-supplier-row"><th colspan="9" scope="colgroup">${e(a.supplier)} · всего ${fmt(supplierCounts.get(a.supplier_id))} АТК</th></tr>` : ""}
+        <tr><td><input type="checkbox" class="atk-select" value="${e(a.id)}" ${a.download_ready ? "" : "disabled"} aria-label="Выбрать АТК ${e(a.code || a.id)}"></td><td><button class="linkbutton registry-code" data-action="registry-detail" data-id="${e(a.id)}">${a.code ? e(a.code) : "АТК формируется"}</button><span class="cell-sub">${e(a.supplier)}</span></td><td>${a.invoices.map(e).join(", ")}<span class="cell-sub">${a.owners.map(e).join(", ")}</span></td><td>${e(a.tnved)}</td><td><b>${fmt(a.units)}</b><span class="cell-sub">${fmt(a.labels)} КМ</span></td><td><span class="badge ${e(a.status)}">${registryLabels[a.status]}</span><span class="cell-sub">${date(a.created)}</span>${a.error ? `<span class="cell-sub">${e(a.error)}</span>` : ""}</td><td><div class="download-actions">${a.files.map((f) => `<a href="/api/files/${e(f.id)}" class="button" title="${e(f.name)}">${f.kind === "atk" ? "АТК" : "RESULT"} · v${f.version}</a>`).join("")}</div>${a.download_ready ? "" : '<span class="cell-sub">Комплект ещё не готов</span>'}<span class="cell-sub">${groupCounts.get(a.group_id) > 1 ? "Общий комплект · " + fmt(groupCounts.get(a.group_id)) + " АТК" : "Отдельный комплект"}</span></td><td class="registry-next-action">${e(logisticsNextAction(a))}</td><td>${a.documents.some(d => d.can_complete) ? `<button data-action="registry-detail" data-id="${e(a.id)}">${a.documents.length === 1 ? "Завершить накладную" : "Завершить накладные"}</button>` : a.status === "stopped" ? '<span class="badge cancelled">Остановлена</span>' : a.archived ? '<span class="badge done">Завершены</span>' : '<span class="muted">Ожидание готовности</span>'}</td></tr>`).join("");
+    $("#atk-page-label").textContent = groupedItems.length
+      ? `АТК ${from + 1}–${from + onPage.length} из ${groupedItems.length} · страница ${registryPage + 1} из ${pages}`
+      : "АТК по выбранным фильтрам нет";
+    $("#atk-prev").disabled = registryPage === 0;
+    $("#atk-next").disabled = registryPage + 1 >= pages;
+    document.querySelectorAll(".atk-select").forEach(input => {
+      input.checked = registrySelectedIds.has(input.value);
+      input.onchange = () => {
+        if (input.checked) registrySelectedIds.add(input.value);
+        else registrySelectedIds.delete(input.value);
+        updateSelection();
+      };
+    });
+    updateSelection();
+  };
   function updateSelection() {
-    const selectedIds = new Set([...document.querySelectorAll(".atk-select:checked")].map(input => input.value));
-    const selected = items.filter(a => selectedIds.has(String(a.id)));
+    const selected = items.filter(a => registrySelectedIds.has(String(a.id)));
     const groups = new Map(selected.map(a => [a.group_id, a]));
-    const invoices = [...new Set([...groups.values()].flatMap(a => a.invoices))].sort((a, b) => a.localeCompare(b, "ru"));
+    const invoices = [...new Set([...groups.values()].flatMap(a => a.invoices))]
+      .sort((a, b) => a.localeCompare(b, "ru"));
     const files = [...groups.values()].flatMap(a => a.files);
+    const checkedHere = [...document.querySelectorAll(".atk-select:not(:disabled)")];
+    const onPageCount = checkedHere.filter(input => input.checked).length;
     const button = $('[data-action="registry-download"]');
     const summary = $("#registry-selection-summary");
     const withinLimit = selected.length <= 200;
     button.disabled = !selected.length || !withinLimit;
     button.textContent = selected.length ? `Скачать ZIP · ${fmt(selected.length)} АТК` : "Скачать выбранные · ZIP";
+    $("#clear-atk-selection").hidden = !selected.length;
     if (!selected.length) {
-      summary.textContent = "Выберите готовые АТК для просмотра состава ZIP.";
+      summary.textContent = "Выберите готовые АТК для просмотра состава ZIP. «Выбрать все» действует только на текущей странице.";
     } else {
       const invoiceLabel = invoices.length <= 12 ? invoices.join(", ") :
         invoices.slice(0, 12).join(", ") + ` и ещё ${fmt(invoices.length - 12)}`;
-      summary.textContent = `Выбрано АТК: ${fmt(selected.length)} · Уникальных комплектов: ${fmt(groups.size)} · Файлов Excel: ${fmt(files.length)} · Накладных: ${fmt(invoices.length)}. Номера: ${invoiceLabel}.` +
+      summary.textContent = `Выбрано АТК: ${fmt(selected.length)} (на текущей странице: ${onPageCount}, на других страницах: ${selected.length - onPageCount}) · Уникальных комплектов: ${fmt(groups.size)} · Файлов Excel: ${fmt(files.length)} · Накладных: ${fmt(invoices.length)}. Номера: ${invoiceLabel}.` +
         (withinLimit ? " Совпадающие комплекты попадут в ZIP один раз." : " Лимит: не более 200 АТК за скачивание.");
     }
-    const available = [...document.querySelectorAll(".atk-select:not(:disabled)")];
-    const marked = available.filter(input => input.checked).length;
-    $("#atk-select-all").checked = !!available.length && marked === available.length;
-    $("#atk-select-all").indeterminate = marked > 0 && marked < available.length;
+    $("#atk-select-all").disabled = !checkedHere.length;
+    $("#atk-select-all").checked = !!checkedHere.length && onPageCount === checkedHere.length;
+    $("#atk-select-all").indeterminate = onPageCount > 0 && onPageCount < checkedHere.length;
   }
-  $$(".atk-select").forEach((input) => (input.onchange = updateSelection));
-  $("#atk-select-all").onchange = (event) => {
-    document.querySelectorAll(".atk-select:not(:disabled)").forEach(
-      input => (input.checked = event.target.checked),
-    );
+  $("#atk-sort").onchange = event => {
+    registrySort = event.target.value;
+    groupedItems.sort(bySupplierThenSort);
+    registryPage = 0;
+    renderRows();
+  };
+  $("#atk-page-size").onchange = event => {
+    registryPageSize = Number(event.target.value);
+    registryPage = 0;
+    renderRows();
+  };
+  $("#atk-prev").onclick = () => { registryPage--; renderRows(); };
+  $("#atk-next").onclick = () => { registryPage++; renderRows(); };
+  $("#clear-atk-selection").onclick = () => { registrySelectedIds.clear(); renderRows(); };
+  $("#atk-select-all").onchange = event => {
+    document.querySelectorAll(".atk-select:not(:disabled)").forEach(input => {
+      input.checked = event.target.checked;
+      if (input.checked) registrySelectedIds.add(input.value);
+      else registrySelectedIds.delete(input.value);
+    });
     updateSelection();
   };
-  updateSelection();
+  renderRows();
 }
 async function logisticsDetail(id) {
   const a = await api("/logistics/atks/" + encodeURIComponent(id));
