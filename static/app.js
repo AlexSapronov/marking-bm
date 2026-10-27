@@ -642,6 +642,7 @@ function setupAdminDocumentPanel() {
       <div class="actions full"><button type="submit" class="primary" id="legacy-import-submit" disabled>Импортировать накладную</button></div>
     </form>`;
   panel.prepend(legacy);
+  $('[data-admin-panel="users"]').after(panel);
   let previewReady = false;
   const input = $("#legacy-file");
   const submit = $("#legacy-import-submit");
@@ -686,7 +687,6 @@ function setupAdminDocumentPanel() {
       toast(err.message);
     }
   };
-  $('[data-admin-panel="users"]').after(panel);
   $("#admin-doc-search-form").onsubmit = event => {
     event.preventDefault();
     void loadAdminDocuments();
