@@ -432,8 +432,10 @@ class Service:
         for offset in range(0, len(parsed["items"]), 400):
             part = [r["cis"] for r in parsed["items"][offset:offset+400]]
             for c in rows(
-                db, "SELECT c.*,d.status source_status FROM codes c "
-                    "LEFT JOIN documents d ON d.id=c.doc_id WHERE c.cis IN ("
+                db, "SELECT c.*,d.status source_status,a.doc_id active_doc FROM codes c "
+                    "LEFT JOIN documents d ON d.id=c.doc_id "
+                    "LEFT JOIN assignments a ON a.code_id=c.id AND a.active=1 "
+                    "WHERE c.cis IN ("
                     + ",".join("?" for _ in part) + ")", part
             ):
                 source[c["cis"]] = c
@@ -444,6 +446,7 @@ class Service:
                 continue
             if (
                 old["source_status"] != "archive"
+                or old["active_doc"] != old["doc_id"]
                 or old["external_status"] != "EMITTED"
                 or old["local_state"] != "reserved"
                 or old["atk_id"] is not None
@@ -459,7 +462,10 @@ class Service:
         for doc_id in {c["doc_id"] for c in transferable.values()}:
             if (
                 one(db, "SELECT batch_id FROM batch_docs WHERE doc_id=?", (doc_id,))
-                or one(db, "SELECT id FROM operations WHERE doc_id=? AND kind='report' LIMIT 1", (doc_id,))
+                or one(db, "SELECT id FROM operations WHERE doc_id=? "
+                           "AND (kind='report' OR state IN "
+                           "('dispatching','submitted','checking','unknown')) LIMIT 1",
+                           (doc_id,))
             ):
                 for cis, code in list(transferable.items()):
                     if code["doc_id"] == doc_id:
