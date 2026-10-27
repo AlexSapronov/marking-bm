@@ -154,8 +154,18 @@ with tempfile.TemporaryDirectory() as tmp:
             page.locator(".qty-input").fill("5")
             page.locator(".labels-input").fill("3")
             page.locator(".tnved-input").fill("8536699008")
+            prepared_rows = page.evaluate("gatherRows()")
+            assert prepared_rows == [["L-132XYD", "04640638349704", 5, 3, "8536699008"]], prepared_rows
             page.get_by_role("button", name="Проверить и сохранить состав").click()
-            page.get_by_text("Состав сохранён", exact=True).wait_for()
+            try:
+                page.get_by_text("Состав сохранён", exact=True).wait_for(timeout=6000)
+            except Exception as exc:
+                raise AssertionError(
+                    f"Сохранение состава: {exc}; modal={page.locator('#modal').inner_text()}; "
+                    f"toast={page.locator('#toast').inner_text()}; "
+                    f"dialog_open={page.locator('#modal').evaluate('(el) => el.open')}; "
+                    f"page_errors={errors}; rows={prepared_rows}"
+                ) from exc
             page.reload()
             page.get_by_role("heading", name="Накладная SMOKE-001").wait_for()
             assert page.locator(".pn-input").input_value() == "L-132XYD"
@@ -285,6 +295,35 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.locator("#document-count")).to_have_text("Показано 0 из 1")
             page.get_by_role("button", name="Сбросить фильтры", exact=True).click()
             expect(page.locator("#document-count")).to_have_text("Показано 1 из 1")
+            # Real persisted draft invoices test the complete register paging flow.
+            # They are not eligible for mass reporting.
+            with sqlite3.connect(Path(tmp) / "marking-bm.sqlite3") as db:
+                supplier_id, owner = db.execute(
+                    "SELECT supplier_id,owner FROM documents WHERE number='SMOKE-001'"
+                ).fetchone()
+                stamp = datetime.now(timezone.utc).isoformat()
+                for index in range(60):
+                    db.execute(
+                        "INSERT INTO documents(id,number,supplier_id,owner,status,revision,"
+                        "created,updated,current_version) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (uuid4().hex, f"UX-INV-{index:03d}", supplier_id, owner,
+                         "draft", 0, stamp, stamp, 0),
+                    )
+            page.reload()
+            page.get_by_role("heading", name="Накладные", exact=True).wait_for()
+            expect(page.locator("#document-page-label")).to_contain_text("Строки 1–50 из 61")
+            expect(page.locator("#doc-rows tr")).to_have_count(50)
+            page.locator("#document-next").click()
+            expect(page.locator("#document-page-label")).to_contain_text("Строки 51–61 из 61")
+            expect(page.locator("#doc-rows tr")).to_have_count(11)
+            page.locator("#document-page-size").select_option("25")
+            expect(page.locator("#document-page-label")).to_contain_text("Строки 1–25 из 61")
+            page.locator("#document-sort").select_option("number")
+            expect(page.locator("#doc-rows tr").first).to_contain_text("SMOKE-001")
+            page.locator("#search").fill("UX-INV-059")
+            expect(page.locator("#document-page-label")).to_contain_text("Строки 1–1 из 1")
+            page.get_by_role("button", name="Сбросить фильтры", exact=True).click()
+            expect(page.locator("#document-page-label")).to_contain_text("Строки 1–25 из 61")
             page.screenshot(path=str(out / "documents.png"), full_page=True)
             page.locator("#search").fill("nonexistent")
             assert page.locator(".doc-select").count() == 0
@@ -493,10 +532,27 @@ with tempfile.TemporaryDirectory() as tmp:
             move_target = test_service.create(
                 "smoke-user", "MOVE-EMPTY", "Поставщик move"
             )
+            test_service.transferred(move_source, "smoke-user", 1)
             page.reload()
+            page.locator(".doc-select:not(:disabled)").check()
+            expect(page.locator("#selected-count")).to_contain_text("Выбрано накладных: 1")
+            page.locator("#search").fill("MOVE-EMPTY")
+            expect(page.locator("#selected-count")).to_contain_text("на текущей странице: 0")
+            expect(page.locator("#selection-description")).to_contain_text("вне текущих фильтров: 1")
+            page.locator('[data-action="batch"]').click()
+            expect(page.locator("#modal .batch-preview")).to_contain_text("MOVE-READY")
+            expect(page.locator("#modal .batch-preview")).not_to_contain_text("MOVE-EMPTY")
+            page.get_by_role("button", name="Отмена", exact=True).click()
+            page.locator("#search").fill("")
+            page.locator("#clear-doc-selection").click()
+            expect(page.locator("#selected-count")).to_contain_text("Накладные не выбраны")
             page.get_by_role("button", name="MOVE-READY", exact=True).click()
             expect(page.get_by_role("button", name="Перенести строки и КМ")).to_be_visible()
             page.locator(".move-line").check()
+            assert page.evaluate("gatherRows()[0]") == page.evaluate(
+                "([l]) => [l.pn, l.gtin, l.quantity, l.labels, l.tnved]",
+                [page.evaluate("doc.lines[0]")],
+            ), "Checkbox переноса не должен смещать поля состава"
             expect(page.locator("#document-save-state")).to_contain_text("сохранены")
             page.get_by_role("button", name="Перенести строки и КМ", exact=True).click()
             page.wait_for_timeout(800)

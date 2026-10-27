@@ -830,6 +830,18 @@ main > .topbar p { margin-bottom: 0; }
 }
 .admin-filter-bar { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 14px; margin-bottom: 20px; }
 .admin-pager { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 14px; font-size: 13px; color: var(--muted); }
+.register-controls { display: flex; gap: 14px; align-items: end; flex-wrap: wrap; margin: 0 0 14px; }
+.register-controls label { min-width: 170px; }
+.register-controls label:first-child { min-width: 260px; }
+.register-pager { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin: 14px 0 0; color: var(--muted); font-size: 13px; }
+.register-pager .actions { margin: 0; }
+.register-pager button { padding: 6px 12px; min-height: 36px; }
+.invoice-register-scroll { max-height: min(66vh, 760px); }
+.batch-preview { max-height: 220px; overflow: auto; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; }
+.batch-preview > div { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.batch-preview > div:last-child { border-bottom: 0; }
+#clear-doc-selection[hidden] { display: none; }
+
 .admin-pager .actions { margin: 0; }
 .admin-pager button { min-height: 36px; padding: 6px 12px; }
 
