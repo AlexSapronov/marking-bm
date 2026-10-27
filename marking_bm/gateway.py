@@ -18,6 +18,10 @@ class ReportRejected(ValueError):
     """SÚZ explicitly rejected a report; a new report ID is required for retry."""
 
 
+class ReportPartiallyProcessed(ValueError):
+    """SÚZ completed a report with mixed results; reconcile CIS before retry."""
+
+
 def report_rejection_message(response):
     # Read only bounded text from a known rejected report status. Never echo
     # arbitrary upstream bodies, which may contain confidential fields.
@@ -41,6 +45,7 @@ def report_rejection_message(response):
     walk(response)
     details = " ".join(fragments).lower()
     if ("не найдена карточка товара" in details
+            or "отсутствует карточка товара" in details
             or ("буфер для gtin" in details and "нет прав" in details)):
         gtins = sorted(set(re.findall(r"(?<!\d)\d{14}(?!\d)", details)))[:10]
         suffix = " GTIN: " + ", ".join(gtins) + "." if gtins else ""
@@ -267,10 +272,25 @@ class Gateway:
             r = self.oms("report/info", params={"reportId": ext})
             if r.get("reportId") != ext:
                 raise ValueError("Ответ относится к другому отчёту")
-            if r.get("reportStatus") == "REJECTED":
+            status = r.get("reportStatus")
+            # OMS v3 uses ERROR/FAILED for a fully rejected report, and PARTIALLY
+            # when only some codes were applied. REJECTED is retained for
+            # compatibility with older installations.
+            if status in ("ERROR", "FAILED", "REJECTED"):
                 raise ReportRejected(report_rejection_message(r))
-            if r.get("reportStatus") != "SUCCESS":
+            if status in ("PARTIALLY", "PARTIALLY_PROCESSED"):
+                raise ReportPartiallyProcessed(
+                    "Отчёт обработан частично: часть КМ нанесена, часть отклонена. "
+                    "Проверьте результаты в СУЗ и повторите только отклонённые КМ "
+                    "после проверки карточек в НК."
+                )
+            if status in ("IN_PROCESS", "PENDING", "SENT", "CHECK", "PROCESSING"):
                 return {"complete": False, "receipt": r}
+            if status != "SUCCESS":
+                raise ValueError(
+                    "СУЗ вернула неизвестный статус отчёта: "
+                    + str(status)[:40] + ". Нужна сверка в ЛК ЧЗ."
+                )
             rec = self.oms("receipts/receipt", params={"resultDocId": ext})
             results = rec.get("results", [])
             if not results or any(
