@@ -7,6 +7,7 @@ from pypdf import PdfWriter
 
 from conftest import client
 from marking_bm.codes import parse
+from marking_bm.legacy import normalize_legacy_code
 
 
 GTIN = "04670553900537"
@@ -37,11 +38,24 @@ def make_rows(n=2):
             for index in range(n)]
 
 
+def register_legacy(registry, rows):
+    for raw, gtin, _, _, tnved in rows:
+        code = normalize_legacy_code(raw)
+        registry.codes[code.cis] = {
+            "cis": code.cis, "requestedCis": code.cis, "gtin": gtin,
+            "status": "EMITTED", "ownerInn": "7700000000",
+            "emissionType": "FOREIGN", "statusEx": None,
+            "tnVedEaes": str(tnved), "parent": None,
+        }
+
+
 def test_admin_legacy_preview_import_and_future_report_without_pdf(env):
     app, service, registry = env
     admin = client(app, "administrator", True)
     alice = client(app, "alice")
-    content = make_xlsx(make_rows(2))
+    source_rows = make_rows(2)
+    register_legacy(registry, source_rows)
+    content = make_xlsx(source_rows)
     preview = admin.post("/api/admin/legacy/preview",
                          files={"file": ("result_TLCWB.xlsx", content)})
     assert preview.status_code == 200, preview.text
@@ -49,6 +63,10 @@ def test_admin_legacy_preview_import_and_future_report_without_pdf(env):
     assert preview.json()["codes"] == 2
     assert preview.json()["units"] == 6000
     assert preview.json()["lines"][0]["labels"] == 2
+    assert preview.json()["verification"]["allowed"] is True
+    assert preview.json()["verification"]["status_counts"] == {"EMITTED": 2}
+    assert preview.json()["verification"]["errors"] == []
+    assert [p for p in registry.calls if "/cises/info" in p[1]]
     assert alice.post("/api/admin/legacy/preview",
                       files={"file": ("result_TLCWB.xlsx", content)}).status_code == 403
 
@@ -93,6 +111,7 @@ def test_legacy_file_validation_and_duplicate_codes(env):
     app, service, registry = env
     admin = client(app, "administrator", True)
     rows = make_rows()
+    register_legacy(registry, rows)
     for bad_name in ("TLCWB.xlsx", "../result_bad.xlsx", "result_$.xlsx"):
         response = admin.post("/api/admin/legacy/preview",
                               files={"file": (bad_name, make_xlsx(rows))})
@@ -114,7 +133,9 @@ def test_legacy_file_validation_and_duplicate_codes(env):
 def test_legacy_pdf_attachment_does_not_generate_label_zip(env):
     app, service, registry = env
     admin = client(app, "administrator", True)
-    content = make_xlsx(make_rows(1))
+    sample_rows = make_rows(1)
+    register_legacy(registry, sample_rows)
+    content = make_xlsx(sample_rows)
     imported = admin.post("/api/admin/legacy/import",
                           files={"file": ("result_OLD.pdfproof.xlsx", content)},
                           data={"supplier": "Supplier", "owner": "alice"})
@@ -141,7 +162,9 @@ def test_legacy_pdf_attachment_does_not_generate_label_zip(env):
 def test_editing_imported_document_enables_normal_label_generation(env):
     app, service, registry = env
     admin = client(app, "administrator", True)
-    content = make_xlsx(make_rows(1))
+    sample_rows = make_rows(1)
+    register_legacy(registry, sample_rows)
+    content = make_xlsx(sample_rows)
     created = admin.post("/api/admin/legacy/import",
                          files={"file": ("result_EDITME.xlsx", content)},
                          data={"supplier": "Supplier", "owner": "alice"})
