@@ -378,7 +378,57 @@ class Service:
             d["units"] = sum(l["labels"] * l["quantity"] for l in d["lines"])
             return d
 
+    def check_legacy_codes(self, parsed):
+        """Read-only True API check. Every exact CIS must be confirmed EMITTED."""
+        items = parsed["items"]
+        remote = self.gateway.info([item["cis"] for item in items])
+        own_inn = str(self.config()["inn"]).strip()
+        if not own_inn:
+            raise ValueError("Укажите ИНН организации перед проверкой КМ")
+        failures, counts = [], Counter()
+        for item in items:
+            data = remote[item["cis"]]
+            status = data.get("status")
+            status_ex = data.get("statusEx")
+            name = status if isinstance(status, str) else "UNKNOWN"
+            counts[name] += 1
+            if status == "APPLIED":
+                reason = "КМ уже нанесён. Повторный импорт запрещён"
+            elif status in ("INTRODUCED", "IN_CIRCULATION", "IN_CIRCULATION_WAREHOUSE"):
+                reason = "КМ уже введён в оборот. Повторный импорт запрещён"
+            elif status_ex in ("INTRODUCED", "IN_CIRCULATION", "APPLIED"):
+                reason = "КМ уже нанесён или введён в оборот"
+            elif status != "EMITTED":
+                reason = "Нужен статус EMITTED. В ЧЗ: " + name[:80]
+            elif str(data.get("ownerInn") or "").strip() != own_inn:
+                reason = "Не подтверждена принадлежность КМ нашей организации"
+            elif data.get("gtin") not in (None, "", item["gtin"]):
+                reason = "GTIN КМ не совпадает с данными ЧЗ"
+            else:
+                reason = None
+            if reason:
+                failures.append({
+                    "cis": item["cis"], "gtin": item["gtin"],
+                    "pn": item["pn"], "status": name, "reason": reason,
+                })
+        return {
+            "allowed": not failures,
+            "checked": len(items),
+            "status_counts": dict(counts),
+            "errors_count": len(failures),
+            "errors": failures[:100],
+        }
+
     def import_legacy_pack(self, actor, owner, supplier, filename, content, parsed):
+        # Mandatory second read-only True API verification before any DB writes.
+        verification = self.check_legacy_codes(parsed)
+        if not verification["allowed"]:
+            first = verification["errors"][0]
+            raise Conflict(
+                "Импорт запрещён: " + str(verification["errors_count"]) +
+                " КМ не прошли проверку. GTIN " + first["gtin"] +
+                ": " + first["reason"] + " (" + first["status"] + ")."
+            )
         # One atomic transaction; no remote requests, KM emission or label rendering.
         if not isinstance(supplier, str) or not 1 <= len(supplier.strip()) <= 160:
             raise ValueError("Укажите поставщика")
@@ -449,9 +499,9 @@ class Service:
                 db.execute(
                     "INSERT INTO codes(id,raw,cis,gtin,serial,source_op,external_status,checked,"
                     "local_state,doc_id,pn,quantity,tnved) "
-                    "VALUES(?,?,?,?,?,?,'EMITTED',NULL,'reserved',?,?,?,?)",
+                    "VALUES(?,?,?,?,?,?,'EMITTED',?,'reserved',?,?,?,?)",
                     (code_id, item["raw"], item["cis"], item["gtin"], item["serial"],
-                     "legacy:" + doc_id, doc_id, item["pn"], item["quantity"], item["tnved"]),
+                     "legacy:" + doc_id, stamp, doc_id, item["pn"], item["quantity"], item["tnved"]),
                 )
                 db.execute(
                     "INSERT INTO assignments(code_id,doc_id,pn,quantity,tnved,active,created) "
@@ -466,7 +516,8 @@ class Service:
                 db, actor, "Импортирована историческая накладная", doc_id,
                 {"number": number, "supplier": supplier_name, "owner": owner,
                  "codes": parsed["codes_count"], "units": parsed["units"],
-                 "no_labels_generated": True},
+                 "no_labels_generated": True, "verified_emitted": verification["checked"],
+                 "status_source": "True API"},
             )
         return {"id": doc_id, "number": number, "owner": owner, "status": "transferred",
                 "codes": parsed["codes_count"], "units": parsed["units"]}
