@@ -3,6 +3,10 @@
 import os
 from pathlib import Path
 import socket
+import sqlite3
+import hashlib
+from uuid import uuid4
+from datetime import datetime, timezone
 import subprocess
 import sys
 import tempfile
@@ -389,6 +393,33 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("button", name="← Накладные", exact=True).click()
             expect(page.locator("#doc-rows")).to_contain_text("STOP-UI")
             expect(page.locator('[data-stage="all"]')).to_have_attribute("aria-pressed", "true")
+            # Inject only a terminal external response into the test DB.
+            # The browser still talks to the real backend, with external writes disabled.
+            with sqlite3.connect(Path(tmp) / "marking-bm.sqlite3") as db:
+                doc_id = db.execute(
+                    "SELECT id FROM documents WHERE number='STOP-UI'"
+                ).fetchone()[0]
+                stamp = datetime.now(timezone.utc).isoformat()
+                payload = '{"sntins":[],"attributes":{}}'
+                db.execute("UPDATE documents SET status='reporting' WHERE id=?", (doc_id,))
+                db.execute(
+                    "INSERT INTO operations(id,kind,doc_id,op_key,payload,sha256,state,"
+                    "external_id,error,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (uuid4().hex, "report", doc_id, "test:report:error:" + uuid4().hex,
+                     payload, hashlib.sha256(payload.encode()).hexdigest(), "rejected",
+                     str(uuid4()), "Карточка в НК ещё не готова",
+                     stamp, stamp),
+                )
+            page.reload()
+            page.get_by_role("heading", name="Накладные", exact=True).wait_for()
+            row = page.locator("#doc-rows tr", has=page.get_by_role("button", name="STOP-UI"))
+            expect(row).to_contain_text("Ошибка")
+            expect(page.locator('[data-stage="attention"]')).to_contain_text("1")
+            row.get_by_role("button", name="STOP-UI").click()
+            expect(page.locator(".topbar .badge")).to_have_text("Ошибка")
+            expect(page.get_by_role("heading", name="Ошибка отчёта о нанесении")).to_be_visible()
+            expect(page.locator('.next-step [data-action="retry-report-doc"]')).to_have_text("Отправить повторно")
+            page.screenshot(path=str(out / "report-error-retry.png"), full_page=True)
             assert not errors, errors
             browser.close()
         print(
