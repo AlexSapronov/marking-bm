@@ -75,6 +75,80 @@ let user,
   documentTab = "content",
   documentDirty = false,
   documentFilters = {search: "", status: "", supplier: "", from: "", to: "", stage: "all"};
+let statusLastChecked = null;
+let statusPollBusy = false;
+const STATUS_POLL_MS = 30000;
+function documentStatusSignature(d) {
+  return JSON.stringify([
+    d.status, d.display_status, d.revision, d.current_version,
+    d.transferred_version, d.last_error, d.report_issue,
+    d.codes?.length, d.atks?.map(a => [a.id, a.state, a.code]),
+    d.operations?.map(o => [o.id, o.state, o.updated, o.error]),
+    d.exports?.map(a => a.id), d.artifacts?.map(a => a.id),
+    d.stopped, d.group_stop,
+  ]);
+}
+function documentListSignature(items) {
+  return JSON.stringify(items.map(d =>
+    [d.id, d.status, d.display_status, d.updated, d.units, d.stopped]));
+}
+function adminStatusSignature(items) {
+  return JSON.stringify([
+    items.operations.map(o => [o.id, o.state, o.updated, o.attention_resolved_at]),
+    items.transformations.map(t => [t.id, t.state]),
+  ]);
+}
+async function pollStatuses() {
+  if (statusPollBusy || !user || document.hidden || documentDirty ||
+      $("#modal")?.open || $("#app").querySelector("form:focus-within") ||
+      $$(".doc-select:checked, .atk-select:checked").length) return;
+  statusPollBusy = true;
+  const activeDocId = doc?.id;
+  const wasArchive = archive;
+  const wasAdmin = adminMode;
+  try {
+    if (activeDocId && !wasAdmin && !registryMode) {
+      const fresh = await api("/documents/" + encodeURIComponent(activeDocId));
+      if (doc?.id !== activeDocId || documentDirty || $("#modal").open) return;
+      statusLastChecked = new Date();
+      if (documentStatusSignature(fresh) !== documentStatusSignature(doc)) {
+        const scroll = window.scrollY;
+        doc = fresh;
+        renderDoc();
+        window.scrollTo(0, scroll);
+      }
+      const mark = $("#status-checked");
+      if (mark) {
+        mark.textContent = "Проверено: " + statusLastChecked.toLocaleTimeString("ru-RU");
+        mark.title = "Статус обновляется автоматически каждые 30 секунд";
+      }
+    } else if (!wasAdmin && !registryMode && $(".document-list")) {
+      const incoming = await api("/documents?archive=" + wasArchive);
+      if (doc || archive !== wasArchive || documentDirty || $("#modal").open ||
+          $("#app").querySelector("form:focus-within")) return;
+      if (documentListSignature(incoming) !== documentListSignature(docs)) {
+        const scroll = window.scrollY;
+        docs = incoming;
+        renderList();
+        window.scrollTo(0, scroll);
+      }
+    } else if (wasAdmin && adminSection === "overview") {
+      const incoming = await api("/admin/overview");
+      if (!adminMode || adminSection !== "overview" || $("#modal").open ||
+          $("#app").querySelector("form:focus-within")) return;
+      if (adminStatusSignature(incoming) !== adminStatusSignature(overview))
+        await adminPage(incoming);
+    }
+  } catch (error) {
+    const mark = $("#status-checked");
+    if (mark) {
+      mark.textContent = "Нет связи для проверки";
+      mark.title = String(error.message || error);
+    }
+  } finally {
+    statusPollBusy = false;
+  }
+}
 async function api(url, body, method) {
   const headers = { "X-Requested-With": "marking-bm" };
   if (user?.csrf) headers["X-CSRF-Token"] = user.csrf;
@@ -331,6 +405,7 @@ async function open(id) {
   if (doc?.id !== id) documentTab = "content";
   documentDirty = false;
   doc = await api("/documents/" + id);
+  statusLastChecked = new Date();
   archive = doc.status === "archive";
   adminMode = false;
   renderDoc();
@@ -363,7 +438,7 @@ function renderDoc() {
     (a) => a.kind === "labels" && a.version === doc.current_version,
   );
   shell(
-    `<div class="topbar"><div><button class="linkbutton" data-action="${archive ? "archive" : "list"}">${archive ? "← Архив накладных" : "← Накладные"}</button><h1>Накладная ${e(doc.number)}</h1><span class="muted">${e(doc.supplier)} · ${e(doc.owner)} · ${date(doc.created)}</span></div>${badge(doc.display_status || doc.status)}</div>${doc.stopped ? `<div class="notice"><b>Обработка остановлена пользователем ${e(doc.stop.actor)}</b><br>Новые операции и подпись заблокированы. Уже отправленные действия ЧЗ не отозваны; их результаты сохранены для сверки. Вернуть накладную из архива может только администратор.</div>` : doc.group_stop ? `<div class="notice">Общая обработка приостановлена: накладная ${e(doc.group_stop.number)} остановлена. Обратитесь к администратору.</div>` : ""}<div class="steps">${steps.map(([s, l]) => `<span class="step ${s === current ? "current" : ""}">${l}</span>`).join("")}</div><div class="stats"><div class="stat"><span class="muted">Единиц товара</span><b>${fmt(doc.units)}</b></div><div class="stat"><span class="muted">Получено КМ</span><b>${fmt(doc.codes.length)} / ${fmt(doc.required)}</b></div><div class="stat"><span class="muted">Версия этикеток</span><b>${doc.current_version || "—"}</b></div></div>${doc.last_error ? `<div class="error">Этикетки не сформированы: ${e(doc.last_error)}. Полученные КМ сохранены. Исправьте состав накладной.</div>` : ""}${doc.operations
+    `<div class="topbar"><div><button class="linkbutton" data-action="${archive ? "archive" : "list"}">${archive ? "← Архив накладных" : "← Накладные"}</button><h1>Накладная ${e(doc.number)}</h1><span class="muted">${e(doc.supplier)} · ${e(doc.owner)} · ${date(doc.created)}</span></div><div class="doc-status-meta">${badge(doc.display_status || doc.status)}<span id="status-checked" class="status-checked" title="Проверка каждые 30 секунд">Проверено: ${statusLastChecked ? statusLastChecked.toLocaleTimeString("ru-RU") : "—"}</span></div></div>${doc.stopped ? `<div class="notice"><b>Обработка остановлена пользователем ${e(doc.stop.actor)}</b><br>Новые операции и подпись заблокированы. Уже отправленные действия ЧЗ не отозваны; их результаты сохранены для сверки. Вернуть накладную из архива может только администратор.</div>` : doc.group_stop ? `<div class="notice">Общая обработка приостановлена: накладная ${e(doc.group_stop.number)} остановлена. Обратитесь к администратору.</div>` : ""}<div class="steps">${steps.map(([s, l]) => `<span class="step ${s === current ? "current" : ""}">${l}</span>`).join("")}</div><div class="stats"><div class="stat"><span class="muted">Единиц товара</span><b>${fmt(doc.units)}</b></div><div class="stat"><span class="muted">Получено КМ</span><b>${fmt(doc.codes.length)} / ${fmt(doc.required)}</b></div><div class="stat"><span class="muted">Версия этикеток</span><b>${doc.current_version || "—"}</b></div></div>${doc.last_error ? `<div class="error">Этикетки не сформированы: ${e(doc.last_error)}. Полученные КМ сохранены. Исправьте состав накладной.</div>` : ""}${doc.operations
       .filter((o) => o.error && (o.kind !== "report" || o.id === latestReport?.id))
       .map(
         (o) =>
@@ -815,7 +890,7 @@ function setupAdminDocumentPanel() {
     void loadAdminDocuments();
   };
 }
-async function adminPage() {
+async function adminPage(freshOverview = null) {
   registryMode = false;
 
   if (!user.admin) {
@@ -825,7 +900,7 @@ async function adminPage() {
   adminMode = true;
   documentDirty = false;
   doc = null;
-  overview = await api("/admin/overview");
+  overview = freshOverview || await api("/admin/overview");
   const c = overview.config;
   let hb;
   try {
@@ -1430,6 +1505,7 @@ $("#modal").addEventListener("cancel", () => {
   if ($("#excel-mapping-form")) excelImportVersion++;
 });
 bind();
+refreshTimer = setInterval(pollStatuses, STATUS_POLL_MS);
 (async () => {
   try {
     user = await api("/session");
