@@ -1251,7 +1251,7 @@ async function downloadRegistry(ids) {
     throw new Error(value.detail || "Не удалось скачать файлы");
   }
   const disposition = response.headers.get("Content-Disposition") || "";
-  const encodedFilename = disposition.match(/filename\\*=UTF-8''([^;]+)/i);
+  const encodedFilename = disposition.match(/filename\*=UTF-8''([^;]+)/i);
   let filename = "АТК-и-RESULT.zip";
   if (encodedFilename) {
     try {
