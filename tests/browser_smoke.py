@@ -5,6 +5,7 @@ from pathlib import Path
 import socket
 import sqlite3
 import hashlib
+import json
 from uuid import uuid4
 from datetime import datetime, timezone
 import subprocess
@@ -374,6 +375,55 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
             expect(page.get_by_role("button", name="Реестр АТК", exact=True)).to_have_count(0)
             expect(page.get_by_role("columnheader", name="Владелец", exact=True)).to_have_count(0)
+            # Check the new full-row transfer interaction against real API and DB.
+            move_source = add_doc(
+                test_service, owner="smoke-user", supplier="Поставщик move",
+                number="MOVE-READY", labels=1
+            )
+            test_service.order(move_source, "smoke-user")
+            advance(test_app)
+            move_target = test_service.create(
+                "smoke-user", "MOVE-EMPTY", "Поставщик move"
+            )
+            page.reload()
+            page.get_by_role("button", name="MOVE-READY", exact=True).click()
+            expect(page.get_by_role("button", name="Перенести строки и КМ")).to_be_visible()
+            page.locator(".move-line").check()
+            expect(page.locator("#document-save-state")).to_contain_text("сохранены")
+            page.get_by_role("button", name="Перенести строки и КМ", exact=True).click()
+            page.wait_for_timeout(800)
+            assert page.locator("#move-lines-form").count(), (
+                page.locator("#toast").inner_text(), errors,
+                page.locator("#modal").inner_text()
+            )
+            page.locator('#move-lines-form select[name="target"]').select_option(move_target)
+            page.get_by_role("button", name="Проверить перенос").click()
+            expect(page.get_by_role("heading", name="Подтвердить перенос")).to_be_visible()
+            # Browser smoke intentionally has no True API credentials. Route
+            # this *single* mutating request to the fixture with a mocked,
+            # read-only True API gateway; all other UI calls use real FastAPI.
+            commit_path = "**/api/documents/" + move_source + "/move-lines"
+            def complete_movement(route):
+                body = route.request.post_data_json
+                committed = test_service.move_lines(
+                    move_source, body["target_id"], body["line_ids"],
+                    body["fingerprint"], "smoke-user",
+                )
+                route.fulfill(
+                    status=200, content_type="application/json",
+                    body=json.dumps(committed),
+                )
+            page.route(commit_path, complete_movement)
+            page.locator("#confirm-move-lines").click()
+            expect(page.locator('[data-action="move-lines"]')).to_have_count(0)
+            page.unroute(commit_path)
+            assert test_service.get(move_source, "smoke-user")["status"] == "draft"
+            page.get_by_role("heading", name="Накладная MOVE-READY").wait_for()
+            assert test_service.get(move_target, "smoke-user")["status"] == "ready"
+            assert len(test_service.get(move_target, "smoke-user")["codes"]) == 1
+            assert test_service.get(move_source, "smoke-user")["status"] == "draft"
+            expect(page.locator('a.button.primary[href*="/api/files/"]')).to_have_count(0)
+            page.get_by_role("button", name="← Накладные", exact=True).click()
             page.get_by_role("button", name="+ Новая накладная", exact=True).click()
             page.locator("#number").fill("STOP-UI")
             page.locator("#new-supplier").fill("Поставщик smoke")
