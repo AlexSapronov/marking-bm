@@ -60,8 +60,21 @@ const kinds = {
   auth_true: "Авторизация ГИС МТ",
   auth_oms: "Авторизация СУЗ",
 };
-const badge = (s) => `<span class="badge ${e(s)}">${e(states[s] || s)}</span>`,
-  fmt = (n) => Number(n || 0).toLocaleString("ru-RU"),
+const badge = (s) => `<span class="badge ${e(s)}">${e(states[s] || s)}</span>`;
+// A document at the internal "done" stage has complete ATK/RESULT exports,
+// but it has NOT been closed by logistics. Do not reuse this document wording
+// for a completed external operation or an ATK with state "done".
+function documentStatusLabel(d) {
+  if (d.stopped) return "Обработка остановлена";
+  if (d.status === "done") return "У логиста";
+  if (d.status === "archive") return "В архиве";
+  return states[d.display_status || d.status] || d.display_status || d.status;
+}
+function documentBadge(d) {
+  const status = d.stopped ? "cancelled" : d.status === "done" ? "logistics" : d.display_status || d.status;
+  return `<span class="badge ${e(status)}">${e(documentStatusLabel(d))}</span>`;
+}
+const fmt = (n) => Number(n || 0).toLocaleString("ru-RU"),
   date = (s) => (s ? new Date(s).toLocaleString("ru-RU") : "—");
 let user,
   docs = [],
@@ -342,10 +355,15 @@ async function list() {
   renderList();
 }
 function renderList() {
-  const stages = documentStages;
+  const stages = archive
+    ? {all: documentStages.all, archived: documentStages.archived, stopped: documentStages.stopped}
+    : {all: documentStages.all, preparation: documentStages.preparation,
+       processing: documentStages.processing, supplier: documentStages.supplier,
+       attention: documentStages.attention, logistics: documentStages.logistics,
+       stopped: documentStages.stopped};
   shell(`<div class="topbar"><div><div class="eyebrow">${user.admin ? "Все сотрудники" : "Мои документы"}</div><h1>${archive ? "Архив накладных" : "Накладные"}</h1><p class="muted">${archive ? "Завершённые документы и сохранённые файлы" : "Подготовьте этикетки, передайте поставщику и подтвердите нанесение"}</p></div>${archive ? "" : '<button class="primary" data-action="new">+ Новая накладная</button>'}</div>
   <div class="stage-filters" aria-label="Этапы накладных">${Object.entries(stages).map(([key, stage]) => `<button data-stage="${key}" aria-pressed="${documentFilters.stage === key}">${stage.title}<b>${docs.filter(d => stage.matches(d)).length}</b></button>`).join("")}</div>
-  <section class="card document-list"><h2>${archive ? "Архивные документы" : "Рабочие документы"}</h2><div class="document-filters"><label>Номер накладной<input id="search" placeholder="Поиск по номеру" value="${e(documentFilters.search)}"></label><label>Поставщик<select id="supplier"><option value="">Все поставщики</option>${[...new Set(docs.map(d => d.supplier))].sort().map(v => `<option ${v === documentFilters.supplier ? "selected" : ""}>${e(v)}</option>`).join("")}</select></label><label>Статус<select id="status"><option value="">Все статусы</option>${[...new Set(docs.map(d => d.display_status || d.status))].map(v => `<option value="${e(v)}" ${v === documentFilters.status ? "selected" : ""}>${e(states[v] || v)}</option>`).join("")}</select></label><label>Создана с<input type="date" id="from" value="${e(documentFilters.from)}"></label><label>Создана по<input type="date" id="to" value="${e(documentFilters.to)}"></label></div>
+  <section class="card document-list"><h2>${archive ? "Архивные документы" : "Рабочие документы"}</h2><div class="document-filters"><label>Номер накладной<input id="search" placeholder="Поиск по номеру" value="${e(documentFilters.search)}"></label><label>Поставщик<select id="supplier"><option value="">Все поставщики</option>${[...new Set(docs.map(d => d.supplier))].sort().map(v => `<option ${v === documentFilters.supplier ? "selected" : ""}>${e(v)}</option>`).join("")}</select></label><label>Статус<select id="status"><option value="">Все статусы</option>${[...new Set(docs.map(d => d.display_status || d.status))].map(v => `<option value="${e(v)}" ${v === documentFilters.status ? "selected" : ""}>${e(v === "done" ? "У логиста" : v === "archive" ? "В архиве" : states[v] || v)}</option>`).join("")}</select></label><label>Создана с<input type="date" id="from" value="${e(documentFilters.from)}"></label><label>Создана по<input type="date" id="to" value="${e(documentFilters.to)}"></label></div>
   <div class="list-caption"><span id="document-count" class="muted" role="status"></span><button class="linkbutton" data-action="reset-doc-filters">Сбросить фильтры</button></div>
   <div class="register-controls"><label>Сортировка<select id="document-sort"><option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option><option value="number">По номеру накладной</option><option value="supplier">По поставщику</option><option value="status">По статусу</option><option value="units">По количеству товара</option></select></label><label>Строк на странице<select id="document-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label></div>
   <div class="table-wrap invoice-register-scroll"><table><thead><tr><th><input id="select-all" type="checkbox" aria-label="Выбрать все доступные для нанесения на текущей странице"></th><th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Штук</th><th>Создана</th>${user.admin ? "<th>Владелец</th>" : ""}</tr></thead><tbody id="doc-rows"></tbody></table></div>
@@ -397,7 +415,10 @@ function filterRows() {
   const eligibleIds = new Set(docs.filter(d => d.status === "transferred" && !archive && !d.stopped)
     .map(d => String(d.id)));
   for (const id of documentSelectedIds) if (!eligibleIds.has(id)) documentSelectedIds.delete(id);
-  const ds = docs.filter(d => documentStages[f.stage].matches(d) &&
+  const stages = archive
+    ? {all: documentStages.all, archived: documentStages.archived, stopped: documentStages.stopped}
+    : documentStages;
+  const ds = docs.filter(d => (stages[f.stage] || stages.all).matches(d) &&
     (!f.search || d.number.toLowerCase().includes(f.search.toLowerCase())) &&
     (!f.status || (d.display_status || d.status) === f.status) && (!f.supplier || d.supplier === f.supplier) &&
     (!f.from || d.created.slice(0, 10) >= f.from) && (!f.to || d.created.slice(0, 10) <= f.to));
@@ -421,7 +442,7 @@ function filterRows() {
     "Подходящих накладных нет";
   $("#document-prev").disabled = documentPage === 0;
   $("#document-next").disabled = documentPage + 1 >= pages;
-  $("#doc-rows").innerHTML = visible.length ? visible.map(d => `<tr><td><input type="checkbox" class="doc-select" value="${e(d.id)}" ${eligibleIds.has(String(d.id)) ? "" : 'disabled title="Доступно только после передачи этикеток поставщику"'} ${documentSelectedIds.has(String(d.id)) ? "checked" : ""} aria-label="Выбрать ${e(d.number)}"></td><td><button class="linkbutton" data-action="open" data-id="${e(d.id)}"><b>${e(d.number)}</b></button></td><td>${e(d.supplier)}</td><td>${d.stopped ? badge("cancelled") : badge(d.display_status || d.status)}</td><td>${fmt(d.units)}</td><td>${date(d.created)}</td>${user.admin ? `<td>${e(d.owner)}</td>` : ""}</tr>`).join("") : `<tr><td colspan="${user.admin ? 7 : 6}"><div class="empty"><b>${docs.length ? "По выбранным условиям ничего не найдено" : archive ? "Архив пока пуст" : "Накладных пока нет"}</b>${docs.length ? "Сбросьте фильтры или выберите другой этап." : archive ? "Здесь появятся завершённые документы." : "Создайте накладную и загрузите состав из Excel."}</div></td></tr>`;
+  $("#doc-rows").innerHTML = visible.length ? visible.map(d => `<tr><td><input type="checkbox" class="doc-select" value="${e(d.id)}" ${eligibleIds.has(String(d.id)) ? "" : 'disabled title="Доступно только после передачи этикеток поставщику"'} ${documentSelectedIds.has(String(d.id)) ? "checked" : ""} aria-label="Выбрать ${e(d.number)}"></td><td><button class="linkbutton" data-action="open" data-id="${e(d.id)}"><b>${e(d.number)}</b></button></td><td>${e(d.supplier)}</td><td>${documentBadge(d)}</td><td>${fmt(d.units)}</td><td>${date(d.created)}</td>${user.admin ? `<td>${e(d.owner)}</td>` : ""}</tr>`).join("") : `<tr><td colspan="${user.admin ? 7 : 6}"><div class="empty"><b>${docs.length ? "По выбранным условиям ничего не найдено" : archive ? "Архив пока пуст" : "Накладных пока нет"}</b>${docs.length ? "Сбросьте фильтры или выберите другой этап." : archive ? "Здесь появятся завершённые документы." : "Создайте накладную и загрузите состав из Excel."}</div></td></tr>`;
   $$(".doc-select").forEach(input => input.onchange = () => {
     if (input.checked) documentSelectedIds.add(input.value);
     else documentSelectedIds.delete(input.value);
@@ -513,7 +534,7 @@ function renderDoc() {
     ["transferred", "Нанесение"],
     ["reporting", "Отчёт"],
     ["aggregating", "АТК"],
-    ["done", "Готово"],
+    ["done", doc.status === "archive" ? "Закрыто" : "Логистика"],
   ];
   const current =
     doc.status === "reported"
@@ -527,7 +548,7 @@ function renderDoc() {
     (a) => a.kind === "labels" && a.version === doc.current_version,
   );
   shell(
-    `<div class="topbar"><div><button class="linkbutton" data-action="${archive ? "archive" : "list"}">${archive ? "← Архив накладных" : "← Накладные"}</button><h1>Накладная ${e(doc.number)}</h1><span class="muted">${e(doc.supplier)} · ${e(doc.owner)} · ${date(doc.created)}</span></div><div class="doc-status-meta">${badge(doc.display_status || doc.status)}<span id="status-checked" class="status-checked" title="Проверка каждые 30 секунд">Проверено: ${statusLastChecked ? statusLastChecked.toLocaleTimeString("ru-RU") : "—"}</span></div></div>${doc.stopped ? `<div class="notice"><b>Обработка остановлена пользователем ${e(doc.stop.actor)}</b><br>Новые операции и подпись заблокированы. Уже отправленные действия ЧЗ не отозваны; их результаты сохранены для сверки. Вернуть накладную из архива может только администратор.</div>` : doc.group_stop ? `<div class="notice">Общая обработка приостановлена: накладная ${e(doc.group_stop.number)} остановлена. Обратитесь к администратору.</div>` : ""}<div class="steps">${steps.map(([s, l]) => `<span class="step ${s === current ? "current" : ""}">${l}</span>`).join("")}</div><div class="stats"><div class="stat"><span class="muted">Единиц товара</span><b>${fmt(doc.units)}</b></div><div class="stat"><span class="muted">Получено КМ</span><b>${fmt(doc.codes.length)} / ${fmt(doc.required)}</b></div><div class="stat"><span class="muted">Версия этикеток</span><b>${doc.current_version || "—"}</b></div></div>${doc.last_error ? `<div class="error">Этикетки не сформированы: ${e(doc.last_error)}. Полученные КМ сохранены. Исправьте состав накладной.</div>` : ""}${doc.operations
+    `<div class="topbar"><div><button class="linkbutton" data-action="${archive ? "archive" : "list"}">${archive ? "← Архив накладных" : "← Накладные"}</button><h1>Накладная ${e(doc.number)}</h1><span class="muted">${e(doc.supplier)} · ${e(doc.owner)} · ${date(doc.created)}</span></div><div class="doc-status-meta">${documentBadge(doc)}<span id="status-checked" class="status-checked" title="Проверка каждые 30 секунд">Проверено: ${statusLastChecked ? statusLastChecked.toLocaleTimeString("ru-RU") : "—"}</span></div></div>${doc.stopped ? `<div class="notice"><b>Обработка остановлена пользователем ${e(doc.stop.actor)}</b><br>Новые операции и подпись заблокированы. Уже отправленные действия ЧЗ не отозваны; их результаты сохранены для сверки. Вернуть накладную из архива может только администратор.</div>` : doc.group_stop ? `<div class="notice">Общая обработка приостановлена: накладная ${e(doc.group_stop.number)} остановлена. Обратитесь к администратору.</div>` : ""}<div class="steps">${steps.map(([s, l]) => `<span class="step ${s === current ? "current" : ""}">${l}</span>`).join("")}</div><div class="stats"><div class="stat"><span class="muted">Единиц товара</span><b>${fmt(doc.units)}</b></div><div class="stat"><span class="muted">Получено КМ</span><b>${fmt(doc.codes.length)} / ${fmt(doc.required)}</b></div><div class="stat"><span class="muted">Версия этикеток</span><b>${doc.current_version || "—"}</b></div></div>${doc.last_error ? `<div class="error">Этикетки не сформированы: ${e(doc.last_error)}. Полученные КМ сохранены. Исправьте состав накладной.</div>` : ""}${doc.operations
       .filter((o) => o.error && (o.kind !== "report" || o.id === latestReport?.id))
       .map(
         (o) =>
@@ -922,7 +943,7 @@ async function loadAdminDocuments() {
     result.innerHTML = invoices.length
       ? `<div class="table-wrap"><table><thead><tr><th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Текущий ответственный</th><th>Новый ответственный</th><th>Действие</th></tr></thead><tbody>${invoices.map(d => {
           const options = managers.filter(u => u.username !== d.owner);
-          return `<tr data-owner="${e(d.owner)}" data-number="${e(d.number)}"><td><b>${e(d.number)}</b></td><td>${e(d.supplier)}</td><td>${badge(d.status)}</td><td>${e(d.owner)}</td><td><select class="user-role" aria-label="Назначить ответственного для ${e(d.number)}"><option value="">Выберите сотрудника</option>${options.map(u => `<option value="${e(u.username)}">${e(u.username)}</option>`).join("")}</select></td><td><button data-action="reassign-document" data-id="${e(d.id)}" ${options.length ? "" : "disabled"}>Передать</button></td></tr>`;
+          return `<tr data-owner="${e(d.owner)}" data-number="${e(d.number)}"><td><b>${e(d.number)}</b></td><td>${e(d.supplier)}</td><td>${documentBadge(d)}</td><td>${e(d.owner)}</td><td><select class="user-role" aria-label="Назначить ответственного для ${e(d.number)}"><option value="">Выберите сотрудника</option>${options.map(u => `<option value="${e(u.username)}">${e(u.username)}</option>`).join("")}</select></td><td><button data-action="reassign-document" data-id="${e(d.id)}" ${options.length ? "" : "disabled"}>Передать</button></td></tr>`;
         }).join("")}</tbody></table></div>`
       : '<p class="empty">Накладные не найдены. Измените запрос.</p>';
     $("#admin-doc-count").textContent = `Показано ${invoices.length} накладных${invoices.length === 100 ? " (первые 100; уточните поиск)" : ""}. Архивные документы тоже учитываются.`;

@@ -63,7 +63,15 @@ with tempfile.TemporaryDirectory() as tmp:
             page = browser.new_page(viewport={"width": 1440, "height": 1000})
             errors = []
             page.on("pageerror", lambda err: errors.append(str(err)))
-            page.goto(url + "/admin")
+            response = page.goto(url + "/admin")
+            try:
+                page.locator("#login-value").wait_for(timeout=8000)
+            except Exception as exc:
+                raise AssertionError(
+                    "Административный экран входа не загрузился: "
+                    f"HTTP={response.status if response else 'no response'}, "
+                    f"browser_errors={errors}, body={page.locator('body').inner_text()[:1000]}"
+                ) from exc
             page.locator("#login-value").fill("browser-smoke-password")
             page.locator("#login-form button").click()
             page.get_by_role("heading", name="Администрирование", exact=True).wait_for()
@@ -625,6 +633,37 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
             expect(page.get_by_role("button", name="Реестр АТК", exact=True)).to_have_count(0)
             expect(page.get_by_role("columnheader", name="Владелец", exact=True)).to_have_count(0)
+            # The internal done stage is only an ATK/RESULT handoff. It is NOT
+            # the logistics archive/completion event. Test persisted backend data.
+            with sqlite3.connect(Path(tmp) / "marking-bm.sqlite3") as db:
+                supplier = db.execute(
+                    "SELECT supplier_id FROM documents WHERE number='SMOKE-001'"
+                ).fetchone()[0]
+                completed_doc = uuid4().hex
+                stamp = datetime.now(timezone.utc).isoformat()
+                db.execute(
+                    "INSERT INTO documents(id,number,supplier_id,owner,status,revision,"
+                    "created,updated,completed,current_version) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (completed_doc, "HANDOFF-TO-LOGISTICS", supplier,
+                     "smoke-user", "done", 0, stamp, stamp, stamp, 0),
+                )
+            page.reload()
+            expect(page.locator('[data-stage="logistics"]')).to_contain_text("У логиста")
+            expect(page.locator("#doc-rows")).to_contain_text("HANDOFF-TO-LOGISTICS")
+            handoff_row = page.locator("#doc-rows tr").filter(has_text="HANDOFF-TO-LOGISTICS")
+            expect(handoff_row.locator(".badge.logistics")).to_have_text("У логиста")
+            assert page.evaluate("states.done === 'Завершён'")
+            page.locator('[data-stage="logistics"]').click()
+            expect(page.locator("#document-count")).to_have_text("Показано 1 из 2")
+            expect(page.locator("#doc-rows")).to_contain_text("HANDOFF-TO-LOGISTICS")
+            expect(page.locator("#status option[value='done']")).to_have_text("У логиста")
+            page.get_by_role("button", name="HANDOFF-TO-LOGISTICS", exact=True).click()
+            expect(page.locator(".doc-status-meta .badge.logistics")).to_have_text("У логиста")
+            expect(page.get_by_role("heading", name="Комплект передан на этап логистики")).to_be_visible()
+            expect(page.get_by_text("Движение товара по маршруту здесь не отслеживается.", exact=False)).to_be_visible()
+            expect(page.locator(".steps .step.current")).to_have_text("Логистика")
+            page.get_by_role("button", name="← Накладные", exact=True).click()
+            page.locator('[data-stage="all"]').click()
             # Check the new full-row transfer interaction against real API and DB.
             move_source = add_doc(
                 test_service, owner="smoke-user", supplier="Поставщик move",
