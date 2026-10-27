@@ -137,6 +137,12 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("button", name="Накладные", exact=True).click()
             page.reload()
             page.get_by_role("heading", name="Накладные", exact=True).wait_for()
+            # Stage pills are the single business-stage selector. No duplicate
+            # Status dropdown and no irrelevant print instructions for BM.
+            expect(page.locator(".stage-filters [data-stage]")).to_have_count(7)
+            expect(page.locator(".document-filters label")).to_have_count(4)
+            expect(page.locator("#status")).to_have_count(0)
+            expect(page.locator(".app-footer")).to_have_count(0)
             for width, height in ((1366, 768), (1920, 1080), (2560, 1440)):
                 page.set_viewport_size({"width": width, "height": height})
                 expect(page.locator(".stage-filters")).to_be_visible()
@@ -275,6 +281,17 @@ with tempfile.TemporaryDirectory() as tmp:
                 "heading", name="Сопоставление столбцов", exact=True
             ).wait_for()
             expect(page.locator("#excel-header-row")).to_have_value("2")
+            # Sheet and header-row controls should be in aligned columns,
+            # including matching hint baselines in the desktop mapper.
+            sheet_box = page.locator("#excel-sheet").bounding_box()
+            header_box = page.locator("#excel-header-row").bounding_box()
+            assert sheet_box and header_box
+            assert abs(sheet_box["y"] - header_box["y"]) <= 2
+            assert abs(sheet_box["height"] - header_box["height"]) <= 2
+            hints = page.locator(".mapping-settings .mapping-hint")
+            assert hints.count() == 2
+            assert abs(hints.nth(0).bounding_box()["y"] -
+                       hints.nth(1).bounding_box()["y"]) <= 2
             page.screenshot(path=str(out / "excel-mapping.png"), full_page=True)
             for field, index in {
                 "pn": 0,
@@ -341,6 +358,15 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.locator(".doc-select")).to_be_disabled()
             expect(page.locator(".selection-reason")).to_contain_text(
                 "Сначала сохраните состав и закажите КМ"
+            )
+            # Checkbox is aligned with its explanation, not floated above it.
+            assert page.locator("#doc-rows .selection-control").first.evaluate(
+                """row => {
+                  const box = row.querySelector('input[type=checkbox]').getBoundingClientRect();
+                  const reason = row.querySelector('.selection-reason').getBoundingClientRect();
+                  return Math.abs((box.top + box.bottom) / 2 -
+                                  (reason.top + reason.bottom) / 2) <= 2;
+                }"""
             )
             page.locator('[data-stage="supplier"]').click()
             expect(page.locator("#document-count")).to_have_text("Показано 0 из 1")
@@ -739,7 +765,8 @@ with tempfile.TemporaryDirectory() as tmp:
             page.locator('[data-stage="logistics"]').click()
             expect(page.locator("#document-count")).to_have_text("Показано 1 из 2")
             expect(page.locator("#doc-rows")).to_contain_text("HANDOFF-TO-LOGISTICS")
-            expect(page.locator("#status option[value='done']")).to_have_text("Комплект сформирован")
+            expect(page.locator("#status")).to_have_count(0)
+            expect(page.locator('[data-stage="logistics"]')).to_have_attribute("aria-pressed", "true")
             page.get_by_role("button", name="HANDOFF-TO-LOGISTICS", exact=True).click()
             expect(page.locator(".doc-status-meta .badge.logistics")).to_have_text("Комплект сформирован")
             expect(page.get_by_role("heading", name="АТК и RESULT сформированы")).to_be_visible()
