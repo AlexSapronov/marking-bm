@@ -199,7 +199,10 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("button", name="Состав", exact=True).click()
             expect(page.locator(".pn-input")).to_have_value("L-132XYD")
             page.evaluate("batchModal([doc.id])")
-            page.get_by_role("heading", name="Подтверждение нанесения", exact=True).wait_for()
+            page.get_by_role("heading", name="Подтвердить нанесение и создать отчёт", exact=True).wait_for()
+            expect(page.locator("#report-form button.primary")).to_have_text(
+                "Подтвердить и поставить отчёт в очередь подписи"
+            )
             expect(page.locator("#report-form input")).to_have_count(1)
             expect(page.locator("#production-date")).to_be_visible()
             expect(page.locator("#report-form")).not_to_contain_text("КПП места деятельности")
