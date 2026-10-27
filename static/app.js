@@ -1174,6 +1174,7 @@ async function action(name, id, b) {
       await logisticsDetail(id);
       break;
     case "registry-reset":
+      if (registrySelectedIds.size && !confirm("Сброс фильтров снимет выбор АТК для ZIP. Продолжить?")) break;
       registryPage = 0;
       registrySelectedIds.clear();
       registryFilters = {
@@ -1587,6 +1588,10 @@ async function logisticsPage() {
   );
   $("#registry-filters").onsubmit = async (ev) => {
     ev.preventDefault();
+    if (registrySelectedIds.size && !confirm("Применение фильтров снимет выбор АТК для ZIP. Продолжить?")) {
+      await logisticsPage();
+      return;
+    }
     registryPage = 0;
     registrySelectedIds.clear();
     registryFilters = {
