@@ -336,6 +336,24 @@ class Service:
                 operation["stopped"] = self.operation_stopped(
                     db, {**operation, "doc_id": doc_id}
                 )
+            # The persistent workflow stage stays "reporting" for safe retries;
+            # expose a separate presentation status for the latest report only.
+            latest_report = next(
+                (op for op in reversed(d["operations"]) if op["kind"] == "report"),
+                None,
+            )
+            d["report_issue"] = (
+                {"id": latest_report["id"], "state": latest_report["state"],
+                 "error": latest_report["error"]}
+                if d["status"] == "reporting"
+                and not d["stopped"]
+                and not d["group_stop"]
+                and latest_report
+                and latest_report["state"] in ("rejected", "partial")
+                and not latest_report["stopped"]
+                else None
+            )
+            d["display_status"] = "report_error" if d["report_issue"] else d["status"]
             d["artifacts"] = rows(
                 db,
                 "SELECT id,name,kind,version,created FROM artifacts WHERE doc_id=? ORDER BY version DESC",
