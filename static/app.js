@@ -70,6 +70,16 @@ function documentStatusLabel(d) {
   if (d.status === "archive") return "В архиве";
   return states[d.display_status || d.status] || d.display_status || d.status;
 }
+function reportSelectionReason(d) {
+  if (d.stopped) return "Обработка остановлена";
+  if (archive || d.status === "archive") return "Накладная в архиве";
+  if (d.status === "draft") return "Сначала сохраните состав и закажите КМ";
+  if (d.status === "ready") return "Сначала подтвердите передачу этикеток";
+  if (d.status === "transferred") return "";
+  if (["reporting", "reported"].includes(d.status)) return "Отчёт о нанесении уже создан";
+  if (d.status === "done") return "Комплект АТК/RESULT уже сформирован";
+  return "Накладная пока не готова к подтверждению нанесения";
+}
 function documentBadge(d) {
   const status = d.stopped ? "cancelled" : d.status === "done" ? "logistics" : d.display_status || d.status;
   return `<span class="badge ${e(status)}">${e(documentStatusLabel(d))}</span>`;
@@ -443,7 +453,7 @@ function filterRows() {
     "Подходящих накладных нет";
   $("#document-prev").disabled = documentPage === 0;
   $("#document-next").disabled = documentPage + 1 >= pages;
-  $("#doc-rows").innerHTML = visible.length ? visible.map(d => `<tr><td><input type="checkbox" class="doc-select" value="${e(d.id)}" ${eligibleIds.has(String(d.id)) ? "" : 'disabled title="Доступно только после передачи этикеток поставщику"'} ${documentSelectedIds.has(String(d.id)) ? "checked" : ""} aria-label="Выбрать ${e(d.number)}"></td><td><button class="linkbutton" data-action="open" data-id="${e(d.id)}"><b>${e(d.number)}</b></button></td><td>${e(d.supplier)}</td><td>${documentBadge(d)}</td><td>${fmt(d.units)}</td><td>${date(d.created)}</td>${user.admin ? `<td>${e(d.owner)}</td>` : ""}</tr>`).join("") : `<tr><td colspan="${user.admin ? 7 : 6}"><div class="empty"><b>${docs.length ? "По выбранным условиям ничего не найдено" : archive ? "Архив пока пуст" : "Накладных пока нет"}</b>${docs.length ? "Сбросьте фильтры или выберите другой этап." : archive ? "Здесь появятся завершённые документы." : "Создайте накладную и загрузите состав из Excel."}</div></td></tr>`;
+  $("#doc-rows").innerHTML = visible.length ? visible.map(d => `<tr><td><input type="checkbox" class="doc-select" value="${e(d.id)}" ${eligibleIds.has(String(d.id)) ? "" : `disabled aria-describedby="select-reason-${e(d.id)}" title="${e(reportSelectionReason(d))}"`} ${documentSelectedIds.has(String(d.id)) ? "checked" : ""} aria-label="Выбрать ${e(d.number)}">${eligibleIds.has(String(d.id)) ? "" : `<span id="select-reason-${e(d.id)}" class="cell-sub selection-reason">${e(reportSelectionReason(d))}</span>`}</td><td><button class="linkbutton" data-action="open" data-id="${e(d.id)}"><b>${e(d.number)}</b></button></td><td>${e(d.supplier)}</td><td>${documentBadge(d)}</td><td>${fmt(d.units)}</td><td>${date(d.created)}</td>${user.admin ? `<td>${e(d.owner)}</td>` : ""}</tr>`).join("") : `<tr><td colspan="${user.admin ? 7 : 6}"><div class="empty"><b>${docs.length ? "По выбранным условиям ничего не найдено" : archive ? "Архив пока пуст" : "Накладных пока нет"}</b>${docs.length ? "Сбросьте фильтры или выберите другой этап." : archive ? "Здесь появятся завершённые документы." : "Создайте накладную и загрузите состав из Excel."}</div></td></tr>`;
   $$(".doc-select").forEach(input => input.onchange = () => {
     if (input.checked) documentSelectedIds.add(input.value);
     else documentSelectedIds.delete(input.value);
@@ -976,7 +986,7 @@ async function loadAdminDocuments() {
     result.innerHTML = invoices.length
       ? `<div class="table-wrap"><table><thead><tr><th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Текущий ответственный</th><th>Новый ответственный</th><th>Действие</th></tr></thead><tbody>${invoices.map(d => {
           const options = managers.filter(u => u.username !== d.owner);
-          return `<tr data-owner="${e(d.owner)}" data-number="${e(d.number)}"><td><b>${e(d.number)}</b></td><td>${e(d.supplier)}</td><td>${documentBadge(d)}</td><td>${e(d.owner)}</td><td><select class="user-role" aria-label="Назначить ответственного для ${e(d.number)}"><option value="">Выберите сотрудника</option>${options.map(u => `<option value="${e(u.username)}">${e(u.username)}</option>`).join("")}</select></td><td><button data-action="reassign-document" data-id="${e(d.id)}" ${options.length ? "" : 'disabled title="Нет другого активного бренд-менеджера"'}>Сменить ответственного</button></td></tr>`;
+          return `<tr data-owner="${e(d.owner)}" data-number="${e(d.number)}"><td><b>${e(d.number)}</b></td><td>${e(d.supplier)}</td><td>${documentBadge(d)}</td><td>${e(d.owner)}</td><td><select class="user-role" aria-label="Назначить ответственного для ${e(d.number)}"><option value="">Выберите сотрудника</option>${options.map(u => `<option value="${e(u.username)}">${e(u.username)}</option>`).join("")}</select></td><td><button data-action="reassign-document" data-id="${e(d.id)}" ${options.length ? "" : `disabled aria-describedby="reassign-reason-${e(d.id)}"`}>Сменить ответственного</button>${options.length ? "" : `<span id="reassign-reason-${e(d.id)}" class="cell-sub selection-reason">Нет другого активного бренд-менеджера</span>`}</td></tr>`;
         }).join("")}</tbody></table></div>`
       : '<p class="empty">Накладные не найдены. Измените запрос.</p>';
     $("#admin-doc-count").textContent = `Показано ${invoices.length} накладных${invoices.length === 100 ? " (первые 100; уточните поиск)" : ""}. Архивные документы тоже учитываются.`;
@@ -1002,7 +1012,7 @@ function setupAdminDocumentPanel() {
       <datalist id="legacy-suppliers">${overview.suppliers.map(p=>`<option value="${e(p.name)}">`).join("")}</datalist></label>
       <label>Ответственный<select name="owner" id="legacy-owner" required>${managers.map(u=>`<option value="${e(u.username)}" ${u.username===user.username?"selected":""}>${e(u.username)}</option>`).join("")}</select></label>
       <div id="legacy-preview" class="full muted" role="status">Выберите Excel для проверки.</div>
-      <div class="actions full"><button type="submit" class="primary" id="legacy-import-submit" disabled>Импортировать накладную</button></div>
+      <div class="actions full"><button type="submit" class="primary" id="legacy-import-submit" disabled aria-describedby="legacy-import-reason">Импортировать накладную</button></div><p id="legacy-import-reason" class="muted full" role="status">Кнопка станет доступна после успешной проверки Excel и КМ в ЧЗ и ERP.</p>
     </form>`;
   panel.prepend(legacy);
   $('[data-admin-panel="users"]').after(panel);
@@ -1013,9 +1023,11 @@ function setupAdminDocumentPanel() {
   input.onchange = async () => {
     previewReady = false;
     submit.disabled = true;
+    $("#legacy-import-reason").textContent = "Идёт проверка файла и статусов КМ; импорт недоступен.";
     $("#legacy-preview").textContent = "Проверяем Excel…";
     if (!input.files.length) {
       $("#legacy-preview").textContent = "Выберите Excel для проверки.";
+      $("#legacy-import-reason").textContent = "Сначала выберите Excel и дождитесь успешной проверки КМ.";
       return;
     }
     const selected = input.files[0];
@@ -1038,7 +1050,11 @@ function setupAdminDocumentPanel() {
         ${result.lines.length>20 ? '<p class="muted">Показаны первые 20 позиций</p>' : ""}`;
       previewReady = !result.duplicate_invoice && !result.blocked_codes && verification.allowed;
       submit.disabled = !previewReady;
+      $("#legacy-import-reason").textContent = previewReady
+        ? "Проверка пройдена. Импорт создаст накладную без эмиссии новых КМ и печати PDF."
+        : "Импорт запрещён: устраните причины, указанные в предпросмотре.";
     } catch (err) {
+      $("#legacy-import-reason").textContent = "Ошибка проверки: " + err.message;
       $("#legacy-preview").textContent = err.message;
     }
   };
@@ -1048,7 +1064,12 @@ function setupAdminDocumentPanel() {
     const form = new FormData(ev.target);
     const filename = input.files[0].name;
     const supplier = String(form.get("supplier") || "").trim();
-    if (!supplier || !confirm("Импортировать " + filename + " для поставщика «" + supplier + "»? Новые КМ не заказываются, PDF не создаётся.")) return;
+    if (!supplier || !await confirmAction(
+      "Импортировать проверенную накладную?",
+      "Файл: " + filename + ". Поставщик: «" + supplier + "». Ответственный: " +
+        String(form.get("owner") || "не указан") +
+        ". Существующие КМ будут связаны с новой накладной после повторной проверки. Новые КМ не заказываются, PDF не создаётся.",
+      "Импортировать проверенную накладную")) return;
     submit.disabled = true;
     try {
       const result = await api("/admin/legacy/import", form);
@@ -1696,7 +1717,7 @@ async function logisticsPage() {
     tbody.innerHTML = onPage.map((a, i) =>
       `${i === 0 || onPage[i - 1].supplier_id !== a.supplier_id
         ? `<tr class="registry-supplier-row"><th colspan="9" scope="colgroup">${e(a.supplier)} · всего ${fmt(supplierCounts.get(a.supplier_id))} АТК</th></tr>` : ""}
-        <tr><td><input type="checkbox" class="atk-select" value="${e(a.id)}" ${a.download_ready ? "" : "disabled"} aria-label="Выбрать АТК ${e(a.code || a.id)}"></td><td><button class="linkbutton registry-code" data-action="registry-detail" data-id="${e(a.id)}">${a.code ? e(a.code) : "АТК формируется"}</button><span class="cell-sub">${e(a.supplier)}</span></td><td>${a.invoices.map(e).join(", ")}<span class="cell-sub">${a.owners.map(e).join(", ")}</span></td><td>${e(a.tnved)}</td><td><b>${fmt(a.units)}</b><span class="cell-sub">${fmt(a.labels)} КМ</span></td><td><span class="badge ${e(a.status)}">${registryLabels[a.status]}</span><span class="cell-sub">${date(a.created)}</span>${a.error ? `<span class="cell-sub">${e(a.error)}</span>` : ""}</td><td><div class="download-actions">${a.files.map((f) => `<a href="/api/files/${e(f.id)}" class="button" title="${e(f.name)}">${f.kind === "atk" ? "АТК" : "RESULT"} · v${f.version}</a>`).join("")}</div>${a.download_ready ? "" : '<span class="cell-sub">Комплект ещё не готов</span>'}<span class="cell-sub">${groupCounts.get(a.group_id) > 1 ? "Общий комплект · " + fmt(groupCounts.get(a.group_id)) + " АТК" : "Отдельный комплект"}</span></td><td class="registry-next-action">${e(logisticsNextAction(a))}</td><td>${a.documents.some(d => d.can_complete) ? `<button data-action="registry-detail" data-id="${e(a.id)}">Открыть для закрытия накладных</button>` : a.status === "stopped" ? '<span class="badge cancelled">Остановлена</span>' : a.archived ? '<span class="badge done">В архиве</span>' : '<span class="muted">Ожидание готовности</span>'}</td></tr>`).join("");
+        <tr><td><input type="checkbox" class="atk-select" value="${e(a.id)}" ${a.download_ready ? "" : `disabled aria-describedby="atk-unavailable-${e(a.id)}"`} aria-label="Выбрать АТК ${e(a.code || a.id)}">${a.download_ready ? "" : `<span id="atk-unavailable-${e(a.id)}" class="cell-sub selection-reason">Файл АТК ещё не готов</span>`}</td><td><button class="linkbutton registry-code" data-action="registry-detail" data-id="${e(a.id)}">${a.code ? e(a.code) : "АТК формируется"}</button><span class="cell-sub">${e(a.supplier)}</span></td><td>${a.invoices.map(e).join(", ")}<span class="cell-sub">${a.owners.map(e).join(", ")}</span></td><td>${e(a.tnved)}</td><td><b>${fmt(a.units)}</b><span class="cell-sub">${fmt(a.labels)} КМ</span></td><td><span class="badge ${e(a.status)}">${registryLabels[a.status]}</span><span class="cell-sub">${date(a.created)}</span>${a.error ? `<span class="cell-sub">${e(a.error)}</span>` : ""}</td><td><div class="download-actions">${a.files.map((f) => `<a href="/api/files/${e(f.id)}" class="button" title="${e(f.name)}">${f.kind === "atk" ? "АТК" : "RESULT"} · v${f.version}</a>`).join("")}</div>${a.download_ready ? "" : '<span class="cell-sub">Комплект ещё не готов</span>'}<span class="cell-sub">${groupCounts.get(a.group_id) > 1 ? "Общий комплект · " + fmt(groupCounts.get(a.group_id)) + " АТК" : "Отдельный комплект"}</span></td><td class="registry-next-action">${e(logisticsNextAction(a))}</td><td>${a.documents.some(d => d.can_complete) ? `<button data-action="registry-detail" data-id="${e(a.id)}">Открыть для закрытия накладных</button>` : a.status === "stopped" ? '<span class="badge cancelled">Остановлена</span>' : a.archived ? '<span class="badge done">В архиве</span>' : '<span class="muted">Ожидание готовности</span>'}</td></tr>`).join("");
     $("#atk-page-label").textContent = groupedItems.length
       ? `АТК ${from + 1}–${from + onPage.length} из ${groupedItems.length} · страница ${registryPage + 1} из ${pages}`
       : "АТК по выбранным фильтрам нет";

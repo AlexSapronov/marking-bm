@@ -323,6 +323,9 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("heading", name="Накладные", exact=True).wait_for()
             expect(page.locator('[data-action="batch"]')).to_be_disabled()
             expect(page.locator(".doc-select")).to_be_disabled()
+            expect(page.locator(".selection-reason")).to_contain_text(
+                "Сначала сохраните состав и закажите КМ"
+            )
             page.locator('[data-stage="supplier"]').click()
             expect(page.locator("#document-count")).to_have_text("Показано 0 из 1")
             page.get_by_role("button", name="Сбросить фильтры", exact=True).click()
@@ -372,6 +375,16 @@ with tempfile.TemporaryDirectory() as tmp:
                          payload, hashlib.sha256(payload.encode()).hexdigest(),
                          "done", None, f"Тестовая операция {index}", stamp, stamp),
                     )
+                for index in range(65):
+                    db.execute(
+                        "INSERT INTO audit(actor,action,entity,detail,created) "
+                        "VALUES(?,?,?,?,?)",
+                        (f"qa-audit-{index:03d}", "UI pagination audit", "test", "{}", stamp),
+                    )
+                    db.execute(
+                        "INSERT INTO users(username,enabled,role) VALUES(?,?,?)",
+                        (f"zz-test-user-{index:03d}", 1, "logistics"),
+                    )
             page.get_by_role("button", name="Администрирование", exact=True).click()
             page.locator('.section-nav [data-id="operations"]').click()
             assert "внешней системе" in page.evaluate(
@@ -409,6 +422,23 @@ with tempfile.TemporaryDirectory() as tmp:
             assert displayed_operations() == 25
             page.locator("#operation-sort").select_option("oldest")
             expect(page.locator("#operation-page-label")).to_contain_text("Строки 1–25")
+            page.locator('.section-nav [data-id="audit"]').click()
+            expect(page.locator("#admin-audit-page-label")).to_contain_text("Строки 1–25")
+            page.locator("#admin-audit-next").click()
+            expect(page.locator("#admin-audit-page-label")).to_contain_text("Строки 26–50")
+            page.locator("#admin-audit-sort").select_option("name")
+            expect(page.locator("#admin-audit-page-label")).to_contain_text("Строки 1–25")
+            page.locator('[data-section-search="audit"]').fill("qa-audit-064")
+            expect(page.locator("#admin-audit-page-label")).to_contain_text("Строки 1–1")
+            page.locator('[data-section-search="audit"]').fill("")
+            page.locator('.section-nav [data-id="users"]').click()
+            expect(page.locator("#admin-users-page-label")).to_contain_text("Строки 1–25")
+            page.locator("#admin-users-next").click()
+            expect(page.locator("#admin-users-page-label")).to_contain_text("Строки 26–50")
+            page.locator("#admin-users-sort").select_option("reverse")
+            expect(page.locator("#admin-users-page-label")).to_contain_text("Строки 1–25")
+            page.locator('[data-section-search="users"]').fill("zz-test-user-064")
+            expect(page.locator("#admin-users-page-label")).to_contain_text("Строки 1–1")
             page.locator('.section-nav [data-id="organization"]').click()
             page.locator("#config-form").wait_for()
             page.reload()

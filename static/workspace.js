@@ -214,108 +214,115 @@ window.addEventListener("beforeunload", event => {
   }
 });
 
-let adminOperationsPage = 0;
-let adminOperationsPageSize = 50;
-let adminOperationsOrder = "newest";
+const adminTableState = {
+  users: {page: 0, size: 25, sort: "name"},
+  operations: {page: 0, size: 50, sort: "newest"},
+  audit: {page: 0, size: 25, sort: "newest"},
+  suppliers: {page: 0, size: 25, sort: "name"},
+};
 
 function setupAdminFilters() {
   for (const key of ["users", "operations", "audit", "suppliers"]) {
-    const panel = $(`[data-admin-panel="${key}"]`);
+    const panel = `[data-admin-panel="${key}"]`;
+    const section = document.querySelector(panel);
     const isOperations = key === "operations";
+    const state = adminTableState[key];
+    const prefix = isOperations ? "operation" : `admin-${key}`;
     const toolbar = document.createElement("div");
     toolbar.className = "admin-filter-bar";
-    toolbar.innerHTML = `<label>Поиск в разделе<input data-section-search="${key}" placeholder="${key === "users" ? "Username или роль" : key === "suppliers" ? "Наименование поставщика" : isOperations ? "Операция, ID или пояснение" : "Сотрудник или действие"}"></label>${isOperations ? `<label>Показать<select id="operation-filter"><option value="all">Все операции</option><option value="attention">Требуют проверки</option><option value="pending">В очереди и обработке</option><option value="done">Завершённые</option><option value="stopped">Остановленные</option><option value="resolved">Скрытые предупреждения</option></select></label><label>Сортировка<select id="operation-sort"><option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option><option value="status">По статусу</option></select></label><label>Строк на странице<select id="operation-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label>` : ""}<span class="muted" data-filter-count></span>`;
-    panel.querySelector("h2").after(toolbar);
+    const sortOptions = key === "operations"
+      ? '<option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option><option value="status">По статусу</option>'
+      : key === "audit"
+      ? '<option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option><option value="name">По сотруднику</option>'
+      : '<option value="name">По названию</option><option value="reverse">По названию, Я–А</option>';
+    toolbar.innerHTML = `<label>Поиск в разделе<input data-section-search="${key}" placeholder="${key === "users" ? "Username или роль" : key === "suppliers" ? "Наименование поставщика" : isOperations ? "Операция, ID или пояснение" : "Сотрудник или действие"}"></label>${isOperations ? '<label>Показать<select id="operation-filter"><option value="all">Все операции</option><option value="attention">Требуют проверки</option><option value="pending">В очереди и обработке</option><option value="done">Завершённые</option><option value="stopped">Остановленные</option><option value="resolved">Скрытые предупреждения</option></select></label>' : ""}<label>Сортировка<select id="${prefix}-sort">${sortOptions}</select></label><label>Строк на странице<select id="${prefix}-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label><span class="muted" data-filter-count></span>`;
+    section.querySelector("h2").after(toolbar);
     const rows = key === "suppliers"
-      ? [...panel.querySelectorAll(":scope > .toolbar")]
-      : [...panel.querySelectorAll("table tbody tr")];
-    // Legacy operation/audit tables have their header in tbody.
+      ? [...section.querySelectorAll(":scope > .toolbar")]
+      : [...section.querySelectorAll("table tbody tr")];
     const dataRows = rows.filter(row => !row.querySelector("th"));
-    const entries = dataRows.map((row, index) =>
-      ({row, op: isOperations ? overview.operations[index] : null}));
-
-    let pager = null;
-    if (isOperations) {
-      toolbar.querySelector("#operation-sort").value = adminOperationsOrder;
-      toolbar.querySelector("#operation-page-size").value = String(adminOperationsPageSize);
-      pager = document.createElement("div");
-      pager.className = "admin-pager";
-      pager.innerHTML = '<span id="operation-page-label" role="status"></span><div class="actions"><button type="button" id="operation-previous">Предыдущая</button><button type="button" id="operation-next">Следующая</button></div>';
-      panel.querySelector(".table-wrap").after(pager);
-    }
-
+    const entries = dataRows.map((row, index) => ({
+      row,
+      index,
+      op: isOperations ? overview.operations[index] : null,
+      audit: key === "audit" ? overview.audit[index] : null,
+      name: key === "users" ? (overview.users[index]?.username || row.cells?.[0]?.textContent || "")
+        : key === "suppliers" ? row.querySelector("span")?.textContent || ""
+        : "",
+    }));
+    const pager = document.createElement("div");
+    pager.className = "admin-pager";
+    pager.innerHTML = `<span id="${prefix}-page-label" role="status"></span><div class="actions"><button type="button" id="${prefix}-previous">Предыдущая</button><button type="button" id="${prefix}-next">Следующая</button></div>`;
+    const tableWrap = section.querySelector(".table-wrap");
+    if (tableWrap) tableWrap.after(pager);
+    else section.append(pager);
+    toolbar.querySelector(`#${prefix}-sort`).value = state.sort;
+    toolbar.querySelector(`#${prefix}-page-size`).value = String(state.size);
     const update = () => {
       const query = toolbar.querySelector("input").value.trim().toLocaleLowerCase("ru-RU");
-      const state = isOperations ? $("#operation-filter").value : "all";
+      const selection = isOperations ? toolbar.querySelector("#operation-filter").value : "all";
       const filtered = entries.filter(({row, op}) => {
-        const stateMatches = !isOperations || state === "all" ||
-          (state === "attention" && adminOperationNeedsAttention(op)) ||
-          (state === "pending" && adminOperationPending(op)) ||
-          (state === "stopped" && (op?.stopped || op?.state === "cancelled")) ||
-          (state === "resolved" && Boolean(op?.attention_resolved_at)) ||
-          (state === "done" && op?.state === "done");
-        return stateMatches && row.textContent.toLocaleLowerCase("ru-RU").includes(query);
+        const matchesState = !isOperations || selection === "all" ||
+          (selection === "attention" && adminOperationNeedsAttention(op)) ||
+          (selection === "pending" && adminOperationPending(op)) ||
+          (selection === "stopped" && (op?.stopped || op?.state === "cancelled")) ||
+          (selection === "resolved" && Boolean(op?.attention_resolved_at)) ||
+          (selection === "done" && op?.state === "done");
+        return matchesState && row.textContent.toLocaleLowerCase("ru-RU").includes(query);
       });
-      toolbar.querySelector("[data-filter-count]").textContent = `Найдено ${filtered.length} из ${dataRows.length}`;
-
-      if (!isOperations) {
-        const visible = new Set(filtered.map(item => item.row));
-        dataRows.forEach(row => { row.hidden = !visible.has(row); });
-        return;
-      }
-
+      toolbar.querySelector("[data-filter-count]").textContent =
+        `Найдено ${filtered.length} из ${dataRows.length}`;
       filtered.sort((a, b) => {
-        if (adminOperationsOrder === "status")
+        if (key === "operations" && state.sort === "status")
           return (states[a.op?.state] || a.op?.state || "").localeCompare(
-            states[b.op?.state] || b.op?.state || "", "ru");
-        const newest = (b.op?.created || "").localeCompare(a.op?.created || "");
-        return adminOperationsOrder === "oldest" ? -newest : newest;
+            states[b.op?.state] || b.op?.state || "", "ru") || a.index - b.index;
+        if (key === "audit" && state.sort === "name")
+          return (a.audit?.actor || "").localeCompare(b.audit?.actor || "", "ru") || a.index - b.index;
+        if (["operations", "audit"].includes(key)) {
+          const lhs = key === "operations" ? a.op?.created : a.audit?.created;
+          const rhs = key === "operations" ? b.op?.created : b.audit?.created;
+          const cmp = String(lhs || "").localeCompare(String(rhs || ""));
+          return (state.sort === "oldest" ? cmp : -cmp) || a.index - b.index;
+        }
+        const cmp = a.name.localeCompare(b.name, "ru", {numeric: true});
+        return (state.sort === "reverse" ? -cmp : cmp) || a.index - b.index;
       });
-      const pages = Math.max(1, Math.ceil(filtered.length / adminOperationsPageSize));
-      adminOperationsPage = Math.min(adminOperationsPage, pages - 1);
-      const from = adminOperationsPage * adminOperationsPageSize;
-      const pageRows = filtered.slice(from, from + adminOperationsPageSize);
+      const pages = Math.max(1, Math.ceil(filtered.length / state.size));
+      state.page = Math.max(0, Math.min(state.page, pages - 1));
+      const from = state.page * state.size;
+      const selected = filtered.slice(from, from + state.size);
       entries.forEach(({row}) => { row.hidden = true; });
-      // Move only visible rows to the end in sorted order; retain hidden rows
-      // for filtering without replacing their DOM nodes or action bindings.
-      const body = dataRows[0]?.parentElement;
-      pageRows.forEach(({row}) => {
-        if (body) body.append(row);
+      const parent = dataRows[0]?.parentElement;
+      selected.forEach(({row}) => {
+        if (parent) parent.insertBefore(row, parent === section ? pager : null);
         row.hidden = false;
       });
-      const last = Math.min(from + adminOperationsPageSize, filtered.length);
-      pager.querySelector("#operation-page-label").textContent =
-        filtered.length ? `Строки ${from + 1}–${last} из ${filtered.length} · страница ${adminOperationsPage + 1} из ${pages}`
-          : "Подходящих операций нет";
-      pager.querySelector("#operation-previous").disabled = adminOperationsPage === 0;
-      pager.querySelector("#operation-next").disabled = adminOperationsPage + 1 >= pages;
+      pager.querySelector(`#${prefix}-page-label`).textContent = filtered.length
+        ? `Строки ${from + 1}–${from + selected.length} из ${filtered.length} · страница ${state.page + 1} из ${pages}`
+        : "Записей по выбранным фильтрам нет";
+      pager.querySelector(`#${prefix}-previous`).disabled = state.page === 0;
+      pager.querySelector(`#${prefix}-next`).disabled = state.page + 1 >= pages;
     };
     toolbar.querySelector("input").oninput = () => {
-      if (isOperations) adminOperationsPage = 0;
+      state.page = 0;
       update();
     };
     toolbar.querySelector("#operation-filter")?.addEventListener("change", () => {
-      adminOperationsPage = 0;
+      state.page = 0;
       update();
     });
-    toolbar.querySelector("#operation-sort")?.addEventListener("change", event => {
-      adminOperationsOrder = event.target.value;
-      adminOperationsPage = 0;
+    toolbar.querySelector(`#${prefix}-sort`).onchange = event => {
+      state.sort = event.target.value;
+      state.page = 0;
       update();
-    });
-    toolbar.querySelector("#operation-page-size")?.addEventListener("change", event => {
-      adminOperationsPageSize = Number(event.target.value);
-      adminOperationsPage = 0;
+    };
+    toolbar.querySelector(`#${prefix}-page-size`).onchange = event => {
+      state.size = Number(event.target.value);
+      state.page = 0;
       update();
-    });
-    pager?.querySelector("#operation-previous").addEventListener("click", () => {
-      adminOperationsPage--;
-      update();
-    });
-    pager?.querySelector("#operation-next").addEventListener("click", () => {
-      adminOperationsPage++;
-      update();
-    });
+    };
+    pager.querySelector(`#${prefix}-previous`).onclick = () => {state.page--; update();};
+    pager.querySelector(`#${prefix}-next`).onclick = () => {state.page++; update();};
     update();
   }
 }
