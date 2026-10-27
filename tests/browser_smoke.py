@@ -285,6 +285,35 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.locator("#document-count")).to_have_text("Показано 0 из 1")
             page.get_by_role("button", name="Сбросить фильтры", exact=True).click()
             expect(page.locator("#document-count")).to_have_text("Показано 1 из 1")
+            # Real persisted draft invoices test the complete register paging flow.
+            # They are not eligible for mass reporting.
+            with sqlite3.connect(Path(tmp) / "marking-bm.sqlite3") as db:
+                supplier_id, owner = db.execute(
+                    "SELECT supplier_id,owner FROM documents WHERE number='SMOKE-001'"
+                ).fetchone()
+                stamp = datetime.now(timezone.utc).isoformat()
+                for index in range(60):
+                    db.execute(
+                        "INSERT INTO documents(id,number,supplier_id,owner,status,revision,"
+                        "created,updated,current_version) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (uuid4().hex, f"UX-INV-{index:03d}", supplier_id, owner,
+                         "draft", 0, stamp, stamp, 0),
+                    )
+            page.reload()
+            page.get_by_role("heading", name="Накладные", exact=True).wait_for()
+            expect(page.locator("#document-page-label")).to_contain_text("Строки 1–50 из 61")
+            expect(page.locator("#doc-rows tr")).to_have_count(50)
+            page.locator("#document-next").click()
+            expect(page.locator("#document-page-label")).to_contain_text("Строки 51–61 из 61")
+            expect(page.locator("#doc-rows tr")).to_have_count(11)
+            page.locator("#document-page-size").select_option("25")
+            expect(page.locator("#document-page-label")).to_contain_text("Строки 1–25 из 61")
+            page.locator("#document-sort").select_option("number")
+            expect(page.locator("#doc-rows tr").first).to_contain_text("SMOKE-001")
+            page.locator("#search").fill("UX-INV-059")
+            expect(page.locator("#document-page-label")).to_contain_text("Строки 1–1 из 1")
+            page.get_by_role("button", name="Сбросить фильтры", exact=True).click()
+            expect(page.locator("#document-page-label")).to_contain_text("Строки 1–25 из 61")
             page.screenshot(path=str(out / "documents.png"), full_page=True)
             page.locator("#search").fill("nonexistent")
             assert page.locator(".doc-select").count() == 0
