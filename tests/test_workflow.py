@@ -167,6 +167,16 @@ def test_report_atk_and_exports_roundtrip(env):
     )
     exports = s.store.all("SELECT * FROM artifacts WHERE kind='result'")
     assert len(exports) == 2
+    # The A1 and A2 invoices share one supplier pair of workbooks.
+    shared = s.get(ids[0], "alice")["atks"][0]["id"]
+    archive_data, archive_name = s.logistics_download(
+        [shared], with_filename=True
+    )
+    assert archive_name == "АТК-и-RESULT-A1-A2.zip"
+    with zipfile.ZipFile(BytesIO(archive_data)) as bundle:
+        assert len(bundle.namelist()) == 2
+        assert all("/" not in name for name in bundle.namelist())
+        assert all("A1-A2" in name for name in bundle.namelist())
     for a in exports:
         wb = openpyxl.load_workbook(BytesIO(a["content"]))
         data = list(wb["Данные"].values)
@@ -490,6 +500,7 @@ def test_two_full_tnved_create_distinct_atks_even_same_prefix(env):
         BytesIO(s.logistics_download([a["id"] for a in d["atks"]]))
     ) as bundle:
         assert len(bundle.namelist()) == 2
+        assert all("/" not in name for name in bundle.namelist())
 
 
 def test_supplier_merge_preserves_finished_atks_and_files(env):
