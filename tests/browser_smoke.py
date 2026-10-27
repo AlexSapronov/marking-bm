@@ -564,6 +564,12 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.locator(".registry-code").first).to_contain_text("UX-REG-000")
             page.locator(".atk-select:not(:disabled)").check()
             expect(page.locator("#registry-selection-summary")).to_contain_text("Выбрано АТК: 1")
+            # Filtering must never silently discard a ready ZIP selection.
+            page.locator("#atk-search").fill("nothing")
+            page.once("dialog", lambda dialog: dialog.dismiss())
+            page.get_by_role("button", name="Применить фильтры").click()
+            expect(page.locator("#atk-search")).to_have_value("")
+            expect(page.locator("#registry-selection-summary")).to_contain_text("Выбрано АТК: 1")
             page.locator("#atk-next").click()
             expect(page.locator("#atk-page-label")).to_contain_text("АТК 26–50 из 55")
             expect(page.locator("#registry-selection-summary")).to_contain_text("на других страницах: 1")
