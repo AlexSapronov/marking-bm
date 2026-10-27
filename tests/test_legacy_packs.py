@@ -6,7 +6,7 @@ import xlsxwriter
 from pypdf import PdfWriter
 
 from conftest import client
-from marking_bm.codes import parse
+from marking_bm.codes import GS, parse, with_quantity
 from marking_bm.legacy import normalize_legacy_code
 
 
@@ -294,3 +294,77 @@ def test_verified_import_records_status_check_time(env):
                                (result.json()["id"],))
     assert record["external_status"] == "EMITTED"
     assert record["checked"] is not None
+
+
+def test_compact_legacy_ai30_is_validated_and_normalized_for_future_reports():
+    # Mirrors the real result_7N5D8.xlsx rows 370-372: 90 compact characters
+    # followed by 305000, with Excel column D containing 5000.
+    original = legacy_raw("S0000000000000000001")
+    compact = original + "305000"
+    code = normalize_legacy_code(compact, 5000)
+    assert code.quantity is None
+    assert code.full == normalize_legacy_code(original).full
+    assert code.full == original[:38] + GS + original[38:44] + GS + original[44:]
+    assert parse(with_quantity(code.full, 5000)).quantity == 5000
+    assert parse(with_quantity(code.full, 5000)).cis == code.cis
+    # GS-formatted input with AI 30 must also be accepted and stripped.
+    assert normalize_legacy_code(code.full + GS + "305000", 5000).full == code.full
+
+
+def test_compact_legacy_ai30_quantity_must_match_excel(env):
+    app, service, registry = env
+    admin = client(app, "administrator", True)
+    source = legacy_raw("S0000000000000000002")
+    one_bad = [(source + "305000", GTIN, "PN-EXACT", 5001, 8541410004)]
+    response = admin.post(
+        "/api/admin/legacy/preview",
+        files={"file": ("result_MISMATCH.xlsx", make_xlsx(one_bad))},
+    )
+    assert response.status_code == 422
+    assert "Строка 1" in response.json()["detail"]
+    assert "AI 30 = 5000" in response.json()["detail"]
+    assert "5001" in response.json()["detail"]
+    # Parsing happens before any True API calls or storage, fail closed.
+    assert not registry.calls
+    assert not service.store.one("SELECT id FROM documents WHERE number='MISMATCH'")
+
+
+def test_mixed_legacy_file_with_ai30_and_no_ai30_passes_server_preview(env):
+    app, service, registry = env
+    admin = client(app, "administrator", True)
+    rows = make_rows(5)
+    rows[3] = (rows[3][0] + "305000", GTIN, "PN-EXACT", 5000, 8541410004)
+    rows[4] = (rows[4][0] + "305000", GTIN, "PN-EXACT", 5000, 8541410004)
+    register_legacy(registry, rows[:3])
+    # Register the compact 96-char originals by canonical CIS, not the appended AI30.
+    for original in rows[3:]:
+        raw, gtin, pn, qty, tnved = original
+        code = normalize_legacy_code(raw, qty)
+        registry.codes[code.cis] = {
+            "cis": code.cis, "requestedCis": code.cis, "gtin": gtin,
+            "status": "EMITTED", "ownerInn": "7700000000",
+            "emissionType": "FOREIGN", "statusEx": None,
+            "tnVedEaes": str(tnved), "parent": None,
+        }
+    content = make_xlsx(rows)
+    preview = admin.post(
+        "/api/admin/legacy/preview",
+        files={"file": ("result_MIXED.xlsx", content)},
+    )
+    assert preview.status_code == 200, preview.text
+    data = preview.json()
+    assert data["codes"] == 5
+    assert data["verification"]["status_counts"] == {"EMITTED": 5}
+    assert data["verification"]["allowed"]
+    imported = admin.post(
+        "/api/admin/legacy/import",
+        files={"file": ("result_MIXED.xlsx", content)},
+        data={"supplier": "Supplier", "owner": "alice"},
+    )
+    assert imported.status_code == 200, imported.text
+    imported_codes = service.store.all(
+        "SELECT raw,quantity FROM codes WHERE doc_id=?", (imported.json()["id"],)
+    )
+    assert len(imported_codes) == 5
+    assert sum(c["quantity"] for c in imported_codes) == 19000
+    assert all(parse(c["raw"]).quantity is None for c in imported_codes)
