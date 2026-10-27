@@ -75,6 +75,100 @@ let user,
   documentTab = "content",
   documentDirty = false,
   documentFilters = {search: "", status: "", supplier: "", from: "", to: "", stage: "all"};
+let statusLastChecked = null;
+let statusPollBusy = false;
+const STATUS_POLL_MS = 30000;
+function documentStatusSignature(d) {
+  return JSON.stringify([
+    d.status, d.display_status, d.revision, d.current_version,
+    d.transferred_version, d.last_error, d.report_issue,
+    d.owner, d.supplier, d.history?.length,
+    d.codes?.map(c => [c.id, c.external_status, c.local_state]),
+    d.atks?.map(a => [a.id, a.state, a.code]),
+    d.operations?.map(o => [o.id, o.state, o.updated, o.error]),
+    d.exports?.map(a => a.id), d.artifacts?.map(a => a.id),
+    d.stopped, d.group_stop,
+  ]);
+}
+function documentListSignature(items) {
+  return JSON.stringify(items.map(d =>
+    [d.id, d.status, d.display_status, d.updated, d.units, d.stopped]));
+}
+function logisticsStatusSignature(items) {
+  return JSON.stringify(items.map(a => [
+    a.id, a.status, a.error, a.download_ready, a.archived,
+    a.files?.map(f => [f.id, f.version]),
+    a.documents?.map(d => [d.id, d.status, d.can_complete]),
+  ]));
+}
+function adminStatusSignature(items) {
+  return JSON.stringify([
+    items.operations.map(o => [o.id, o.state, o.updated, o.attention_resolved_at]),
+    items.transformations.map(t => [t.id, t.state]),
+  ]);
+}
+async function pollStatuses() {
+  if (statusPollBusy || !user || document.hidden || documentDirty ||
+      $("#modal")?.open || $("#app").querySelector("form:focus-within") ||
+      $$(".doc-select:checked, .atk-select:checked, .move-line:checked").length) return;
+  statusPollBusy = true;
+  const activeDocId = doc?.id;
+  const wasArchive = archive;
+  const wasAdmin = adminMode;
+  try {
+    if (activeDocId && !wasAdmin && !registryMode) {
+      const fresh = await api("/documents/" + encodeURIComponent(activeDocId));
+      if (doc?.id !== activeDocId || documentDirty || $("#modal").open) return;
+      statusLastChecked = new Date();
+      if (documentStatusSignature(fresh) !== documentStatusSignature(doc)) {
+        const scroll = window.scrollY;
+        doc = fresh;
+        archive = doc.status === "archive";
+        renderDoc();
+        window.scrollTo(0, scroll);
+      }
+      const mark = $("#status-checked");
+      if (mark) {
+        mark.textContent = "Проверено: " + statusLastChecked.toLocaleTimeString("ru-RU");
+        mark.title = "Статус обновляется автоматически каждые 30 секунд";
+      }
+    } else if (!wasAdmin && !registryMode && $(".document-list")) {
+      const incoming = await api("/documents?archive=" + wasArchive);
+      if (doc || archive !== wasArchive || documentDirty || $("#modal").open ||
+          $("#app").querySelector("form:focus-within")) return;
+      if (documentListSignature(incoming) !== documentListSignature(docs)) {
+        const scroll = window.scrollY;
+        docs = incoming;
+        renderList();
+        window.scrollTo(0, scroll);
+      }
+    } else if (!wasAdmin && registryMode && $("#atk-table")) {
+      const incoming = await api("/logistics/atks?" + new URLSearchParams(registryFilters));
+      if (!registryMode || $("#modal").open ||
+          $("#app").querySelector("form:focus-within") ||
+          $$(".atk-select:checked").length) return;
+      if (logisticsStatusSignature(incoming) !== logisticsStatusSignature(registryRows)) {
+        const scroll = window.scrollY;
+        await logisticsPage();
+        window.scrollTo(0, scroll);
+      }
+    } else if (wasAdmin && adminSection === "overview") {
+      const incoming = await api("/admin/overview");
+      if (!adminMode || adminSection !== "overview" || $("#modal").open ||
+          $("#app").querySelector("form:focus-within")) return;
+      if (adminStatusSignature(incoming) !== adminStatusSignature(overview))
+        await adminPage(incoming);
+    }
+  } catch (error) {
+    const mark = $("#status-checked");
+    if (mark) {
+      mark.textContent = "Нет связи для проверки";
+      mark.title = String(error.message || error);
+    }
+  } finally {
+    statusPollBusy = false;
+  }
+}
 async function api(url, body, method) {
   const headers = { "X-Requested-With": "marking-bm" };
   if (user?.csrf) headers["X-CSRF-Token"] = user.csrf;
@@ -101,10 +195,8 @@ async function api(url, body, method) {
   }
   return data;
 }
-function toast(message) {
-  $("#toast").textContent = message;
-  $("#toast").style.display = "block";
-  setTimeout(() => ($("#toast").style.display = "none"), 6500);
+function toast(message, kind = "error") {
+  window.BmUX.notify(message, kind);
 }
 function bind() {
   document.onclick = async (ev) => {
@@ -185,7 +277,7 @@ function login(admin = false, setup = false) {
         });
         login();
         $("#login-value").value = username;
-        toast("Пароль установлен. Теперь войдите с новым паролем");
+        toast("Пароль установлен. Теперь войдите с новым паролем", "success");
         return;
       }
       user = await api("/session", admin
@@ -220,7 +312,7 @@ async function changeOwnPassword() {
     try {
       await api("/users/change-password", values);
       $("#modal").close();
-      toast("Пароль изменён");
+      toast("Пароль изменён", "success");
     } catch (err) { toast(err.message); }
   };
 }
@@ -283,14 +375,16 @@ function updateDocumentSelection() {
   if ($('[data-action="batch"]')) $('[data-action="batch"]').disabled = !count;
 }
 function modal(content) {
-  $("#modal").innerHTML = content;
-  $("#modal").showModal();
+  const dialog = $("#modal");
+  dialog.innerHTML = content;
+  dialog.showModal();
 }
 async function newDoc(parent) {
   const suppliers = await api("/suppliers");
   modal(
     `<h2>${parent ? "Дополнение к накладной " + e(doc.number) : "Новая накладная"}</h2><form id="new-form"><div class="fields"><label>Номер накладной<input id="number" required maxlength="120"></label><label>Поставщик<input id="new-supplier" list="supplier-list" value="${parent ? e(doc.supplier) : ""}" required maxlength="160" ${parent ? "readonly" : ""}><datalist id="supplier-list">${suppliers.map((s) => `<option value="${e(s.name)}">`).join("")}</datalist></label></div><div class="actions"><button class="primary">Создать черновик</button><button type="button" data-action="close">Отмена</button></div></form>`,
   );
+  window.BmUX.supplierPicker($("#new-supplier"), suppliers);
   $("#new-form").onsubmit = async (ev) => {
     ev.preventDefault();
     try {
@@ -331,6 +425,7 @@ async function open(id) {
   if (doc?.id !== id) documentTab = "content";
   documentDirty = false;
   doc = await api("/documents/" + id);
+  statusLastChecked = new Date();
   archive = doc.status === "archive";
   adminMode = false;
   renderDoc();
@@ -363,7 +458,7 @@ function renderDoc() {
     (a) => a.kind === "labels" && a.version === doc.current_version,
   );
   shell(
-    `<div class="topbar"><div><button class="linkbutton" data-action="${archive ? "archive" : "list"}">${archive ? "← Архив накладных" : "← Накладные"}</button><h1>Накладная ${e(doc.number)}</h1><span class="muted">${e(doc.supplier)} · ${e(doc.owner)} · ${date(doc.created)}</span></div>${badge(doc.display_status || doc.status)}</div>${doc.stopped ? `<div class="notice"><b>Обработка остановлена пользователем ${e(doc.stop.actor)}</b><br>Новые операции и подпись заблокированы. Уже отправленные действия ЧЗ не отозваны; их результаты сохранены для сверки. Вернуть накладную из архива может только администратор.</div>` : doc.group_stop ? `<div class="notice">Общая обработка приостановлена: накладная ${e(doc.group_stop.number)} остановлена. Обратитесь к администратору.</div>` : ""}<div class="steps">${steps.map(([s, l]) => `<span class="step ${s === current ? "current" : ""}">${l}</span>`).join("")}</div><div class="stats"><div class="stat"><span class="muted">Единиц товара</span><b>${fmt(doc.units)}</b></div><div class="stat"><span class="muted">Получено КМ</span><b>${fmt(doc.codes.length)} / ${fmt(doc.required)}</b></div><div class="stat"><span class="muted">Версия этикеток</span><b>${doc.current_version || "—"}</b></div></div>${doc.last_error ? `<div class="error">Этикетки не сформированы: ${e(doc.last_error)}. Полученные КМ сохранены. Исправьте состав накладной.</div>` : ""}${doc.operations
+    `<div class="topbar"><div><button class="linkbutton" data-action="${archive ? "archive" : "list"}">${archive ? "← Архив накладных" : "← Накладные"}</button><h1>Накладная ${e(doc.number)}</h1><span class="muted">${e(doc.supplier)} · ${e(doc.owner)} · ${date(doc.created)}</span></div><div class="doc-status-meta">${badge(doc.display_status || doc.status)}<span id="status-checked" class="status-checked" title="Проверка каждые 30 секунд">Проверено: ${statusLastChecked ? statusLastChecked.toLocaleTimeString("ru-RU") : "—"}</span></div></div>${doc.stopped ? `<div class="notice"><b>Обработка остановлена пользователем ${e(doc.stop.actor)}</b><br>Новые операции и подпись заблокированы. Уже отправленные действия ЧЗ не отозваны; их результаты сохранены для сверки. Вернуть накладную из архива может только администратор.</div>` : doc.group_stop ? `<div class="notice">Общая обработка приостановлена: накладная ${e(doc.group_stop.number)} остановлена. Обратитесь к администратору.</div>` : ""}<div class="steps">${steps.map(([s, l]) => `<span class="step ${s === current ? "current" : ""}">${l}</span>`).join("")}</div><div class="stats"><div class="stat"><span class="muted">Единиц товара</span><b>${fmt(doc.units)}</b></div><div class="stat"><span class="muted">Получено КМ</span><b>${fmt(doc.codes.length)} / ${fmt(doc.required)}</b></div><div class="stat"><span class="muted">Версия этикеток</span><b>${doc.current_version || "—"}</b></div></div>${doc.last_error ? `<div class="error">Этикетки не сформированы: ${e(doc.last_error)}. Полученные КМ сохранены. Исправьте состав накладной.</div>` : ""}${doc.operations
       .filter((o) => o.error && (o.kind !== "report" || o.id === latestReport?.id))
       .map(
         (o) =>
@@ -371,7 +466,7 @@ function renderDoc() {
       )
       .join(
         "",
-      )}${doc.status === "receiving" ? '<div class="notice">PDF станет доступен после получения полного комплекта КМ. Повторный заказ не требуется.</div>' : ""}<div class="card"><div class="topbar"><h2>Состав накладной</h2>${editable ? '<div class="actions"><a href="/api/template">Скачать шаблон Excel</a><button data-action="import">Загрузить Excel</button><input type="file" id="excel-file" accept=".xlsx" hidden></div>' : ""}</div><div class="table-wrap"><table><thead><tr>${canMoveLines ? "<th>Перенести</th>" : ""}<th>PN</th><th>GTIN</th><th>Штук в этикетке</th><th>Этикеток</th><th>ТН ВЭД</th>${editable ? "<th></th>" : ""}</tr></thead><tbody id="edit-rows">${editable ? doc.lines.map(l => lineRow(l, canMoveLines)).join("") : doc.lines.map((l) => `<tr><td>${e(l.pn)}</td><td>${e(l.gtin)}</td><td>${fmt(l.quantity)}</td><td>${fmt(l.labels)}</td><td>${e(l.tnved)}</td></tr>`).join("")}</tbody></table></div>${editable ? '<div class="actions"><button data-action="add-line">+ Добавить строку</button><button data-action="save-lines">Проверить и сохранить состав</button></div>' : ""}<div class="actions">${canMoveLines ? '<button data-action="move-lines">Перенести строки и КМ</button>' : ""}${!doc.stopped && !doc.group_stop && reportIssue ? `<button class="primary" data-action="retry-report-doc" data-id="${e(reportIssue.id)}">Отправить повторно</button>` : ""}${user.admin && doc.status === "transferred" && doc.current_version === 0 ? '<button data-action="upload-legacy-pdf">Загрузить PDF</button><input type="file" id="legacy-pdf-file" accept=".pdf,application/pdf" hidden>' : ""}${doc.status === "draft" ? '<button class="primary" data-action="order">Заказать КМ</button>' : ""}${currentFile && doc.required > 0 && doc.codes.length === doc.required && !["draft", "repack", "receiving"].includes(doc.status) ? `<a class="button primary" href="/api/files/${e(currentFile.id)}">↓ Скачать ZIP с этикетками · v${doc.current_version}</a>` : ""}${["ready", "transferred"].includes(doc.status) ? `<button class="primary" data-action="transfer">${doc.status === "transferred" ? "Повторно отметить передачу" : "Передано поставщику"}</button>` : ""}${doc.status === "transferred" ? '<button class="primary" data-action="report">Подтвердить нанесение и сформировать АТК</button>' : ""}${!doc.stopped && ["done", "archive", "reported"].includes(doc.status) ? '<button data-action="supplement">Создать дополнение</button>' : ""}${!doc.stopped ? '<button class="danger" data-action="stop-document">Остановить и архивировать</button>' : ""}${user.admin && doc.status === "archive" ? '<button data-action="restore-document">Вернуть из архива</button>' : ""}<button data-action="refresh-doc">Обновить состояние</button></div></div>${doc.atks.length ? `<div class="card"><h2>Таможенные коды</h2>${doc.atks.map((a) => `<div class="toolbar"><span>ТН ВЭД <b>${e(a.tnved)}</b> · ${a.code ? e(a.code) : "Ожидает формирования"}</span>${a.state === "done" ? `<button data-action="atk" data-id="${e(a.id)}">Состав и трансформации</button>` : badge(a.state)}</div>`).join("")}<div class="files">${doc.exports.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div></div>` : ""}<div class="split"><div class="card"><h2>Обработка</h2>${doc.operations.length ? doc.operations.map((o) => `<div class="history"><b>${e(kinds[o.kind])}</b>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)} <span class="muted">${date(o.updated)}</span>${o.error ? `<p class="muted">${e(o.error)}</p>` : ""}${!o.stopped && o.id === reportIssue?.id && o.kind === "report" && ["rejected", "partial"].includes(o.state) ? `<div class="actions"><button class="primary" data-action="retry-report-doc" data-id="${e(o.id)}">Повторить отправку отчёта</button></div>` : ""}</div>`).join("") : '<p class="muted">Внешние операции ещё не запускались.</p>'}<details><summary>История файлов и прежние версии</summary><p class="muted">Скачанные поставщиком старые этикетки технически отозвать нельзя.</p><div class="files">${doc.artifacts.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · ${e(f.kind === "source" ? "Исходный Excel" : "v" + f.version)}</a>`).join("")}</div></details></div><div class="card"><h2>История документа</h2>${doc.history.map((h) => `<div class="history"><b>${e(h.action)}</b><span class="muted">${date(h.created)} · ${e(h.actor)}</span></div>`).join("")}</div></div>`,
+      )}${doc.status === "receiving" ? '<div class="notice">PDF станет доступен после получения полного комплекта КМ. Повторный заказ не требуется.</div>' : ""}<div class="card"><div class="topbar"><h2>Состав накладной</h2>${editable ? '<div class="actions"><a href="/api/template">Скачать шаблон Excel</a><button data-action="import">Загрузить Excel</button><input type="file" id="excel-file" accept=".xlsx" hidden></div>' : ""}</div><div class="table-wrap"><table><thead><tr>${canMoveLines ? "<th>Перенести</th>" : ""}<th>PN</th><th>GTIN</th><th>Штук в этикетке</th><th>Этикеток</th><th>ТН ВЭД</th>${editable ? "<th></th>" : ""}</tr></thead><tbody id="edit-rows">${editable ? doc.lines.map(l => lineRow(l, canMoveLines)).join("") : doc.lines.map((l) => `<tr><td>${e(l.pn)}</td><td>${e(l.gtin)}</td><td>${fmt(l.quantity)}</td><td>${fmt(l.labels)}</td><td>${e(l.tnved)}</td></tr>`).join("")}</tbody></table></div>${editable ? '<div class="actions"><button data-action="add-line">+ Добавить строку</button><button data-action="save-lines">Проверить и сохранить состав</button></div>' : ""}<div class="actions">${canMoveLines ? '<button data-action="move-lines">Перенести строки и КМ</button>' : ""}${!doc.stopped && !doc.group_stop && reportIssue ? `<button class="primary" data-action="retry-report-doc" data-id="${e(reportIssue.id)}">Отправить повторно</button>` : ""}${user.admin && doc.status === "transferred" && doc.current_version === 0 ? '<button data-action="upload-legacy-pdf">Загрузить PDF</button><input type="file" id="legacy-pdf-file" accept=".pdf,application/pdf" hidden>' : ""}${doc.status === "draft" ? '<button class="primary" data-action="order">Заказать КМ</button>' : ""}${currentFile && doc.required > 0 && doc.codes.length === doc.required && !["draft", "repack", "receiving"].includes(doc.status) ? `<a class="button" href="/api/files/${e(currentFile.id)}">↓ Скачать ZIP с этикетками · v${doc.current_version}</a>` : ""}${["ready", "transferred"].includes(doc.status) ? `<button class="${doc.status === "ready" ? "primary" : ""}" data-action="transfer">${doc.status === "transferred" ? "Повторно подтвердить передачу" : "Подтвердить передачу этикеток"}</button>` : ""}${doc.status === "transferred" ? '<button class="primary" data-action="report">Подтвердить нанесение</button>' : ""}${!doc.stopped && ["done", "archive", "reported"].includes(doc.status) ? '<button data-action="supplement">Создать дополнение</button>' : ""}${!doc.stopped ? '<button class="danger" data-action="stop-document">Остановить и архивировать</button>' : ""}${user.admin && doc.status === "archive" ? '<button data-action="restore-document">Вернуть из архива</button>' : ""}<button data-action="refresh-doc">Обновить состояние</button></div></div>${doc.atks.length ? `<div class="card"><h2>Таможенные коды</h2>${doc.atks.map((a) => `<div class="toolbar"><span>ТН ВЭД <b>${e(a.tnved)}</b> · ${a.code ? e(a.code) : "Ожидает формирования"}</span>${a.state === "done" ? `<button data-action="atk" data-id="${e(a.id)}">Состав и трансформации</button>` : badge(a.state)}</div>`).join("")}<div class="files">${doc.exports.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div></div>` : ""}<div class="split"><div class="card"><h2>Обработка</h2>${doc.operations.length ? doc.operations.map((o) => `<div class="history"><b>${e(kinds[o.kind])}</b>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)} <span class="muted">${date(o.updated)}</span>${o.error ? `<p class="muted">${e(o.error)}</p>` : ""}${!o.stopped && o.id === reportIssue?.id && o.kind === "report" && ["rejected", "partial"].includes(o.state) ? `<div class="actions"><button class="primary" data-action="retry-report-doc" data-id="${e(o.id)}">Повторить отправку отчёта</button></div>` : ""}</div>`).join("") : '<p class="muted">Внешние операции ещё не запускались.</p>'}<details><summary>История файлов и прежние версии</summary><p class="muted">Скачанные поставщиком старые этикетки технически отозвать нельзя.</p><div class="files">${doc.artifacts.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · ${e(f.kind === "source" ? "Исходный Excel" : "v" + f.version)}</a>`).join("")}</div></details></div><div class="card"><h2>История документа</h2>${doc.history.map((h) => `<div class="history"><b>${e(h.action)}</b><span class="muted">${date(h.created)} · ${e(h.actor)}</span></div>`).join("")}</div></div>`,
   );
   organizeDocument(editable);
   if ($("#legacy-pdf-file")) $("#legacy-pdf-file").onchange = async ev => {
@@ -383,7 +478,7 @@ function renderDoc() {
     try {
       await api("/admin/legacy/" + encodeURIComponent(doc.id) + "/pdf", form);
       await open(doc.id);
-      toast("Исходный PDF сохранён в истории файлов");
+      toast("Исходный PDF сохранён в истории файлов", "success");
     } catch(err) { toast(err.message); }
   };
   if (editable) {
@@ -421,7 +516,7 @@ async function doSave(raw, confirmation) {
     $("#modal").close();
     documentDirty = false;
     renderDoc();
-    toast("Состав сохранён");
+    toast("Состав сохранён", "success");
   } catch (err) {
     toast(err.message);
   }
@@ -474,7 +569,7 @@ async function runExcelImport(context, options = {}) {
       `<h2>Excel загружен</h2>${result.warnings.map((w) => `<p class="notice">${e(w)}</p>`).join("")}<p>Проверьте значения в таблице накладной и сохраните состав.</p><button data-action="close">Продолжить</button>`,
     );
   }
-  toast("Excel загружен в предпросмотр. Проверьте строки и сохраните состав.");
+  toast("Excel загружен в предпросмотр. Проверьте строки и сохраните состав.", "success");
 }
 function excelMapping(context, inspection, previous = {}) {
   context.inspection = inspection;
@@ -634,7 +729,7 @@ async function moveLinesModal(lineIds) {
           });
           $("#modal").close();
           await open(sourceId);
-          toast("Строки и КМ перенесены. Отправьте новые версии этикеток поставщику");
+          toast("Строки и КМ перенесены. Отправьте новые версии этикеток поставщику", "success");
         } catch(error) {
           button.disabled = false;
           toast(error.message);
@@ -657,7 +752,7 @@ async function batchModal(ids) {
       });
       $("#modal").close();
       doc ? await open(doc.id) : await list();
-      toast("Отчёты поставлены в очередь подписи");
+      toast("Отчёты поставлены в очередь подписи", "success");
     } catch (err) {
       toast(err.message);
     }
@@ -683,7 +778,7 @@ async function transformModal(id, kind) {
         codes: $$(".code-select:checked").map((x) => x.value),
       });
       $("#modal").close();
-      toast("Заявка отправлена администратору");
+      toast("Заявка отправлена администратору", "success");
     } catch (err) {
       toast(err.message);
     }
@@ -757,6 +852,7 @@ function setupAdminDocumentPanel() {
     </form>`;
   panel.prepend(legacy);
   $('[data-admin-panel="users"]').after(panel);
+  window.BmUX.supplierPicker($("#legacy-import-form [name=supplier]"), overview.suppliers.filter(s => !s.merged_into));
   let previewReady = false;
   const input = $("#legacy-file");
   const submit = $("#legacy-import-submit");
@@ -802,7 +898,7 @@ function setupAdminDocumentPanel() {
     submit.disabled = true;
     try {
       const result = await api("/admin/legacy/import", form);
-      toast("Накладная " + result.number + " импортирована: " + result.codes + " КМ");
+      toast("Накладная " + result.number + " импортирована: " + result.codes + " КМ", "success");
       await open(result.id);
     } catch(err) {
       submit.disabled = false;
@@ -814,7 +910,7 @@ function setupAdminDocumentPanel() {
     void loadAdminDocuments();
   };
 }
-async function adminPage() {
+async function adminPage(freshOverview = null) {
   registryMode = false;
 
   if (!user.admin) {
@@ -824,7 +920,7 @@ async function adminPage() {
   adminMode = true;
   documentDirty = false;
   doc = null;
-  overview = await api("/admin/overview");
+  overview = freshOverview || await api("/admin/overview");
   const c = overview.config;
   let hb;
   try {
@@ -870,7 +966,7 @@ async function adminPage() {
             role: select.value,
           });
           await adminPage();
-          toast("Роль пользователя обновлена");
+          toast("Роль пользователя обновлена", "success");
         } catch (err) {
           select.value = u.role;
           toast(err.message);
@@ -898,7 +994,7 @@ async function adminPage() {
     body.template_id = Number(body.template_id);
     try {
       await api("/admin/config", body, "PUT");
-      toast("Настройки сохранены");
+      toast("Настройки сохранены", "success");
     } catch (err) {
       toast(err.message);
     }
@@ -907,7 +1003,7 @@ async function adminPage() {
     ev.preventDefault();
     try {
       await api("/admin/catalog", Object.fromEntries(new FormData(ev.target)));
-      toast("Справочник исправлен");
+      toast("Справочник исправлен", "success");
     } catch (err) {
       toast(err.message);
     }
@@ -942,7 +1038,7 @@ async function action(name, id, b) {
       if (!confirm("Передать накладную " + number + " от " + previous + " сотруднику " + owner + "?")) break;
       await api("/admin/documents/" + encodeURIComponent(id) + "/owner", {owner}, "PUT");
       await loadAdminDocuments();
-      toast("Накладная " + number + " передана сотруднику " + owner);
+      toast("Накладная " + number + " передана сотруднику " + owner, "success");
       break;
     }
     case "admin-section":
@@ -971,7 +1067,7 @@ async function action(name, id, b) {
       await api("/logistics/documents/" + encodeURIComponent(id) + "/complete", {});
       $("#modal").close();
       await logisticsPage();
-      toast("Накладная завершена и перемещена в архив");
+      toast("Накладная завершена и перемещена в архив", "success");
       break;
     case "registry-detail":
       await logisticsDetail(id);
@@ -1033,7 +1129,7 @@ async function action(name, id, b) {
         field.remove();
         if (!copied) throw new Error("Не удалось скопировать. Выделите код вручную.");
       }
-      toast("Код скопирован");
+      toast("Код скопирован", "success");
       break;
     }
     case "change-password":
@@ -1074,7 +1170,7 @@ async function action(name, id, b) {
           $("#modal").close();
           documentDirty = false;
           await open(context.id);
-          toast("Обработка остановлена. Накладная перемещена в архив");
+          toast("Обработка остановлена. Накладная перемещена в архив", "success");
         } catch (error) {
           $("#stop-document-error").hidden = false;
           $("#stop-document-error").textContent = error.message;
@@ -1094,7 +1190,7 @@ async function action(name, id, b) {
           await api("/admin/documents/" + encodeURIComponent(id) + "/restore", Object.fromEntries(new FormData(event.target)));
           $("#modal").close();
           await open(id);
-          toast("Накладная возвращена из архива");
+          toast("Накладная возвращена из архива", "success");
         } catch (error) {
           $("#restore-document-error").hidden = false;
           $("#restore-document-error").textContent = error.message;
@@ -1178,38 +1274,38 @@ async function action(name, id, b) {
     case "auth":
       await api("/admin/auth/" + id, {});
       await adminPage();
-      toast("Авторизация ожидает подписи на Windows-ПК");
+      toast("Авторизация ожидает подписи на Windows-ПК", "success");
       break;
     case "retry-local":
       if (!confirm("Это локальная ошибка до отправки в ЧЗ. Повторить операцию после исправления подключения?")) break;
       await api("/admin/operations/" + id + "/retry-local", {});
       await adminPage();
-      toast("Операция повторно поставлена в очередь");
+      toast("Операция повторно поставлена в очередь", "success");
       break;
     case "retry-report":
       if (!confirm("Отправить новый отчёт? При частичной обработке будут включены только КМ, которые ГИС МТ подтвердит как ещё не нанесённые.")) break;
       await api("/admin/operations/" + id + "/retry", {});
       await adminPage();
-      toast("Новый отчёт ожидает подписи на Windows-ПК");
+      toast("Новый отчёт ожидает подписи на Windows-ПК", "success");
       break;
     case "retry-report-doc":
       if (!confirm("Повторить отчёт после проверки карточек в НК? Уже нанесённые КМ не будут отправлены повторно.")) break;
       await api("/documents/" + encodeURIComponent(doc.id) + "/report/" + encodeURIComponent(id) + "/retry", {});
       await open(doc.id);
-      toast("Повторная отправка ожидает подписи на Windows-ПК");
+      toast("Повторная отправка ожидает подписи на Windows-ПК", "success");
       break;
     case "resolve-op": {
       const reason = prompt("Причина скрытия предупреждения (операция в ЧЗ останется без изменений):", "Рассмотрено администратором");
       if (reason === null) break;
       await api("/admin/operations/" + id + "/attention", {resolved: true, reason});
       await adminPage();
-      toast("Предупреждение скрыто. История операции сохранена");
+      toast("Предупреждение скрыто. История операции сохранена", "success");
       break;
     }
     case "unresolve-op":
       await api("/admin/operations/" + id + "/attention", {resolved: false});
       await adminPage();
-      toast("Предупреждение возвращено в список");
+      toast("Предупреждение возвращено в список", "success");
       break;
     case "check-op":
       await api("/admin/operations/" + id + "/check", {});
@@ -1429,6 +1525,7 @@ $("#modal").addEventListener("cancel", () => {
   if ($("#excel-mapping-form")) excelImportVersion++;
 });
 bind();
+refreshTimer = setInterval(pollStatuses, STATUS_POLL_MS);
 (async () => {
   try {
     user = await api("/session");

@@ -111,8 +111,43 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("button", name="Создать черновик").click()
             page.get_by_role("heading", name="Накладная SMOKE-001").wait_for()
             expect(page.locator("#document-save-state")).to_contain_text("сохранены")
+            # Desktop supplier picker is app-rendered (not native datalist).
+            page.get_by_role("button", name="← Накладные", exact=True).click()
+            page.get_by_role("button", name="+ Новая накладная").click()
+            assert page.locator("#new-supplier").get_attribute("role") == "combobox"
+            assert page.locator("#new-supplier").get_attribute("list") is None
+            page.locator("#new-supplier").fill("smoke")
+            expect(page.locator("#modal .supplier-picker-option", has_text="Поставщик smoke")).to_be_visible()
+            page.locator("#new-supplier").press("ArrowDown")
+            page.locator("#new-supplier").press("Enter")
+            expect(page.locator("#new-supplier")).to_have_value("Поставщик smoke")
+            page.locator("#number").fill("SMOKE-ERR")
+            # Exercise the error presentation with a controlled 409 response.
+            # All normal API calls continue to the actual FastAPI server.
+            def fail_invoice_create(route):
+                if route.request.method == "POST":
+                    route.fulfill(
+                        status=409, content_type="application/json",
+                        body=json.dumps({"detail": "Документ отклонён: исправьте данные"}),
+                    )
+                else:
+                    route.continue_()
+            page.route("**/api/documents", fail_invoice_create)
+            page.get_by_role("button", name="Создать черновик").click()
+            expect(page.locator("#modal .dialog-error")).to_be_visible()
+            expect(page.locator("#modal .dialog-error")).to_contain_text("Документ отклонён")
+            page.unroute("**/api/documents")
+            page.get_by_role("button", name="Отмена", exact=True).click()
+            page.get_by_role("button", name="SMOKE-001", exact=True).click()
+            page.get_by_role("heading", name="Накладная SMOKE-001").wait_for()
+            page.evaluate("pollStatuses()")
+            expect(page.locator("#status-checked")).to_contain_text("Проверено:")
             page.get_by_role("button", name="+ Добавить строку").click()
             expect(page.get_by_role("button", name="Заказать КМ", exact=True)).to_be_disabled()
+            expect(page.locator("#document-save-state")).to_contain_text("несохранённые")
+            count_before = page.locator(".pn-input").count()
+            page.evaluate("pollStatuses()")
+            assert page.locator(".pn-input").count() == count_before
             expect(page.locator("#document-save-state")).to_contain_text("несохранённые")
             page.locator(".pn-input").fill("L-132XYD")
             page.locator(".gtin-input").fill("04640638349704")
