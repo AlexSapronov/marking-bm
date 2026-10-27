@@ -508,8 +508,7 @@ with tempfile.TemporaryDirectory() as tmp:
             # Archive choice is an in-session filter; the completed invoice stays out of work.
             expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row)')).to_have_count(0)
             # Many real database ATK records check paging without mocked HTTP/UI
-            # responses. The isolated test DB is cleaned before switching roles.
-            synthetic_batches = []
+            # responses. The temporary test database is discarded after the smoke run.
             with sqlite3.connect(Path(tmp) / "marking-bm.sqlite3") as db:
                 orig = db.execute(
                     "SELECT id,batch_id,supplier_id,tnved,version,op_id,state FROM atks LIMIT 1"
@@ -529,7 +528,6 @@ with tempfile.TemporaryDirectory() as tmp:
                 assert {"atk", "result"}.issubset({entry[0] for entry in files})
                 for index in range(55):
                     batch_id, atk_id = uuid4().hex, uuid4().hex
-                    synthetic_batches.append((batch_id, atk_id))
                     db.execute(
                         "INSERT INTO batches(id,created,actor) VALUES(?,?,?)",
                         (batch_id, "2026-01-01T00:00:00+00:00", "smoke-user"),
@@ -587,12 +585,6 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.locator("#atk-page-label")).to_contain_text("АТК 1–50 из 55")
             page.locator("#atk-next").click()
             expect(page.locator("#atk-page-label")).to_contain_text("АТК 51–55 из 55")
-            with sqlite3.connect(Path(tmp) / "marking-bm.sqlite3") as db:
-                for batch_id, atk_id in synthetic_batches:
-                    db.execute("DELETE FROM artifacts WHERE group_id=?", (batch_id + ":" + supplier_id,))
-                    db.execute("DELETE FROM atk_versions WHERE atk_id=?", (atk_id,))
-                    db.execute("DELETE FROM atks WHERE id=?", (atk_id,))
-                    db.execute("DELETE FROM batches WHERE id=?", (batch_id,))
             page.get_by_role("button", name="Выйти", exact=True).click()
             page.get_by_role("button", name="Первый вход / сброс пароля").click()
             page.locator("#login-value").fill("smoke-user")
