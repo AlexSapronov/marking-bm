@@ -192,3 +192,105 @@ def test_editing_imported_document_enables_normal_label_generation(env):
     )
     assert labels and labels["name"].endswith("-v1.zip")
     assert not registry.orders  # Existing legacy KM reused instead of emission
+
+
+def test_import_blocked_if_any_km_already_applied_or_introduced(env):
+    app, service, registry = env
+    admin = client(app, "administrator", True)
+    sample_rows = make_rows(3)
+    register_legacy(registry, sample_rows)
+    registry.codes[normalize_legacy_code(sample_rows[1][0]).cis]["status"] = "APPLIED"
+    registry.codes[normalize_legacy_code(sample_rows[2][0]).cis]["status"] = "INTRODUCED"
+    content = make_xlsx(sample_rows)
+    preview = admin.post("/api/admin/legacy/preview",
+                         files={"file": ("result_STATUSES.xlsx", content)})
+    assert preview.status_code == 200, preview.text
+    check = preview.json()["verification"]
+    assert not check["allowed"]
+    assert check["checked"] == 3
+    assert check["status_counts"] == {"EMITTED": 1, "APPLIED": 1, "INTRODUCED": 1}
+    assert check["errors_count"] == 2
+    assert "уже нанесён" in check["errors"][0]["reason"]
+    assert "введён в оборот" in check["errors"][1]["reason"]
+    resp = admin.post("/api/admin/legacy/import",
+                      files={"file": ("result_STATUSES.xlsx", content)},
+                      data={"supplier": "Supplier", "owner": "alice"})
+    assert resp.status_code == 409, resp.text
+    assert "Импорт запрещён" in resp.json()["detail"]
+    assert not service.store.one("SELECT id FROM documents WHERE number='STATUSES'")
+    assert not service.store.one("SELECT id FROM codes WHERE source_op LIKE 'legacy:%'")
+    assert not service.store.one("SELECT id FROM artifacts WHERE name='result_STATUSES.xlsx'")
+
+
+def test_import_checks_again_after_preview_and_refuses_changed_status(env):
+    app, service, registry = env
+    admin = client(app, "administrator", True)
+    rows = make_rows(2)
+    register_legacy(registry, rows)
+    content = make_xlsx(rows)
+    filename = "result_CHANGED.xlsx"
+    preview = admin.post("/api/admin/legacy/preview",
+                         files={"file": (filename, content)})
+    assert preview.status_code == 200 and preview.json()["verification"]["allowed"]
+    registry.codes[normalize_legacy_code(rows[0][0]).cis]["status"] = "APPLIED"
+    denied = admin.post("/api/admin/legacy/import",
+                        files={"file": (filename, content)},
+                        data={"supplier": "Supplier", "owner": "alice"})
+    assert denied.status_code == 409
+    assert "уже нанесён" in denied.json()["detail"]
+    assert not service.store.one("SELECT id FROM documents WHERE number='CHANGED'")
+    assert sum(1 for call in registry.calls if "/cises/info" in call[1]) == 2
+
+
+def test_unknown_or_foreign_legacy_km_must_fail_closed(env):
+    app, service, registry = env
+    admin = client(app, "administrator", True)
+    rows = make_rows(2)
+    content = make_xlsx(rows)
+    filename = "result_FOREIGN.xlsx"
+    register_legacy(registry, rows)
+    cis0 = normalize_legacy_code(rows[0][0]).cis
+    cis1 = normalize_legacy_code(rows[1][0]).cis
+    registry.codes[cis0]["status"] = "UNKNOWN"
+    registry.codes[cis1]["ownerInn"] = "7900000000"
+    r = admin.post("/api/admin/legacy/preview",
+                   files={"file": (filename, content)})
+    assert r.status_code == 200, r.text
+    result = r.json()["verification"]
+    assert result["errors_count"] == 2 and not result["allowed"]
+    assert "EMITTED" in result["errors"][0]["reason"]
+    assert "организации" in result["errors"][1]["reason"]
+    assert admin.post("/api/admin/legacy/import",
+                      files={"file": (filename, content)},
+                      data={"supplier": "Supplier", "owner": "alice"}).status_code == 409
+    assert service.store.one("SELECT COUNT(*) n FROM documents")["n"] == 0
+
+
+def test_introductory_extra_status_blocks_even_when_primary_emitted(env):
+    app, service, registry = env
+    admin = client(app, "administrator", True)
+    rows = make_rows(1)
+    register_legacy(registry, rows)
+    cis = normalize_legacy_code(rows[0][0]).cis
+    registry.codes[cis]["statusEx"] = "IN_CIRCULATION"
+    r = admin.post("/api/admin/legacy/preview",
+                   files={"file": ("result_EXTRA.xlsx", make_xlsx(rows))})
+    assert r.status_code == 200
+    check = r.json()["verification"]
+    assert not check["allowed"]
+    assert "введён в оборот" in check["errors"][0]["reason"]
+
+
+def test_verified_import_records_status_check_time(env):
+    app, service, registry = env
+    admin = client(app, "administrator", True)
+    rows = make_rows(1)
+    register_legacy(registry, rows)
+    result = admin.post("/api/admin/legacy/import",
+                        files={"file": ("result_CHECKED.xlsx", make_xlsx(rows))},
+                        data={"supplier": "Supplier", "owner": "alice"})
+    assert result.status_code == 200, result.text
+    record = service.store.one("SELECT checked,external_status FROM codes WHERE doc_id=?",
+                               (result.json()["id"],))
+    assert record["external_status"] == "EMITTED"
+    assert record["checked"] is not None
