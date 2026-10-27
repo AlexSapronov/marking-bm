@@ -288,7 +288,36 @@ with tempfile.TemporaryDirectory() as tmp:
             page.screenshot(path=str(out / "documents.png"), full_page=True)
             page.locator("#search").fill("nonexistent")
             assert page.locator(".doc-select").count() == 0
+            # Long operation histories are real rows in the disposable test DB,
+            # not mocked API responses. The admin table should page them.
+            with sqlite3.connect(Path(tmp) / "marking-bm.sqlite3") as db:
+                stamp = datetime.now(timezone.utc).isoformat()
+                payload = '{"test":"pagination"}'
+                for index in range(65):
+                    db.execute(
+                        "INSERT INTO operations(id,kind,doc_id,op_key,payload,sha256,state,"
+                        "external_id,error,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        (uuid4().hex, "fetch", None, f"ux:pagination:{index}",
+                         payload, hashlib.sha256(payload.encode()).hexdigest(),
+                         "done", None, f"Тестовая операция {index}", stamp, stamp),
+                    )
             page.get_by_role("button", name="Администрирование", exact=True).click()
+            page.locator('.section-nav [data-id="operations"]').click()
+            expect(page.locator("#operation-page-label")).to_contain_text("Строки 1–50")
+            def displayed_operations():
+                return page.evaluate("""
+                  () => [...document.querySelectorAll('[data-admin-panel="operations"] table tbody tr')]
+                    .filter(row => !row.hidden && !row.querySelector('th')).length
+                """)
+            assert displayed_operations() == 50
+            page.locator("#operation-next").click()
+            expect(page.locator("#operation-page-label")).to_contain_text("Строки 51–")
+            assert displayed_operations() >= 15
+            page.locator("#operation-page-size").select_option("25")
+            expect(page.locator("#operation-page-label")).to_contain_text("Строки 1–25")
+            assert displayed_operations() == 25
+            page.locator("#operation-sort").select_option("oldest")
+            expect(page.locator("#operation-page-label")).to_contain_text("Строки 1–25")
             page.locator('.section-nav [data-id="organization"]').click()
             page.locator("#config-form").wait_for()
             page.reload()
