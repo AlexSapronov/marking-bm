@@ -303,6 +303,22 @@ with tempfile.TemporaryDirectory() as tmp:
                     )
             page.get_by_role("button", name="Администрирование", exact=True).click()
             page.locator('.section-nav [data-id="operations"]').click()
+            assert "внешней системе" in page.evaluate(
+                "operationStatusGuidance({state:'unknown',external_id:'suz:123',stopped:false})"
+            )
+            assert "Повтор" not in page.evaluate(
+                "operationStatusGuidance({state:'done',stopped:false})"
+            )
+            sample = page.evaluate("""() => renderOperationRow({
+              id: 'sample', kind: 'report', state: 'rejected',
+              doc_id: null, external_id: 'suz:123',
+              error: 'Ошибка НК', created: '2026-01-01T12:00:00Z',
+              updated: '2026-01-01T13:00:00Z',
+              attention_resolved_at: '2026-01-01T13:30:00Z', stopped: false
+            })""")
+            assert "Последнее изменение:" in sample
+            assert "Статус операции не изменён" in sample
+            assert "Изучите причину" in sample
             assert page.evaluate("adminOperationPending({state:'queued', stopped:false})")
             assert not page.evaluate("adminOperationPending({state:'unknown', stopped:false})")
             assert not page.evaluate("adminOperationPending({state:'rejected', stopped:false})")

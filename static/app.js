@@ -791,6 +791,18 @@ async function transformModal(id, kind) {
     }
   };
 }
+function operationStatusGuidance(o) {
+  if (o.stopped) return "Дальнейшая обработка остановлена. Проверьте историю накладной.";
+  if (o.state === "done") return "Завершено. Дополнительных действий не требуется.";
+  if (o.state === "cancelled") return "Операция отменена или остановлена.";
+  if (o.state === "preflight_blocked") return "Исправьте причину проверки, затем повторите проверку перед отправкой.";
+  if (["rejected", "partial"].includes(o.state)) return "Изучите причину и результат в ЧЗ/СУЗ перед повторной отправкой.";
+  if (o.state === "unknown") return o.external_id ?
+    "Неизвестный результат: проверьте фактическое состояние во внешней системе." :
+    "Неизвестный результат: сначала сверьте операцию в личном кабинете.";
+  if (o.state === "blocked") return "Проверьте доступ к сервису или причину блокировки.";
+  return "Операция выполняется. Сверяйте состояние перед повторным запуском.";
+}
 function renderOperationRow(o) {
   const attention = ["unknown", "blocked", "preflight_blocked", "rejected", "partial"].includes(o.state);
   const resolved = Boolean(o.attention_resolved_at);
@@ -818,7 +830,7 @@ function renderOperationRow(o) {
   const invoice = o.doc_id && o.doc_number
     ? `<span class="cell-sub"><button class="linkbutton" data-action="open" data-id="${e(o.doc_id)}">Накладная ${e(o.doc_number)}</button></span>`
     : "";
-  return `<tr><td>${e(kinds[o.kind])}<br><span class="muted">${date(o.created)}</span>${invoice}</td><td>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)}${resolved ? '<span class="cell-sub">Предупреждение скрыто</span>' : ""}</td><td class="mono">${e(o.external_id || "—")}</td><td class="filename">${e(o.error || "")}</td><td><div class="download-actions">${buttons.join("")}</div></td></tr>`;
+  return `<tr><td>${e(kinds[o.kind])}<br><span class="muted">${date(o.created)}</span>${invoice}</td><td>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)}${resolved ? '<span class="cell-sub">Предупреждение скрыто вручную. Статус операции не изменён.</span>' : ""}</td><td class="mono">${e(o.external_id || "—")}</td><td class="filename">${e(o.error || "")}<span class="cell-sub">Последнее изменение: ${date(o.updated)}</span><span class="cell-sub operation-guidance">${e(operationStatusGuidance(o))}</span></td><td><div class="download-actions">${buttons.join("")}</div></td></tr>`;
 }
 async function loadAdminDocuments() {
   const result = $("#admin-doc-results");
