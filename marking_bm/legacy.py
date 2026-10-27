@@ -39,7 +39,8 @@ def parse_legacy_pack(content, filename):
     if not zipfile.is_zipfile(BytesIO(content)):
         raise ValueError("Нужен настоящий файл XLSX")
     try:
-        with openpyxl.load_workbook(BytesIO(content), read_only=True, data_only=True) as book:
+        book = openpyxl.load_workbook(BytesIO(content), read_only=True, data_only=True)
+        try:
             if "DataMatrix" not in book.sheetnames:
                 raise ValueError("В архиве нужен лист DataMatrix")
             sheet = book["DataMatrix"]
@@ -68,6 +69,8 @@ def parse_legacy_pack(content, filename):
                     })
                 except ValueError as exc:
                     raise ValueError(f"Строка {i}: {exc}") from exc
+        finally:
+            book.close()
     except (OSError, zipfile.BadZipFile, KeyError) as exc:
         raise ValueError("Не удалось прочитать XLSX") from exc
     if not items:
