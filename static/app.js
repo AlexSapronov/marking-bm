@@ -632,7 +632,7 @@ function setupAdminDocumentPanel() {
   const legacy = document.createElement("div");
   legacy.className = "card";
   legacy.innerHTML = `<h3>Импорт старой накладной из паков</h3>
-    <p class="muted">Формат result_НОМЕР.xlsx: КМ, GTIN, PN, штук в этикетке, ТН ВЭД. КМ уже выпущены. Этикетки автоматически не создаются.</p>
+    <p class="muted">Формат result_НОМЕР.xlsx: КМ, GTIN, PN, штук в этикетке, ТН ВЭД. До импорта каждый КМ обязательно сверяется с ЧЗ: допускается только EMITTED. Нанесённые или введённые в оборот КМ блокируют всю накладную. PDF не создаётся.</p>
     <form id="legacy-import-form" class="fields">
       <label class="full">Excel из паков<input name="file" id="legacy-file" type="file" accept=".xlsx" required></label>
       <label>Поставщик<input name="supplier" list="legacy-suppliers" maxlength="160" required placeholder="Выберите или введите поставщика">
@@ -660,11 +660,17 @@ function setupAdminDocumentPanel() {
       form.append("file", selected);
       const result = await api("/admin/legacy/preview", form);
       if (input.files[0] !== selected) return;
+      const verification = result.verification;
+      const statusSummary = Object.entries(verification.status_counts)
+        .map(([status, count]) => e(status) + ": " + fmt(count)).join(" · ");
       $("#legacy-preview").innerHTML = `<b>Накладная ${e(result.number)}</b> · ${fmt(result.codes)} КМ · ${fmt(result.units)} шт. · ${result.lines.length} позиций
         ${result.duplicate_invoice ? '<p class="error">Накладная с этим номером уже существует. Импорт запрещён.</p>' : ""}
+        <p class="${verification.allowed ? "muted" : "error"}"><b>Проверка ЧЗ:</b> ${verification.allowed ? "Все " + fmt(verification.checked) + " КМ имеют статус EMITTED и принадлежат нашей организации. Импорт разрешён." : "Импорт запрещён: " + fmt(verification.errors_count) + " КМ не соответствуют требованиям."}</p>
+        <p class="muted">Статусы: ${statusSummary}</p>
+        ${verification.errors.length ? `<div class="table-wrap"><table><thead><tr><th>PN</th><th>GTIN</th><th>КМ (CIS)</th><th>Статус ЧЗ</th><th>Причина</th></tr></thead><tbody>${verification.errors.map(item=>`<tr><td>${e(item.pn)}</td><td>${e(item.gtin)}</td><td class="mono">${e(item.cis)}</td><td>${e(item.status)}</td><td>${e(item.reason)}</td></tr>`).join("")}</tbody></table></div>${verification.errors_count > verification.errors.length ? '<p class="muted">Показаны первые 100 проблемных КМ.</p>' : ""}` : ""}
         <div class="table-wrap"><table><thead><tr><th>PN</th><th>GTIN</th><th>В этикетке</th><th>Этикеток</th></tr></thead><tbody>${result.lines.slice(0, 20).map(line=>`<tr><td>${e(line.pn)}</td><td>${e(line.gtin)}</td><td>${fmt(line.quantity)}</td><td>${fmt(line.labels)}</td></tr>`).join("")}</tbody></table></div>
         ${result.lines.length>20 ? '<p class="muted">Показаны первые 20 позиций</p>' : ""}`;
-      previewReady = !result.duplicate_invoice;
+      previewReady = !result.duplicate_invoice && verification.allowed;
       submit.disabled = !previewReady;
     } catch (err) {
       $("#legacy-preview").textContent = err.message;
