@@ -644,7 +644,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
     @app.post("/api/logistics/download")
     def logistics_download(body: LogisticsDownload, s=Depends(logistics)):
         # This POST only reads files and creates an in-memory archive. No GIS mutation.
-        data = service.logistics_download(body.atks)
+        data, filename = service.logistics_download(body.atks, with_filename=True)
         with store.transaction() as db:
             audit(
                 db,
@@ -653,7 +653,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                 "logistics",
                 {"atks": sorted(set(body.atks))},
             )
-        return download(data, "АТК-и-RESULT.zip", "application/zip")
+        return download(data, filename, "application/zip")
 
     @app.get("/api/admin/overview")
     def overview(s=Depends(admin)):
