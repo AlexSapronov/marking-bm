@@ -468,6 +468,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             "archived_codes": archive["archived_codes"],
             "blocked_codes": archive["blocked_codes"],
             "blocked_examples": archive["blocked_examples"],
+            "blocked_details": archive["blocked_details"],
             "verification": verification,
         }
 

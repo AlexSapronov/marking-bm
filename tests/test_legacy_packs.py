@@ -523,3 +523,176 @@ def test_archived_code_with_applied_local_status_cannot_move(env):
         files={"file": ("result_APPLIED.xlsx", content)}, data=data
     )
     assert denied.status_code == 409
+
+def test_archived_terminal_report_codes_can_be_reimported_without_duplication(env):
+    """Real pattern: sent report is REJECTED, KM still locally 'reporting',
+    while True API verifies all as EMITTED.
+    """
+    app, service, registry = env
+    admin = client(app, "administrator", True)
+    sample = make_rows(3)
+    register_legacy(registry, sample)
+    old_file = make_xlsx(sample)
+    first = admin.post(
+        "/api/admin/legacy/import",
+        files={"file": ("result_OLD.xlsx", old_file)},
+        data={"supplier": "Supplier", "owner": "alice"},
+    )
+    assert first.status_code == 200, first.text
+    old_id = first.json()["id"]
+    old_ids = {c["id"] for c in service.store.all("SELECT id FROM codes WHERE doc_id=?", (old_id,))}
+    assert len(old_ids) == 3
+    with service.store.transaction() as db:
+        batch_id = "batch:old:report"
+        db.execute("INSERT INTO batches VALUES(?,?,?)",
+                   (batch_id, "2026-10-27T09:00:00+00:00", "alice"))
+        supplier_id = db.execute("SELECT supplier_id FROM documents WHERE id=?", (old_id,)).fetchone()[0]
+        db.execute("INSERT INTO batch_docs VALUES(?,?,?)", (batch_id, old_id, supplier_id))
+        op_id = service.queue(db, "report", "old:report:submitted",
+                              {"sntins": [], "attributes": {}}, doc_id=old_id)
+        db.execute("UPDATE operations SET state='rejected',external_id=?,error=? WHERE id=?",
+                   ("old-report-id", "Карточка товара отсутствует в НК", op_id))
+        db.execute("UPDATE codes SET local_state='reporting' WHERE doc_id=?", (old_id,))
+    service.stop_document(old_id, "OLD", "alice")
+    assert service.get(old_id, "alice")["status"] == "archive"
+    preview = admin.post(
+        "/api/admin/legacy/preview",
+        files={"file": ("result_OLD_v2.xlsx", old_file)},
+    )
+    assert preview.status_code == 200, preview.text
+    result = preview.json()
+    assert result["archived_codes"] == 3
+    assert result["blocked_codes"] == 0
+    assert result["verification"]["status_counts"] == {"EMITTED": 3}
+    imported = admin.post(
+        "/api/admin/legacy/import",
+        files={"file": ("result_OLD_v2.xlsx", old_file)},
+        data={"supplier": "Supplier", "owner": "alice"},
+    )
+    assert imported.status_code == 200, imported.text
+    new_id = imported.json()["id"]
+    assert new_id != old_id
+    assert service.get(new_id, "alice")["status"] == "transferred"
+    assert service.get(old_id, "alice")["status"] == "archive"
+    migrated = service.store.all(
+        "SELECT id,local_state,doc_id FROM codes WHERE doc_id=?", (new_id,)
+    )
+    assert len(migrated) == 3
+    assert all(c["local_state"] == "reserved" for c in migrated)
+    assert {c["id"] for c in migrated} == old_ids
+    assert service.store.one("SELECT COUNT(*) n FROM codes")["n"] == 3
+    assert service.store.one(
+        "SELECT COUNT(*) n FROM assignments WHERE active=1 AND doc_id=?", (new_id,)
+    )["n"] == 3
+    assert service.store.one(
+        "SELECT COUNT(*) n FROM assignments WHERE active=1 AND doc_id=?", (old_id,)
+    )["n"] == 0
+    assert admin.post(
+        "/api/admin/documents/" + old_id + "/restore",
+        json={"reason": "Test"},
+    ).status_code == 409
+    assert not registry.orders
+
+
+def test_archived_partial_report_emitted_codes_can_move(env):
+    app, service, registry = env
+    admin = client(app, "administrator", True)
+    sample = make_rows(1)
+    register_legacy(registry, sample)
+    data = {"supplier": "Supplier", "owner": "alice"}
+    file = make_xlsx(sample)
+    first = admin.post("/api/admin/legacy/import",
+                       files={"file": ("result_PARTOLD.xlsx", file)}, data=data)
+    assert first.status_code == 200, first.text
+    old_id = first.json()["id"]
+    with service.store.transaction() as db:
+        op_id = service.queue(db, "report", "old:partial", {"sntins": []}, doc_id=old_id)
+        db.execute("UPDATE operations SET state='partial',external_id=? WHERE id=?",
+                   ("part-report-id", op_id))
+        db.execute("UPDATE codes SET local_state='reporting' WHERE doc_id=?", (old_id,))
+    service.stop_document(old_id, "PARTOLD", "alice")
+    preview = admin.post(
+        "/api/admin/legacy/preview",
+        files={"file": ("result_PARTNEW.xlsx", file)},
+    )
+    assert preview.status_code == 200
+    assert preview.json()["blocked_codes"] == 0
+    assert preview.json()["archived_codes"] == 1
+
+
+def test_unknown_and_accepted_archive_reports_stay_blocked_with_reason(env):
+    for report_state in ("unknown", "submitted", "done"):
+        app, service, registry = env
+        admin = client(app, "administrator", True)
+        serial = "S" + str({"unknown":1, "submitted":2, "done":3}[report_state]).zfill(19)
+        sample = [(legacy_raw(serial), GTIN, "PN-EXACT", 3000, 8541410004)]
+        register_legacy(registry, sample)
+        old_name = "OLD_" + report_state.upper()
+        imported = admin.post(
+            "/api/admin/legacy/import",
+            files={"file": ("result_" + old_name + ".xlsx", make_xlsx(sample))},
+            data={"supplier": "Supplier", "owner": "alice"},
+        )
+        assert imported.status_code == 200, imported.text
+        old_id = imported.json()["id"]
+        with service.store.transaction() as db:
+            op_id = service.queue(db, "report", "reported:" + report_state,
+                                  {"sntins":[]}, doc_id=old_id)
+            db.execute("UPDATE operations SET state=?,external_id=? WHERE id=?",
+                       (report_state, "result:"+report_state, op_id))
+            db.execute("UPDATE codes SET local_state='reporting' WHERE doc_id=?", (old_id,))
+        service.stop_document(old_id, old_name, "alice")
+        response = admin.post(
+            "/api/admin/legacy/preview",
+            files={"file": ("result_NEW_" + report_state.upper() + ".xlsx",
+                            make_xlsx(sample))},
+        )
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["blocked_codes"] == 1
+        assert result["archived_codes"] == 0
+        assert "операц" in result["blocked_details"][0]["reason"] or "отчёт" in result["blocked_details"][0]["reason"]
+        assert result["blocked_details"][0]["source_number"] == old_name
+        denied = admin.post(
+            "/api/admin/legacy/import",
+            files={"file": ("result_NEW_" + report_state.upper() + ".xlsx",
+                            make_xlsx(sample))},
+            data={"supplier": "Supplier", "owner": "alice"},
+        )
+        assert denied.status_code == 409
+
+
+def test_remote_applied_overrides_local_archived_rejection(env):
+    app, service, registry = env
+    admin = client(app, "administrator", True)
+    sample = make_rows(1)
+    register_legacy(registry, sample)
+    first = admin.post(
+        "/api/admin/legacy/import",
+        files={"file": ("result_ARCHOK.xlsx", make_xlsx(sample))},
+        data={"supplier": "Supplier", "owner": "alice"},
+    )
+    assert first.status_code == 200
+    old_id = first.json()["id"]
+    with service.store.transaction() as db:
+        op_id = service.queue(db, "report", "old:rejected:applied",
+                              {"sntins":[]}, doc_id=old_id)
+        db.execute("UPDATE operations SET state='rejected',external_id=? WHERE id=?",
+                   ("reject-id", op_id))
+        db.execute("UPDATE codes SET local_state='reporting' WHERE doc_id=?", (old_id,))
+    service.stop_document(old_id, "ARCHOK", "alice")
+    for state in ("APPLIED", "INTRODUCED"):
+        registry.codes[normalize_legacy_code(sample[0][0]).cis]["status"] = state
+        r = admin.post(
+            "/api/admin/legacy/preview",
+            files={"file": ("result_ARCHNEXT.xlsx", make_xlsx(sample))},
+        )
+        assert r.status_code == 200
+        assert not r.json()["verification"]["allowed"]
+        attempt = admin.post(
+            "/api/admin/legacy/import",
+            files={"file": ("result_ARCHNEXT.xlsx", make_xlsx(sample))},
+            data={"supplier": "Supplier", "owner": "alice"},
+        )
+        assert attempt.status_code == 409
+    assert service.store.one("SELECT COUNT(*) n FROM codes")["n"] == 1
