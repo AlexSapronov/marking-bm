@@ -422,6 +422,30 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             s["admin"],
         )
 
+    class MoveLines(BaseModel):
+        target_id: str = Field(min_length=1, max_length=64)
+        line_ids: list[int] = Field(min_length=1, max_length=500)
+        fingerprint: str | None = None
+
+    @app.get("/api/documents/{doc_id}/move-targets")
+    def move_targets(doc_id: str, s=Depends(manager)):
+        return service.move_line_targets(doc_id, s["username"], s["admin"])
+
+    @app.post("/api/documents/{doc_id}/move-lines/preview")
+    def move_lines_preview(doc_id: str, body: MoveLines, s=Depends(manager)):
+        return service.move_lines_preview(
+            doc_id, body.target_id, body.line_ids, s["username"], s["admin"]
+        )
+
+    @app.post("/api/documents/{doc_id}/move-lines")
+    def move_lines_commit(doc_id: str, body: MoveLines, s=Depends(manager)):
+        if not body.fingerprint:
+            raise ValueError("Сначала откройте предпросмотр переноса")
+        return service.move_lines(
+            doc_id, body.target_id, body.line_ids,
+            body.fingerprint, s["username"], s["admin"],
+        )
+
     @app.post("/api/documents/{doc_id}/import")
     async def excel_import(
         doc_id: str,
