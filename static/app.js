@@ -388,7 +388,9 @@ function renderDoc() {
   };
   if (editable) {
     $("#excel-file").onchange = importExcel;
-    $("#edit-rows").oninput = markDocumentDirty;
+    $("#edit-rows").oninput = ev => {
+      if (!ev.target.matches(".move-line")) markDocumentDirty();
+    };
   }
 }
 async function saveRows(raw) {
