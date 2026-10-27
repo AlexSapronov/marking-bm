@@ -749,6 +749,19 @@ with tempfile.TemporaryDirectory() as tmp:
             assert test_service.get(move_source, "smoke-user")["status"] == "draft"
             expect(page.locator('a.button.primary[href*="/api/files/"]')).to_have_count(0)
             page.get_by_role("button", name="← Накладные", exact=True).click()
+            expect(page.locator('[data-action="batch"]')).to_have_text("Нанесение и отчёты в СУЗ")
+            page.get_by_role("button", name="MOVE-EMPTY", exact=True).click()
+            expect(page.get_by_role("button", name="Подтвердить передачу этикеток", exact=True)).to_be_visible()
+            page.get_by_role("button", name="Подтвердить передачу этикеток", exact=True).click()
+            expect(page.get_by_role("heading", name="Подтвердить передачу этикеток поставщику?")).to_be_visible()
+            expect(page.locator("#modal")).to_contain_text("версия")
+            page.locator("#modal [data-action='close']").click()
+            assert test_service.get(move_target, "smoke-user")["status"] == "ready"
+            page.get_by_role("button", name="Подтвердить передачу этикеток", exact=True).click()
+            page.get_by_role("button", name="Передача подтверждена", exact=True).click()
+            assert test_service.get(move_target, "smoke-user")["status"] == "transferred"
+            expect(page.locator('[data-action="report"]')).to_have_text("Нанесение и отчёт в СУЗ")
+            page.get_by_role("button", name="← Накладные", exact=True).click()
             page.get_by_role("button", name="+ Новая накладная", exact=True).click()
             page.locator("#number").fill("STOP-UI")
             page.locator("#new-supplier").fill("Поставщик smoke")
