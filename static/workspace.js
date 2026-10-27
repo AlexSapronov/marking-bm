@@ -25,7 +25,7 @@ function organizeAdmin(hb) {
   const main = $("main");
   const stats = main.querySelector(".stats");
   const notice = main.querySelector(":scope > .notice");
-  const attention = overview.operations.filter(o => ["unknown", "blocked", "preflight_blocked", "rejected"].includes(o.state) && !o.attention_resolved_at);
+  const attention = overview.operations.filter(o => ["unknown", "blocked", "preflight_blocked", "rejected", "partial"].includes(o.state) && !o.attention_resolved_at);
   const approvals = overview.transformations.filter(t => t.state === "approval");
   const pending = overview.operations.filter(o => !["done", "rejected", "cancelled"].includes(o.state) && !o.stopped);
   const overviewPanel = document.createElement("section");
@@ -192,7 +192,7 @@ function setupAdminFilters() {
       dataRows.forEach(row => {
         const op = key === "operations" ? overview.operations[dataRows.indexOf(row)] : null;
         const stateMatches = key !== "operations" || state === "all" ||
-          (state === "attention" && ["unknown", "blocked", "preflight_blocked", "rejected"].includes(op?.state) && !op?.attention_resolved_at) ||
+          (state === "attention" && ["unknown", "blocked", "preflight_blocked", "rejected", "partial"].includes(op?.state) && !op?.attention_resolved_at) ||
           (state === "pending" && !op?.stopped && !["done", "rejected", "cancelled"].includes(op?.state)) ||
           (state === "stopped" && (op?.stopped || op?.state === "cancelled")) ||
           (state === "resolved" && Boolean(op?.attention_resolved_at)) ||

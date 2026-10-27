@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from .db import now, uid, dumps, audit
 from .service import one, rows, Conflict
 from .codes import parse
-from .gateway import RemoteError, ReportRejected
+from .gateway import RemoteError, ReportRejected, ReportPartiallyProcessed
 
 
 # The 25-character ATK comprises 20 decimal digits and five characters
@@ -110,6 +110,13 @@ class Worker:
                         self.dispatch(op)
                     else:
                         self.poll(op)
+                except ReportPartiallyProcessed as e:
+                    with self.db.transaction() as db:
+                        db.execute(
+                            "UPDATE operations SET state='partial',error=?,updated=? "
+                            "WHERE id=? AND state IN ('submitted','checking')",
+                            (str(e), now(), op["id"]),
+                        )
                 except ReportRejected as e:
                     # A report ID with explicit REJECTED status is terminal.
                     # It is never re-polled; retry must create a fresh signed job.
