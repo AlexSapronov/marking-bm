@@ -523,6 +523,10 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("button", name="MOVE-READY", exact=True).click()
             expect(page.get_by_role("button", name="Перенести строки и КМ")).to_be_visible()
             page.locator(".move-line").check()
+            assert page.evaluate("gatherRows()[0]") == page.evaluate(
+                "([l]) => [l.pn, l.gtin, l.quantity, l.labels, l.tnved]",
+                [page.evaluate("doc.lines[0]")],
+            ), "Checkbox переноса не должен смещать поля состава"
             expect(page.locator("#document-save-state")).to_contain_text("сохранены")
             page.get_by_role("button", name="Перенести строки и КМ", exact=True).click()
             page.wait_for_timeout(800)
