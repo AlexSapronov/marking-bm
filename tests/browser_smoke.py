@@ -77,6 +77,15 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("heading", name="Администрирование", exact=True).wait_for()
             expect(page.locator('[data-admin-panel="overview"]')).to_be_visible()
             expect(page.locator("#user-form")).not_to_be_visible()
+            # Desktop overview must stay inside the outer viewport. Wide tables
+            # scroll in their own containers rather than shifting page layout.
+            for width, height in ((1366, 768), (1920, 1080), (2560, 1440)):
+                page.set_viewport_size({"width": width, "height": height})
+                expect(page.locator(".overview-tasks")).to_be_visible()
+                assert page.evaluate(
+                    "document.documentElement.scrollWidth <= window.innerWidth + 1"
+                ), f"Admin overview overflow at {width}x{height}"
+            page.set_viewport_size({"width": 1440, "height": 1000})
             # Escape is equivalent to cancellation in the shared confirmation UI.
             page.evaluate("document.body.dataset.confirmOutcome = 'pending'; void confirmAction('UX test', 'Check cancellation').then(value => document.body.dataset.confirmOutcome = String(value))")
             expect(page.get_by_role("heading", name="UX test")).to_be_visible()
@@ -128,6 +137,13 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("button", name="Накладные", exact=True).click()
             page.reload()
             page.get_by_role("heading", name="Накладные", exact=True).wait_for()
+            for width, height in ((1366, 768), (1920, 1080), (2560, 1440)):
+                page.set_viewport_size({"width": width, "height": height})
+                expect(page.locator(".stage-filters")).to_be_visible()
+                assert page.evaluate(
+                    "document.documentElement.scrollWidth <= window.innerWidth + 1"
+                ), f"BM invoice register overflow at {width}x{height}"
+            page.set_viewport_size({"width": 1440, "height": 1000})
             page.get_by_role("button", name="Архив", exact=True).click()
             page.get_by_role("heading", name="Архив накладных", exact=True).wait_for()
             page.reload()
@@ -433,6 +449,13 @@ with tempfile.TemporaryDirectory() as tmp:
             page.locator('[data-section-search="audit"]').fill("")
             page.locator('.section-nav [data-id="users"]').click()
             expect(page.locator("#admin-users-page-label")).to_contain_text("Строки 1–25")
+            for width, height in ((1366, 768), (1920, 1080), (2560, 1440)):
+                page.set_viewport_size({"width": width, "height": height})
+                expect(page.locator("#admin-users-page-label")).to_be_visible()
+                assert page.evaluate(
+                    "document.documentElement.scrollWidth <= window.innerWidth + 1"
+                ), f"Admin dense user register overflow at {width}x{height}"
+            page.set_viewport_size({"width": 1440, "height": 1000})
             page.locator("#admin-users-next").click()
             expect(page.locator("#admin-users-page-label")).to_contain_text("Строки 26–50")
             page.locator("#admin-users-sort").select_option("reverse")
