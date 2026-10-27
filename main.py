@@ -782,11 +782,20 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
     def overview(s=Depends(admin)):
         usage = shutil.disk_usage(settings.data_dir)
         secrets_config = settings.secrets()
+        # Keep recent activity bounded, but NEVER lose unresolved warnings
+        # when more than 200 newer operations are created.
         operations = store.all(
             "SELECT o.id,o.kind,o.doc_id,o.group_id,o.state,o.external_id,o.error,"
-            "o.created,o.updated, a.resolved_at AS attention_resolved_at "
+            "o.created,o.updated,a.resolved_at AS attention_resolved_at "
             "FROM operations o LEFT JOIN operation_attention a ON a.op_id=o.id "
-            "ORDER BY o.created DESC LIMIT 200"
+            "WHERE o.id IN ("
+            "SELECT id FROM (SELECT id FROM operations ORDER BY created DESC LIMIT 200) "
+            "UNION "
+            "SELECT o2.id FROM operations o2 "
+            "LEFT JOIN operation_attention a2 ON a2.op_id=o2.id "
+            "WHERE o2.state IN ('unknown','blocked','preflight_blocked','rejected','partial') "
+            "AND a2.resolved_at IS NULL"
+            ") ORDER BY o.created DESC"
         )
         transformations = store.all(
             "SELECT * FROM transformations ORDER BY created DESC"
