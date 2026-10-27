@@ -390,6 +390,11 @@ with tempfile.TemporaryDirectory() as tmp:
             page.locator(".move-line").check()
             expect(page.locator("#document-save-state")).to_contain_text("сохранены")
             page.get_by_role("button", name="Перенести строки и КМ", exact=True).click()
+            page.wait_for_timeout(800)
+            assert page.locator("#move-lines-form").count(), (
+                page.locator("#toast").inner_text(), errors,
+                page.locator("#modal").inner_text()
+            )
             page.locator('#move-lines-form select[name="target"]').select_option(move_target)
             page.get_by_role("button", name="Проверить перенос").click()
             expect(page.get_by_role("heading", name="Подтвердить перенос")).to_be_visible()
