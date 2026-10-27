@@ -86,7 +86,7 @@ def test_move_selected_line_with_codes_rebuilds_both_label_versions(env):
         (source, "Строки и КМ переданы в другую накладную"),
     )["n"] == 1
     assert not remote.reports
-    assert len(remote.orders) == 1
+    assert len(remote.orders) == 2  # One order per original invoice, none during transfer
 
 
 def test_move_all_lines_to_empty_draft_source_becomes_draft(env):
