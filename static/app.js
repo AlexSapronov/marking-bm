@@ -315,9 +315,21 @@ function renderDoc() {
       )
       .join(
         "",
-      )}${doc.status === "receiving" ? '<div class="notice">PDF станет доступен после получения полного комплекта КМ. Повторный заказ не требуется.</div>' : ""}<div class="card"><div class="topbar"><h2>Состав накладной</h2>${editable ? '<div class="actions"><a href="/api/template">Скачать шаблон Excel</a><button data-action="import">Загрузить Excel</button><input type="file" id="excel-file" accept=".xlsx" hidden></div>' : ""}</div><div class="table-wrap"><table><thead><tr><th>PN</th><th>GTIN</th><th>Штук в этикетке</th><th>Этикеток</th><th>ТН ВЭД</th>${editable ? "<th></th>" : ""}</tr></thead><tbody id="edit-rows">${editable ? doc.lines.map(lineRow).join("") : doc.lines.map((l) => `<tr><td>${e(l.pn)}</td><td>${e(l.gtin)}</td><td>${fmt(l.quantity)}</td><td>${fmt(l.labels)}</td><td>${e(l.tnved)}</td></tr>`).join("")}</tbody></table></div>${editable ? '<div class="actions"><button data-action="add-line">+ Добавить строку</button><button data-action="save-lines">Проверить и сохранить состав</button></div>' : ""}<div class="actions">${!doc.stopped && !doc.group_stop && reportIssue ? `<button class="primary" data-action="retry-report-doc" data-id="${e(reportIssue.id)}">Отправить повторно</button>` : ""}${doc.status === "draft" ? '<button class="primary" data-action="order">Заказать КМ</button>' : ""}${currentFile && doc.codes.length === doc.required && !["repack", "receiving"].includes(doc.status) ? `<a class="button primary" href="/api/files/${e(currentFile.id)}">↓ Скачать ZIP с этикетками · v${doc.current_version}</a>` : ""}${["ready", "transferred"].includes(doc.status) ? `<button class="primary" data-action="transfer">${doc.status === "transferred" ? "Повторно отметить передачу" : "Передано поставщику"}</button>` : ""}${doc.status === "transferred" ? '<button class="primary" data-action="report">Подтвердить нанесение и сформировать АТК</button>' : ""}${!doc.stopped && ["done", "archive", "reported"].includes(doc.status) ? '<button data-action="supplement">Создать дополнение</button>' : ""}${!doc.stopped ? '<button class="danger" data-action="stop-document">Остановить и архивировать</button>' : ""}${user.admin && doc.status === "archive" ? '<button data-action="restore-document">Вернуть из архива</button>' : ""}<button data-action="refresh-doc">Обновить состояние</button></div></div>${doc.atks.length ? `<div class="card"><h2>Таможенные коды</h2>${doc.atks.map((a) => `<div class="toolbar"><span>ТН ВЭД <b>${e(a.tnved)}</b> · ${a.code ? e(a.code) : "Ожидает формирования"}</span>${a.state === "done" ? `<button data-action="atk" data-id="${e(a.id)}">Состав и трансформации</button>` : badge(a.state)}</div>`).join("")}<div class="files">${doc.exports.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div></div>` : ""}<div class="split"><div class="card"><h2>Обработка</h2>${doc.operations.length ? doc.operations.map((o) => `<div class="history"><b>${e(kinds[o.kind])}</b>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)} <span class="muted">${date(o.updated)}</span>${o.error ? `<p class="muted">${e(o.error)}</p>` : ""}${!o.stopped && o.id === reportIssue?.id && o.kind === "report" && ["rejected", "partial"].includes(o.state) ? `<div class="actions"><button class="primary" data-action="retry-report-doc" data-id="${e(o.id)}">Повторить отправку отчёта</button></div>` : ""}</div>`).join("") : '<p class="muted">Внешние операции ещё не запускались.</p>'}<details><summary>История файлов и прежние версии</summary><p class="muted">Скачанные поставщиком старые этикетки технически отозвать нельзя.</p><div class="files">${doc.artifacts.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · ${e(f.kind === "source" ? "Исходный Excel" : "v" + f.version)}</a>`).join("")}</div></details></div><div class="card"><h2>История документа</h2>${doc.history.map((h) => `<div class="history"><b>${e(h.action)}</b><span class="muted">${date(h.created)} · ${e(h.actor)}</span></div>`).join("")}</div></div>`,
+      )}${doc.status === "receiving" ? '<div class="notice">PDF станет доступен после получения полного комплекта КМ. Повторный заказ не требуется.</div>' : ""}<div class="card"><div class="topbar"><h2>Состав накладной</h2>${editable ? '<div class="actions"><a href="/api/template">Скачать шаблон Excel</a><button data-action="import">Загрузить Excel</button><input type="file" id="excel-file" accept=".xlsx" hidden></div>' : ""}</div><div class="table-wrap"><table><thead><tr><th>PN</th><th>GTIN</th><th>Штук в этикетке</th><th>Этикеток</th><th>ТН ВЭД</th>${editable ? "<th></th>" : ""}</tr></thead><tbody id="edit-rows">${editable ? doc.lines.map(lineRow).join("") : doc.lines.map((l) => `<tr><td>${e(l.pn)}</td><td>${e(l.gtin)}</td><td>${fmt(l.quantity)}</td><td>${fmt(l.labels)}</td><td>${e(l.tnved)}</td></tr>`).join("")}</tbody></table></div>${editable ? '<div class="actions"><button data-action="add-line">+ Добавить строку</button><button data-action="save-lines">Проверить и сохранить состав</button></div>' : ""}<div class="actions">${!doc.stopped && !doc.group_stop && reportIssue ? `<button class="primary" data-action="retry-report-doc" data-id="${e(reportIssue.id)}">Отправить повторно</button>` : ""}${user.admin && doc.status === "transferred" && doc.current_version === 0 ? '<button data-action="upload-legacy-pdf">Загрузить PDF</button><input type="file" id="legacy-pdf-file" accept=".pdf,application/pdf" hidden>' : ""}${doc.status === "draft" ? '<button class="primary" data-action="order">Заказать КМ</button>' : ""}${currentFile && doc.codes.length === doc.required && !["repack", "receiving"].includes(doc.status) ? `<a class="button primary" href="/api/files/${e(currentFile.id)}">↓ Скачать ZIP с этикетками · v${doc.current_version}</a>` : ""}${["ready", "transferred"].includes(doc.status) ? `<button class="primary" data-action="transfer">${doc.status === "transferred" ? "Повторно отметить передачу" : "Передано поставщику"}</button>` : ""}${doc.status === "transferred" ? '<button class="primary" data-action="report">Подтвердить нанесение и сформировать АТК</button>' : ""}${!doc.stopped && ["done", "archive", "reported"].includes(doc.status) ? '<button data-action="supplement">Создать дополнение</button>' : ""}${!doc.stopped ? '<button class="danger" data-action="stop-document">Остановить и архивировать</button>' : ""}${user.admin && doc.status === "archive" ? '<button data-action="restore-document">Вернуть из архива</button>' : ""}<button data-action="refresh-doc">Обновить состояние</button></div></div>${doc.atks.length ? `<div class="card"><h2>Таможенные коды</h2>${doc.atks.map((a) => `<div class="toolbar"><span>ТН ВЭД <b>${e(a.tnved)}</b> · ${a.code ? e(a.code) : "Ожидает формирования"}</span>${a.state === "done" ? `<button data-action="atk" data-id="${e(a.id)}">Состав и трансформации</button>` : badge(a.state)}</div>`).join("")}<div class="files">${doc.exports.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div></div>` : ""}<div class="split"><div class="card"><h2>Обработка</h2>${doc.operations.length ? doc.operations.map((o) => `<div class="history"><b>${e(kinds[o.kind])}</b>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)} <span class="muted">${date(o.updated)}</span>${o.error ? `<p class="muted">${e(o.error)}</p>` : ""}${!o.stopped && o.id === reportIssue?.id && o.kind === "report" && ["rejected", "partial"].includes(o.state) ? `<div class="actions"><button class="primary" data-action="retry-report-doc" data-id="${e(o.id)}">Повторить отправку отчёта</button></div>` : ""}</div>`).join("") : '<p class="muted">Внешние операции ещё не запускались.</p>'}<details><summary>История файлов и прежние версии</summary><p class="muted">Скачанные поставщиком старые этикетки технически отозвать нельзя.</p><div class="files">${doc.artifacts.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · ${e(f.kind === "source" ? "Исходный Excel" : "v" + f.version)}</a>`).join("")}</div></details></div><div class="card"><h2>История документа</h2>${doc.history.map((h) => `<div class="history"><b>${e(h.action)}</b><span class="muted">${date(h.created)} · ${e(h.actor)}</span></div>`).join("")}</div></div>`,
   );
   organizeDocument(editable);
+  if ($("#legacy-pdf-file")) $("#legacy-pdf-file").onchange = async ev => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    ev.target.value = "";
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      await api("/admin/legacy/" + encodeURIComponent(doc.id) + "/pdf", form);
+      await open(doc.id);
+      toast("Исходный PDF сохранён в истории файлов");
+    } catch(err) { toast(err.message); }
+  };
   if (editable) {
     $("#excel-file").onchange = importExcel;
     $("#edit-rows").oninput = markDocumentDirty;
@@ -615,6 +627,65 @@ function setupAdminDocumentPanel() {
   panel.className = "card";
   panel.dataset.adminPanel = "documents";
   panel.innerHTML = `<h2>Передать накладную другому сотруднику</h2><p class="muted">Администратор может изменить ответственного, включая архивные накладные. История и полученные КМ сохраняются. Новый сотрудник получит доступ, прежний его потеряет.</p><form id="admin-doc-search-form" class="admin-filter-bar"><label>Поиск накладной, поставщика или владельца<input id="admin-doc-q" type="search" maxlength="120" placeholder="Номер, поставщик или username"></label><button class="primary" type="submit">Найти</button></form><p id="admin-doc-count" class="muted" role="status"></p><div id="admin-doc-results"></div>`;
+  // Import old KM packs without requesting or rendering new labels.
+  const managers = overview.users.filter(u => u.enabled && u.role === "manager");
+  const legacy = document.createElement("div");
+  legacy.className = "card";
+  legacy.innerHTML = `<h3>Импорт старой накладной из паков</h3>
+    <p class="muted">Формат result_НОМЕР.xlsx: КМ, GTIN, PN, штук в этикетке, ТН ВЭД. КМ уже выпущены. Этикетки автоматически не создаются.</p>
+    <form id="legacy-import-form" class="fields">
+      <label class="full">Excel из паков<input name="file" id="legacy-file" type="file" accept=".xlsx" required></label>
+      <label>Поставщик<input name="supplier" list="legacy-suppliers" maxlength="160" required placeholder="Выберите или введите поставщика">
+      <datalist id="legacy-suppliers">${overview.suppliers.map(p=>`<option value="${e(p.name)}">`).join("")}</datalist></label>
+      <label>Ответственный<select name="owner" id="legacy-owner" required>${managers.map(u=>`<option value="${e(u.username)}" ${u.username===user.username?"selected":""}>${e(u.username)}</option>`).join("")}</select></label>
+      <div id="legacy-preview" class="full muted" role="status">Выберите Excel для проверки.</div>
+      <div class="actions full"><button type="submit" class="primary" id="legacy-import-submit" disabled>Импортировать накладную</button></div>
+    </form>`;
+  panel.prepend(legacy);
+  let previewReady = false;
+  const input = $("#legacy-file");
+  const submit = $("#legacy-import-submit");
+  input.onchange = async () => {
+    previewReady = false;
+    submit.disabled = true;
+    $("#legacy-preview").textContent = "Проверяем Excel…";
+    if (!input.files.length) {
+      $("#legacy-preview").textContent = "Выберите Excel для проверки.";
+      return;
+    }
+    const selected = input.files[0];
+    try {
+      const form = new FormData();
+      form.append("file", selected);
+      const result = await api("/admin/legacy/preview", form);
+      if (input.files[0] !== selected) return;
+      $("#legacy-preview").innerHTML = `<b>Накладная ${e(result.number)}</b> · ${fmt(result.codes)} КМ · ${fmt(result.units)} шт. · ${result.lines.length} позиций
+        ${result.duplicate_invoice ? '<p class="error">Накладная с этим номером уже существует. Импорт запрещён.</p>' : ""}
+        <div class="table-wrap"><table><thead><tr><th>PN</th><th>GTIN</th><th>В этикетке</th><th>Этикеток</th></tr></thead><tbody>${result.lines.slice(0, 20).map(line=>`<tr><td>${e(line.pn)}</td><td>${e(line.gtin)}</td><td>${fmt(line.quantity)}</td><td>${fmt(line.labels)}</td></tr>`).join("")}</tbody></table></div>
+        ${result.lines.length>20 ? '<p class="muted">Показаны первые 20 позиций</p>' : ""}`;
+      previewReady = !result.duplicate_invoice;
+      submit.disabled = !previewReady;
+    } catch (err) {
+      $("#legacy-preview").textContent = err.message;
+    }
+  };
+  $("#legacy-import-form").onsubmit = async ev => {
+    ev.preventDefault();
+    if (!previewReady || !input.files.length) return;
+    const form = new FormData(ev.target);
+    const filename = input.files[0].name;
+    const supplier = String(form.get("supplier") || "").trim();
+    if (!supplier || !confirm("Импортировать " + filename + " для поставщика «" + supplier + "»? Новые КМ не заказываются, PDF не создаётся.")) return;
+    submit.disabled = true;
+    try {
+      const result = await api("/admin/legacy/import", form);
+      toast("Накладная " + result.number + " импортирована: " + result.codes + " КМ");
+      await open(result.id);
+    } catch(err) {
+      submit.disabled = false;
+      toast(err.message);
+    }
+  };
   $('[data-admin-panel="users"]').after(panel);
   $("#admin-doc-search-form").onsubmit = event => {
     event.preventDefault();
@@ -735,6 +806,9 @@ function reasonModal(title, callback) {
 }
 async function action(name, id, b) {
   switch (name) {
+    case "upload-legacy-pdf":
+      $("#legacy-pdf-file")?.click();
+      break;
     case "reassign-document": {
       const row = b.closest("tr");
       const owner = row?.querySelector("select")?.value;
