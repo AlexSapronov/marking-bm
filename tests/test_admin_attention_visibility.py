@@ -37,3 +37,22 @@ def test_unresolved_warning_is_not_duplicate_of_recent_operations(env):
     result = client(app, "administrator", True).get("/api/admin/overview")
     assert result.status_code == 200, result.text
     assert [x["id"] for x in result.json()["operations"]].count(important) == 1
+
+
+def test_attention_links_to_the_correct_invoice_number(env):
+    app, service, _ = env
+    document_id = service.create("alice", "ATTENTION-INV-007", "Supplier A")
+    with service.store.transaction() as db:
+        op_id = service.queue(
+            db, "report", "ux:linked:report", {"sntins": []}, doc_id=document_id
+        )
+        db.execute(
+            "UPDATE operations SET state='rejected',external_id='suz:linked' WHERE id=?",
+            (op_id,),
+        )
+    response = client(app, "administrator", True).get("/api/admin/overview")
+    assert response.status_code == 200, response.text
+    operation = next(item for item in response.json()["operations"]
+                     if item["id"] == op_id)
+    assert operation["doc_id"] == document_id
+    assert operation["doc_number"] == "ATTENTION-INV-007"
