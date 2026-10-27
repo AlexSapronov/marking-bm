@@ -374,6 +374,33 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
             expect(page.get_by_role("button", name="Реестр АТК", exact=True)).to_have_count(0)
             expect(page.get_by_role("columnheader", name="Владелец", exact=True)).to_have_count(0)
+            # Check the new full-row transfer interaction against real API and DB.
+            move_source = add_doc(
+                test_service, owner="smoke-user", supplier="Поставщик move",
+                number="MOVE-READY", labels=1
+            )
+            test_service.order(move_source, "smoke-user")
+            advance(test_app)
+            move_target = test_service.create(
+                "smoke-user", "MOVE-EMPTY", "Поставщик move"
+            )
+            page.reload()
+            page.get_by_role("button", name="MOVE-READY", exact=True).click()
+            expect(page.get_by_role("button", name="Перенести строки и КМ")).to_be_visible()
+            page.locator(".move-line").check()
+            expect(page.locator("#document-save-state")).to_contain_text("сохранены")
+            page.get_by_role("button", name="Перенести строки и КМ", exact=True).click()
+            page.locator('#move-lines-form select[name="target"]').select_option(move_target)
+            page.get_by_role("button", name="Проверить перенос").click()
+            expect(page.get_by_role("heading", name="Подтвердить перенос")).to_be_visible()
+            page.locator("#confirm-move-lines").click()
+            page.get_by_role("heading", name="Накладная MOVE-READY").wait_for()
+            expect(page.locator('[data-action="move-lines"]')).to_have_count(0)
+            assert test_service.get(move_target, "smoke-user")["status"] == "ready"
+            assert len(test_service.get(move_target, "smoke-user")["codes"]) == 1
+            assert test_service.get(move_source, "smoke-user")["status"] == "draft"
+            expect(page.locator('a[href*="/api/files/"]')).to_have_count(0)
+            page.get_by_role("button", name="← Накладные", exact=True).click()
             page.get_by_role("button", name="+ Новая накладная", exact=True).click()
             page.locator("#number").fill("STOP-UI")
             page.locator("#new-supplier").fill("Поставщик smoke")
