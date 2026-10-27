@@ -82,12 +82,12 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.get_by_role("heading", name="UX test")).to_be_visible()
             page.keyboard.press("Escape")
             expect(page.locator("#modal")).not_to_be_visible()
-            assert page.evaluate("window.__confirmationResult") is False
+            page.wait_for_function("window.__confirmationResult === false", timeout=5000)
             page.evaluate("window.__attentionReason = null; void attentionReasonDialog().then(value => window.__attentionReason = value)")
             expect(page.get_by_role("heading", name="Скрыть предупреждение?")).to_be_visible()
             page.locator("#attention-reason").fill("Сверено с результатом ЧЗ")
             page.get_by_role("button", name="Скрыть предупреждение").click()
-            assert page.evaluate("window.__attentionReason") == "Сверено с результатом ЧЗ"
+            page.wait_for_function("window.__attentionReason === 'Сверено с результатом ЧЗ'", timeout=5000)
             page.locator('.section-nav [data-id="users"]').click()
             page.locator("#username").fill("smoke-user")
             page.locator("#user-form button").click()
