@@ -152,7 +152,10 @@ def test_manager_cannot_assign_role_or_access_logist_registry(env):
         ).status_code
         == 403
     )
-    response = c.post("/api/session", json={"username": "alice", "role": "logistics"})
+    response = c.post(
+        "/api/session",
+        json={"username": "alice", "password": "test-password-long", "role": "logistics"},
+    )
     assert response.status_code == 200 and response.json()["role"] == "manager"
 
 
