@@ -60,10 +60,22 @@ def test_logist_sees_all_owners_filters_and_downloads(env):
         "/api/logistics/download", json={"atks": [a["id"] for a in items]}
     )
     assert response.status_code == 200
+    assert "AL-100-BO-200.zip" in response.headers["content-disposition"]
     with zipfile.ZipFile(BytesIO(response.content)) as z:
-        assert len(z.namelist()) == 4 and all(
-            name.endswith(".xlsx") for name in z.namelist()
-        )
+        names = z.namelist()
+        assert len(names) == 4
+        assert all(name.endswith(".xlsx") and "/" not in name for name in names)
+        assert sum("AL-100" in name for name in names) == 2
+        assert sum("BO-200" in name for name in names) == 2
+        assert all(z.read(name) for name in names)
+    # The same group cannot be downloaded twice when several of its ATKs
+    # are selected. A single-invoice download keeps the invoice in its name.
+    individual = c.post("/api/logistics/download", json={"atks": [first["id"]]})
+    assert individual.status_code == 200
+    assert "AL-100.zip" in individual.headers["content-disposition"]
+    with zipfile.ZipFile(BytesIO(individual.content)) as z:
+        assert len(z.namelist()) == 2
+        assert all("/" not in name for name in z.namelist())
 
 
 def test_logist_cannot_mutate_or_download_labels_or_source(env):
