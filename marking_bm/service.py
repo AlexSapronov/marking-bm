@@ -201,8 +201,8 @@ class Service:
             if d["status"] != "archive":
                 raise Conflict("Накладная уже находится вне архива")
             if one(
-                db, "SELECT a.id FROM assignments a JOIN codes c ON c.id=a.code_id "
-                    "WHERE a.doc_id=? AND c.doc_id!=? LIMIT 1", (doc_id, doc_id)
+                db, "SELECT id FROM audit WHERE entity=? "
+                    "AND action='КМ перенесены из архивной накладной' LIMIT 1", (doc_id,)
             ):
                 raise Conflict("КМ этой накладной уже перенесены из архива. "
                                "Вернуть старый документ нельзя без сверки")
