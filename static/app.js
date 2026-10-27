@@ -1510,7 +1510,7 @@ async function logisticsPage() {
     } else {
       const invoiceLabel = invoices.length <= 12 ? invoices.join(", ") :
         invoices.slice(0, 12).join(", ") + ` и ещё ${fmt(invoices.length - 12)}`;
-      summary.textContent = `Выбрано ${fmt(selected.length)} АТК · ${fmt(groups.size)} уникальных комплектов · ${fmt(files.length)} файлов Excel · ${fmt(invoices.length)} накладных: ${invoiceLabel}.` +
+      summary.textContent = `Выбрано АТК: ${fmt(selected.length)} · Уникальных комплектов: ${fmt(groups.size)} · Файлов Excel: ${fmt(files.length)} · Накладных: ${fmt(invoices.length)}. Номера: ${invoiceLabel}.` +
         (withinLimit ? " Совпадающие комплекты попадут в ZIP один раз." : " Лимит: не более 200 АТК за скачивание.");
     }
     const available = $(".atk-select:not(:disabled)");
