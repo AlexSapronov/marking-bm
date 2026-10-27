@@ -145,6 +145,10 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("button", name="+ Добавить строку").click()
             expect(page.get_by_role("button", name="Заказать КМ", exact=True)).to_be_disabled()
             expect(page.locator("#document-save-state")).to_contain_text("несохранённые")
+            count_before = page.locator(".pn-input").count()
+            page.evaluate("pollStatuses()")
+            assert page.locator(".pn-input").count() == count_before
+            expect(page.locator("#document-save-state")).to_contain_text("несохранённые")
             page.locator(".pn-input").fill("L-132XYD")
             page.locator(".gtin-input").fill("04640638349704")
             page.locator(".qty-input").fill("5")
