@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict
 from marking_bm.config import Settings
 from marking_bm.db import Store, now, uid, dumps, audit
-from marking_bm.auth import verify_password, digest, new_session
+from marking_bm.auth import hash_password, verify_password, digest, new_session
 from marking_bm.excel import import_file, template
 from marking_bm.legacy import parse_legacy_pack
 from marking_bm.service import safe_name
@@ -162,29 +162,50 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         password: str = Field(default="", max_length=1024)
         admin: bool = False
 
+    def enforce_password(password, confirmation):
+        if len(password) < 8:
+            raise ValueError("Пароль должен содержать минимум 8 символов")
+        if password != confirmation:
+            raise ValueError("Пароли не совпадают")
+
+    def check_rate(db, key):
+        rate = one(db, "SELECT * FROM login_attempts WHERE ip=?", (key,))
+        if rate and rate["failures"] >= 5 and rate["until"] > time.time():
+            raise HTTPException(429, "Слишком много попыток. Повторите через 15 минут")
+        return rate
+
+    def failure(db, key, rate):
+        count = (rate["failures"] if rate and rate["until"] > time.time() else 0) + 1
+        db.execute(
+            "INSERT OR REPLACE INTO login_attempts VALUES(?,?,?)",
+            (key, count, time.time() + 900),
+        )
+
+    def issue_setup(db, username, actor):
+        code = secrets.token_urlsafe(24)
+        expires = time.time() + 7 * 86400
+        db.execute(
+            "UPDATE users SET password_hash=NULL,setup_token_hash=?,setup_expires=? "
+            "WHERE username=?",
+            (digest(code), expires, username),
+        )
+        db.execute("DELETE FROM sessions WHERE username=? AND admin=0", (username,))
+        audit(db, actor, "Выпущен одноразовый код установки пароля", username)
+        return {"code": code, "expires_in_days": 7}
+
     @app.post("/api/session")
     def login(body: Login, req: Request):
         ip = req.client.host
         with store.transaction() as db:
             if body.admin:
-                rate = one(db, "SELECT * FROM login_attempts WHERE ip=?", (ip,))
-                if rate and rate["failures"] >= 5 and rate["until"] > time.time():
-                    raise HTTPException(
-                        429, "Подождите 15 минут перед повторным входом"
-                    )
+                rate = check_rate(db, "admin:" + ip)
                 if not verify_password(body.password, settings.admin_password_hash):
-                    count = (
-                        rate["failures"] if rate and rate["until"] > time.time() else 0
-                    ) + 1
-                    db.execute(
-                        "INSERT OR REPLACE INTO login_attempts VALUES(?,?,?)",
-                        (ip, count, time.time() + 900),
-                    )
+                    failure(db, "admin:" + ip, rate)
                     # Return rather than raise so the failed attempt is committed.
                     return JSONResponse(
                         {"detail": "Неверный пароль администратора"}, 403
                     )
-                db.execute("DELETE FROM login_attempts WHERE ip=?", (ip,))
+                db.execute("DELETE FROM login_attempts WHERE ip=?", ("admin:" + ip,))
                 username = body.username or "administrator"
                 db.execute(
                     "INSERT OR IGNORE INTO users(username) VALUES(?)", (username,)
@@ -196,8 +217,19 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                     "SELECT * FROM users WHERE username=? AND enabled=1",
                     (username,),
                 )
-                if not u:
-                    raise HTTPException(403, "Пользователь не найден или отключён")
+                rate = check_rate(db, "employee:" + ip)
+                if (
+                    not u or not u["password_hash"]
+                    or not verify_password(body.password, u["password_hash"])
+                ):
+                    failure(db, "employee:" + ip, rate)
+                    # Preserve the failed attempt: do not raise inside transaction.
+                    return JSONResponse(
+                        {"detail": "Неверные учётные данные или пароль не установлен"}, 403
+                    )
+                db.execute(
+                    "DELETE FROM login_attempts WHERE ip=?", ("employee:" + ip,)
+                )
             old = req.cookies.get("bm_session")
             if old:
                 db.execute("DELETE FROM sessions WHERE token_hash=?", (digest(old),))
@@ -205,7 +237,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             audit(
                 db,
                 username,
-                "Вход администратора" if body.admin else "Вход по username",
+                "Вход администратора" if body.admin else "Вход с паролем",
                 username,
             )
         role = "admin" if body.admin else u["role"]
@@ -221,6 +253,73 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             samesite="strict",
         )
         return r
+
+    class SetupPassword(BaseModel):
+        username: str = Field(min_length=1, max_length=80)
+        code: str = Field(min_length=1, max_length=256)
+        password: str = Field(max_length=1024)
+        confirmation: str = Field(max_length=1024)
+
+    @app.post("/api/users/set-password")
+    def set_password(body: SetupPassword, req: Request):
+        enforce_password(body.password, body.confirmation)
+        key = "setup:" + req.client.host
+        with store.transaction() as db:
+            rate = check_rate(db, key)
+            u = one(
+                db, "SELECT * FROM users WHERE username=? AND enabled=1",
+                (body.username,),
+            )
+            if (
+                not u or not u["setup_token_hash"] or not u["setup_expires"]
+                or u["setup_expires"] <= time.time()
+                or not hmac.compare_digest(
+                    digest(body.code), u["setup_token_hash"]
+                )
+            ):
+                failure(db, key, rate)
+                return JSONResponse(
+                    {"detail": "Недействительный или просроченный код установки пароля"},
+                    403,
+                )
+            db.execute(
+                "UPDATE users SET password_hash=?,setup_token_hash=NULL,"
+                "setup_expires=NULL WHERE username=? AND setup_token_hash=?",
+                (hash_password(body.password), body.username, u["setup_token_hash"]),
+            )
+            db.execute(
+                "DELETE FROM login_attempts WHERE ip=?", (key,)
+            )
+            db.execute(
+                "DELETE FROM sessions WHERE username=? AND admin=0", (body.username,)
+            )
+            audit(db, body.username, "Установлен пароль", body.username)
+        return {"ok": True}
+
+    class ChangePassword(BaseModel):
+        current_password: str = Field(max_length=1024)
+        password: str = Field(max_length=1024)
+        confirmation: str = Field(max_length=1024)
+
+    @app.post("/api/users/change-password")
+    def change_password(body: ChangePassword, s=Depends(session)):
+        if s["admin"]:
+            raise HTTPException(403, "Пароль администратора меняется в конфигурации сервера")
+        enforce_password(body.password, body.confirmation)
+        with store.transaction() as db:
+            u = one(db, "SELECT password_hash FROM users WHERE username=?", (s["username"],))
+            if not u or not verify_password(body.current_password, u["password_hash"]):
+                raise HTTPException(403, "Неверный текущий пароль")
+            db.execute(
+                "UPDATE users SET password_hash=? WHERE username=?",
+                (hash_password(body.password), s["username"]),
+            )
+            db.execute(
+                "DELETE FROM sessions WHERE username=? AND admin=0 AND token_hash!=?",
+                (s["username"], s["token_hash"]),
+            )
+            audit(db, s["username"], "Изменён пароль", s["username"])
+        return {"ok": True}
 
     @app.get("/api/session")
     def who(s=Depends(session)):
@@ -682,7 +781,12 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                     )
                 )
         return {
-            "users": store.all("SELECT * FROM users ORDER BY username"),
+            "users": store.all(
+                "SELECT username,enabled,role,"
+                "(password_hash IS NOT NULL) AS password_set,"
+                "(setup_token_hash IS NOT NULL AND setup_expires>?) AS setup_pending "
+                "FROM users ORDER BY username", (time.time(),)
+            ),
             "suppliers": store.all("SELECT * FROM suppliers ORDER BY name"),
             "config": service.config(),
             "writes_enabled": settings.send_enabled,
@@ -716,10 +820,19 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         enabled: bool = True
         role: Literal["manager", "logistics"] | None = None
 
+    @app.post("/api/admin/users/{username}/reset-password")
+    def reset_employee_password(username: str, s=Depends(admin)):
+        with store.transaction() as db:
+            target = one(db, "SELECT * FROM users WHERE username=?", (username,))
+            if not target:
+                raise HTTPException(404, "Пользователь не найден")
+            return issue_setup(db, username, s["username"])
+
     @app.post("/api/admin/users")
     def users(body: UserBody, s=Depends(admin)):
         if not re.fullmatch(r"[A-Za-zА-Яа-яЁё0-9_.@-]{1,80}", body.username):
             raise ValueError("Username: буквы, цифры и _.@-")
+        setup = None
         with store.transaction() as db:
             previous = one(db, "SELECT * FROM users WHERE username=?", (body.username,))
             role = body.role or (previous["role"] if previous else "manager")
@@ -732,6 +845,8 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                     "DELETE FROM sessions WHERE username=? AND admin=0",
                     (body.username,),
                 )
+            if not previous:
+                setup = issue_setup(db, body.username, s["username"])
             audit(
                 db,
                 s["username"],
@@ -743,7 +858,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                     "previous_role": previous["role"] if previous else None,
                 },
             )
-        return {"ok": True}
+        return {"ok": True, "setup": setup}
 
     class ConfigBody(BaseModel):
         model_config = ConfigDict(extra="forbid")
