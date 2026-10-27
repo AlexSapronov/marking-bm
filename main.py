@@ -563,6 +563,8 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             a["name"],
             "application/zip"
             if a["kind"] == "labels"
+            else "application/pdf"
+            if a["kind"] == "legacy_pdf"
             else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
