@@ -85,3 +85,59 @@ def test_missing_nk_card_wording_matches_suz_ui():
     msg = report_rejection_message(response)
     assert "Карточка в Национальном каталоге ещё не готова" in msg
     assert "04670553907321" in msg
+
+
+def test_report_failure_display_status_and_retry_returns_to_processing(env):
+    app, service, registry = env
+    doc_id = add_doc(service, number="DISPLAY-ERROR")
+    service.order(doc_id, "alice")
+    advance(app)
+    service.transferred(doc_id, "alice", 1)
+    service.batch("alice", [doc_id], "2026-01-01")
+    sign_all(service)
+    app.state.worker.tick()
+    report = service.store.one(
+        "SELECT * FROM operations WHERE kind='report' AND doc_id=?", (doc_id,)
+    )
+    registry.fail_report.add(report["external_id"])
+    app.state.worker.tick()
+    alice = client(app, "alice")
+    doc = alice.get("/api/documents/" + doc_id).json()
+    assert doc["status"] == "reporting"  # Original workflow is retained
+    assert doc["display_status"] == "report_error"
+    assert doc["report_issue"]["id"] == report["id"]
+    assert doc["report_issue"]["state"] == "rejected"
+    registry_rows = alice.get("/api/documents").json()
+    matching = next(d for d in registry_rows if d["id"] == doc_id)
+    assert matching["status"] == "reporting"
+    assert matching["display_status"] == "report_error"
+
+    registry.fail_report.clear()
+    response = alice.post(
+        f"/api/documents/{doc_id}/report/{report['id']}/retry", json={}
+    )
+    assert response.status_code == 200, response.text
+    doc = alice.get("/api/documents/" + doc_id).json()
+    assert doc["report_issue"] is None
+    assert doc["display_status"] == "reporting"
+    assert next(d for d in alice.get("/api/documents").json() if d["id"] == doc_id)["display_status"] == "reporting"
+    advance(app)
+    assert alice.get("/api/documents/" + doc_id).json()["display_status"] == "done"
+
+
+def test_partially_processed_report_is_error_in_invoice_list(env):
+    app, service, registry = env
+    doc_id = add_doc(service, labels=3, number="DISPLAY-PARTIAL")
+    service.order(doc_id, "alice")
+    advance(app)
+    service.transferred(doc_id, "alice", 1)
+    service.batch("alice", [doc_id], "2026-01-01")
+    sign_all(service)
+    app.state.worker.tick()
+    report = service.store.one("SELECT * FROM operations WHERE kind='report' AND doc_id=?", (doc_id,))
+    codes = json.loads(report["payload"])["sntins"]
+    registry.partial_report[report["external_id"]] = {codes[0][:38]}
+    app.state.worker.tick()
+    alice = client(app, "alice")
+    assert alice.get("/api/documents/" + doc_id).json()["report_issue"]["state"] == "partial"
+    assert next(x for x in alice.get("/api/documents").json() if x["id"] == doc_id)["display_status"] == "report_error"
