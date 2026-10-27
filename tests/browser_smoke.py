@@ -507,6 +507,84 @@ with tempfile.TemporaryDirectory() as tmp:
             page.reload()
             # Archive choice is an in-session filter; the completed invoice stays out of work.
             expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row)')).to_have_count(0)
+            # Many real database ATK records check paging without mocked HTTP/UI
+            # responses. The temporary test database is discarded after the smoke run.
+            with sqlite3.connect(Path(tmp) / "marking-bm.sqlite3") as db:
+                orig = db.execute(
+                    "SELECT id,batch_id,supplier_id,tnved,version,op_id,state FROM atks LIMIT 1"
+                ).fetchone()
+                assert orig is not None
+                original_id, original_batch, supplier_id, tnved, version, op_id, state = orig
+                assert state == "done"
+                composition = db.execute(
+                    "SELECT composition,created FROM atk_versions WHERE atk_id=? AND version=?",
+                    (original_id, version),
+                ).fetchone()
+                files = db.execute(
+                    "SELECT kind,version,name,content,sha256,created FROM artifacts "
+                    "WHERE group_id=? AND kind IN ('atk','result')",
+                    (original_batch + ":" + supplier_id,),
+                ).fetchall()
+                assert {"atk", "result"}.issubset({entry[0] for entry in files})
+                for index in range(55):
+                    batch_id, atk_id = uuid4().hex, uuid4().hex
+                    db.execute(
+                        "INSERT INTO batches(id,created,actor) VALUES(?,?,?)",
+                        (batch_id, "2026-01-01T00:00:00+00:00", "smoke-user"),
+                    )
+                    db.execute(
+                        "INSERT INTO atks(id,code,supplier_id,tnved,batch_id,version,op_id,state)"
+                        " VALUES(?,?,?,?,?,?,?,?)",
+                        (atk_id, f"UX-REG-{index:03d}", supplier_id,
+                         tnved, batch_id, version, op_id, "done"),
+                    )
+                    db.execute(
+                        "INSERT INTO atk_versions(atk_id,version,composition,created) VALUES(?,?,?,?)",
+                        (atk_id, version, *composition),
+                    )
+                    # Two downloadable ATKs, separated by more than one page.
+                    if index in (0, 52):
+                        for kind, file_version, name, content, digest, created in files:
+                            db.execute(
+                                "INSERT INTO artifacts(id,doc_id,group_id,version,kind,"
+                                "name,content,sha256,snapshot,created) "
+                                "VALUES(?,NULL,?,?,?,?,?,?,?,?)",
+                                (uuid4().hex, batch_id + ":" + supplier_id,
+                                 file_version, kind, name, content, digest,
+                                 '{"documents":[]}', created),
+                            )
+            page.reload()
+            expect(page.locator("#atk-page-label")).to_contain_text("АТК 1–50 из 55")
+            expect(page.locator(".atk-select")).to_have_count(50)
+            page.locator("#atk-page-size").select_option("25")
+            page.locator("#atk-sort").select_option("code")
+            expect(page.locator("#atk-page-label")).to_contain_text("АТК 1–25 из 55")
+            expect(page.locator(".registry-code").first).to_contain_text("UX-REG-000")
+            page.locator(".atk-select:not(:disabled)").check()
+            expect(page.locator("#registry-selection-summary")).to_contain_text("Выбрано АТК: 1")
+            # Filtering must never silently discard a ready ZIP selection.
+            page.locator("#atk-search").fill("nothing")
+            page.once("dialog", lambda dialog: dialog.dismiss())
+            page.get_by_role("button", name="Применить фильтры").click()
+            expect(page.locator("#atk-search")).to_have_value("")
+            expect(page.locator("#registry-selection-summary")).to_contain_text("Выбрано АТК: 1")
+            page.locator("#atk-next").click()
+            expect(page.locator("#atk-page-label")).to_contain_text("АТК 26–50 из 55")
+            expect(page.locator("#registry-selection-summary")).to_contain_text("на других страницах: 1")
+            page.locator("#atk-next").click()
+            expect(page.locator("#atk-page-label")).to_contain_text("АТК 51–55 из 55")
+            page.locator(".atk-select:not(:disabled)").check()
+            expect(page.locator("#registry-selection-summary")).to_contain_text("Выбрано АТК: 2")
+            expect(page.locator("#registry-selection-summary")).to_contain_text("на других страницах: 1")
+            expect(page.locator("#registry-selection-summary")).to_contain_text("Уникальных комплектов: 2")
+            expect(page.locator("#atk-select-all")).to_be_checked()
+            page.locator("#clear-atk-selection").click()
+            expect(page.locator("#registry-selection-summary")).to_contain_text("Выберите готовые АТК")
+            expect(page.locator("#atk-select-all")).not_to_be_checked()
+            page.locator("#atk-page-size").select_option("50")
+            expect(page.locator("#atk-page-label")).to_contain_text("АТК 1–50 из 55")
+            page.locator("#atk-next").click()
+            expect(page.locator("#atk-page-label")).to_contain_text("АТК 51–55 из 55")
             page.get_by_role("button", name="Выйти", exact=True).click()
             page.get_by_role("button", name="Первый вход / сброс пароля").click()
             page.locator("#login-value").fill("smoke-user")

@@ -927,6 +927,10 @@ main > .topbar p { margin-bottom: 0; }
 #atk-table tbody tr.registry-supplier-row th { position: static; }
 
 .registry-selection-summary { margin: 18px 0 10px; padding: 13px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); line-height: 1.6; overflow-wrap: anywhere; }
+.registry-controls { margin-top: 16px; }
+.registry-pager { margin-bottom: 4px; }
+#clear-atk-selection[hidden] { display: none; }
+
 
 /* Desktop UX: searchable supplier selection, visible errors, dense work tables. */
 .supplier-picker {
