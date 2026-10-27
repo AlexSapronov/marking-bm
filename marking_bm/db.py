@@ -89,8 +89,19 @@ class Store:
                 db.execute(
                     "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'manager' CHECK(role IN ('manager','logistics'))"
                 )
+            # Passwords are opt-in only through one-time admin-issued setup codes.
+            # Existing passwordless sessions must NOT survive the migration.
+            columns = {r[1] for r in db.execute("PRAGMA table_info(users)")}
+            if "password_hash" not in columns:
+                db.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+                db.execute("DELETE FROM sessions WHERE admin=0")
+            if "setup_token_hash" not in columns:
+                db.execute("ALTER TABLE users ADD COLUMN setup_token_hash TEXT")
+            if "setup_expires" not in columns:
+                db.execute("ALTER TABLE users ADD COLUMN setup_expires REAL")
             db.execute("INSERT OR IGNORE INTO schema_version VALUES(2)")
             db.execute("INSERT OR IGNORE INTO schema_version VALUES(3)")
+            db.execute("INSERT OR IGNORE INTO schema_version VALUES(4)")
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=30)

@@ -142,33 +142,86 @@ function shell(content) {
   const canManage = user.admin || user.role === "manager";
   const canReadRegistry = user.admin || user.role === "logistics";
   $("#app").innerHTML =
-    `<div class="layout"><header class="app-header"><div class="header-inner"><div><div class="eyebrow">Честный ЗНАК · Радиоэлектроника</div><div class="app-title">Маркировка импортных товаров</div><div class="header-meta">${e(roleNames[user.role] || roleNames.manager)} · ${e(user.username)}</div></div><div class="header-actions"><span class="muted user-label">${e(user.username)}</span><button class="icon-btn" data-action="refresh-page" aria-label="Обновить страницу" title="Обновить">↻</button><button class="icon-btn" data-theme-toggle aria-label="Тема">☾</button><button data-action="logout">Выйти</button></div></div></header><nav class="app-nav" aria-label="Разделы приложения"><div class="nav-inner">${canManage ? `<button data-action="list" class="${!adminMode && !archive && !registryMode ? "active" : ""}">Накладные</button><button data-action="archive" class="${archive && !registryMode && !adminMode ? "active" : ""}">Архив</button>` : ""}${canReadRegistry ? `<button data-action="logistics" class="${registryMode ? "active" : ""}">Реестр АТК</button>` : ""}${user.admin ? `<button data-action="admin" class="${adminMode ? "active" : ""}">Администрирование</button>` : ""}</div></nav><main>${content}</main><footer class="app-footer">Честный ЗНАК · ${user.role === "logistics" ? "АТК, итоговые файлы и завершение накладных" : "PDF 58 × 40 мм · печатайте в масштабе 100%"}</footer></div>`;
+    `<div class="layout"><header class="app-header"><div class="header-inner"><div><div class="eyebrow">Честный ЗНАК · Радиоэлектроника</div><div class="app-title">Маркировка импортных товаров</div><div class="header-meta">${e(roleNames[user.role] || roleNames.manager)} · ${e(user.username)}</div></div><div class="header-actions"><span class="muted user-label">${e(user.username)}</span>${!user.admin ? '<button data-action="change-password">Сменить пароль</button>' : ""}<button class="icon-btn" data-action="refresh-page" aria-label="Обновить страницу" title="Обновить">↻</button><button class="icon-btn" data-theme-toggle aria-label="Тема">☾</button><button data-action="logout">Выйти</button></div></div></header><nav class="app-nav" aria-label="Разделы приложения"><div class="nav-inner">${canManage ? `<button data-action="list" class="${!adminMode && !archive && !registryMode ? "active" : ""}">Накладные</button><button data-action="archive" class="${archive && !registryMode && !adminMode ? "active" : ""}">Архив</button>` : ""}${canReadRegistry ? `<button data-action="logistics" class="${registryMode ? "active" : ""}">Реестр АТК</button>` : ""}${user.admin ? `<button data-action="admin" class="${adminMode ? "active" : ""}">Администрирование</button>` : ""}</div></nav><main>${content}</main><footer class="app-footer">Честный ЗНАК · ${user.role === "logistics" ? "АТК, итоговые файлы и завершение накладных" : "PDF 58 × 40 мм · печатайте в масштабе 100%"}</footer></div>`;
   window.GisTheme.refresh();
 }
-function login(admin = false) {
+function login(admin = false, setup = false) {
   documentDirty = false;
   registryMode = false;
+  const userFields = setup
+    ? `<label>Username<input id="login-value" autocomplete="username" required autofocus></label>
+       <label>Одноразовый код от администратора<input id="setup-code" autocomplete="off" required></label>
+       <label>Новый пароль, минимум 8 символов<input id="password-new" type="password" autocomplete="new-password" minlength="8" required></label>
+       <label>Повторите пароль<input id="password-repeat" type="password" autocomplete="new-password" minlength="8" required></label>`
+    : `<label>Username<input id="login-value" autocomplete="username" required autofocus></label>
+       <label>Пароль<input id="login-password" type="password" autocomplete="current-password" required></label>`;
   $("#app").innerHTML =
-    `<div class="login"><div class="login-heading"><span class="eyebrow">Честный ЗНАК · Радиоэлектроника</span><button class="icon-btn" data-theme-toggle aria-label="Тема">☾</button></div><h1>${admin ? "Вход администратора" : "Рабочее место"}</h1><p class="muted">${admin ? "Отдельный пароль для управления системой" : "Введите свой username, чтобы открыть рабочее место"}</p><form id="login-form"><label>${admin ? "Пароль администратора" : "Username"}<input id="login-value" autocomplete="${admin ? "current-password" : "username"}" type="${admin ? "password" : "text"}" required autofocus></label><button class="primary">Войти</button></form><small>${admin ? "Подпись и настройки доступны только администратору." : "Вход без пароля. Действия фиксируются от имени выбранного username."}</small><p><button class="linkbutton" data-action="${admin ? "user-login" : "admin-login"}">${admin ? "Вход сотрудника" : "Вход администратора"}</button></p></div>`;
+    `<div class="login"><div class="login-heading"><span class="eyebrow">Честный ЗНАК · Радиоэлектроника</span><button class="icon-btn" data-theme-toggle aria-label="Тема">☾</button></div>
+      <h1>${admin ? "Вход администратора" : setup ? "Первый вход или сброс пароля" : "Вход сотрудника"}</h1>
+      <p class="muted">${admin ? "Отдельный пароль для управления системой" : setup ? "Введите одноразовый код, полученный от администратора, и придумайте свой пароль." : "Введите username и пароль."}</p>
+      <form id="login-form">${admin
+        ? '<label>Пароль администратора<input id="login-value" type="password" autocomplete="current-password" required autofocus></label>'
+        : userFields}
+        <button class="primary">${setup ? "Установить пароль" : "Войти"}</button></form>
+      <small>${setup ? "Не менее 8 символов. Требований к регистру и специальным символам нет." : admin ? "Подпись и настройки доступны только администратору." : "При первом входе запросите одноразовый код у администратора."}</small>
+      <p>${admin
+        ? '<button class="linkbutton" data-action="user-login">Вход сотрудника</button>'
+        : `<button class="linkbutton" data-action="${setup ? "user-login" : "setup-login"}">${setup ? "Вернуться ко входу" : "Первый вход / сброс пароля"}</button> · <button class="linkbutton" data-action="admin-login">Вход администратора</button>`}</p></div>`;
   window.GisTheme.refresh();
   $("#login-form").onsubmit = async (ev) => {
     ev.preventDefault();
     try {
-      user = await api(
-        "/session",
-        admin
-          ? { admin: true, password: $("#login-value").value }
-          : { username: $("#login-value").value },
+      if (setup) {
+        const password = $("#password-new").value;
+        const confirmation = $("#password-repeat").value;
+        if (password.length < 8) throw new Error("Пароль должен содержать минимум 8 символов");
+        if (password !== confirmation) throw new Error("Пароли не совпадают");
+        const username = $("#login-value").value;
+        await api("/users/set-password", {
+          username,
+          code: $("#setup-code").value,
+          password,
+          confirmation
+        });
+        login();
+        $("#login-value").value = username;
+        toast("Пароль установлен. Теперь войдите с новым паролем");
+        return;
+      }
+      user = await api("/session", admin
+        ? { admin: true, password: $("#login-value").value }
+        : { username: $("#login-value").value, password: $("#login-password").value }
       );
       adminMode = admin;
-      admin
-        ? await adminPage()
-        : user.role === "logistics"
-          ? await logisticsPage()
-          : await list();
+      admin ? await adminPage()
+        : user.role === "logistics" ? await logisticsPage() : await list();
     } catch (err) {
       toast(err.message);
     }
+  };
+}
+function showSetupCode(username, result) {
+  if (!result?.code) return;
+  modal(`<h2>Одноразовый код для ${e(username)}</h2>
+    <p class="muted">Передайте код сотруднику лично. Он действует 7 дней, после использования недействителен. Старые сессии сотрудника закрыты. Этот код показывается только один раз.</p>
+    <p class="mono" id="setup-code-issued" style="overflow-wrap:anywhere;user-select:all">${e(result.code)}</p>
+    <div class="actions"><button data-action="copy-setup-code">Скопировать код</button><button class="primary" data-action="close">Закрыть</button></div>`);
+}
+async function changeOwnPassword() {
+  modal(`<h2>Сменить пароль</h2><form id="change-password-form">
+    <label>Текущий пароль<input name="current_password" type="password" autocomplete="current-password" required></label>
+    <label>Новый пароль, минимум 8 символов<input name="password" type="password" minlength="8" autocomplete="new-password" required></label>
+    <label>Повторите новый пароль<input name="confirmation" type="password" minlength="8" autocomplete="new-password" required></label>
+    <div class="actions"><button class="primary">Изменить пароль</button><button type="button" data-action="close">Отмена</button></div></form>`);
+  $("#change-password-form").onsubmit = async (event) => {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(event.target));
+    if (values.password !== values.confirmation) return toast("Пароли не совпадают");
+    try {
+      await api("/users/change-password", values);
+      $("#modal").close();
+      toast("Пароль изменён");
+    } catch (err) { toast(err.message); }
   };
 }
 async function list() {
@@ -717,7 +770,7 @@ async function adminPage() {
     hb = JSON.parse(overview.heartbeat?.value || "null");
   } catch {}
   shell(
-    `<div class="topbar"><div><div class="muted">УПРАВЛЕНИЕ СИСТЕМОЙ</div><h1>Администрирование</h1></div><button data-action="admin-refresh">Обновить</button></div>${!overview.writes_enabled ? '<div class="notice">Внешняя отправка отключена в конфигурации сервера. Подготовленные задания сохраняются в очереди.</div>' : ""}<div class="stats"><div class="stat"><span class="muted">Свободно на диске</span><b>${(overview.disk.free / 1024 ** 3).toFixed(1)} ГБ</b></div><div class="stat"><span class="muted">Windows-подписант</span><b>${hb && Date.now() - new Date(hb.time) < 90000 ? "На связи" : "Нет связи"}</b><span class="muted">${hb ? e(hb.status) + " · " + date(hb.time) : "Подключите подписант"}</span></div><div class="stat"><span class="muted">Резервная копия</span><b>${overview.last_backup ? date(JSON.parse(overview.last_backup.value).created) : "Нет данных"}</b></div></div><div class="split"><div class="card" data-admin-panel="users"><h2>Пользователи</h2><div class="table-wrap"><table>${overview.users.map((u) => `<tr><td>${e(u.username)}</td><td><select class="user-role" data-user="${e(u.username)}" aria-label="Роль ${e(u.username)}"><option value="manager" ${u.role === "manager" ? "selected" : ""}>Бренд-менеджер</option><option value="logistics" ${u.role === "logistics" ? "selected" : ""}>Логист</option></select></td><td>${u.enabled ? "Активен" : "Отключён"}</td><td><button data-action="user-toggle" data-id="${e(u.username)}" data-enabled="${u.enabled ? "0" : "1"}">${u.enabled ? "Отключить" : "Включить"}</button></td></tr>`).join("")}</table></div><form id="user-form"><div class="toolbar"><input id="username" placeholder="Новый username" required><select id="new-user-role" aria-label="Роль нового пользователя"><option value="manager">Бренд-менеджер</option><option value="logistics">Логист</option></select><button>Добавить</button></div></form></div><div class="card" data-admin-panel="connections"><h2>Подключения и подпись</h2><p>Сертификат: ${overview.signer_configured ? "Настроен" : "Нужны токен подписанта и отпечаток сертификата в конфигурации сервера"}</p>${["true", "oms"].map((k) => `<p>${k === "true" ? "ГИС МТ" : "СУЗ"}: ${overview.tokens[k] ? "Токен получен · срок " + e(overview.tokens[k].expires || "не указан ЧЗ") : "Требуется авторизация"} <button data-action="auth" data-id="${k}">Обновить доступ</button></p>`).join("")}<p class="muted">Физический Рутокен остаётся на Windows-ПК. При запросе PIN задания ждут его ввода на этом ПК.</p><a href="https://docs.crpt.ru/gismt/True_API/" target="_blank" rel="noreferrer">Документация True API</a></div></div><div class="card" data-admin-panel="organization"><h2>Наша организация</h2><form id="config-form"><div class="fields">${[
+    `<div class="topbar"><div><div class="muted">УПРАВЛЕНИЕ СИСТЕМОЙ</div><h1>Администрирование</h1></div><button data-action="admin-refresh">Обновить</button></div>${!overview.writes_enabled ? '<div class="notice">Внешняя отправка отключена в конфигурации сервера. Подготовленные задания сохраняются в очереди.</div>' : ""}<div class="stats"><div class="stat"><span class="muted">Свободно на диске</span><b>${(overview.disk.free / 1024 ** 3).toFixed(1)} ГБ</b></div><div class="stat"><span class="muted">Windows-подписант</span><b>${hb && Date.now() - new Date(hb.time) < 90000 ? "На связи" : "Нет связи"}</b><span class="muted">${hb ? e(hb.status) + " · " + date(hb.time) : "Подключите подписант"}</span></div><div class="stat"><span class="muted">Резервная копия</span><b>${overview.last_backup ? date(JSON.parse(overview.last_backup.value).created) : "Нет данных"}</b></div></div><div class="split"><div class="card" data-admin-panel="users"><h2>Пользователи</h2><div class="table-wrap"><table>${overview.users.map((u) => `<tr><td>${e(u.username)}</td><td><select class="user-role" data-user="${e(u.username)}" aria-label="Роль ${e(u.username)}"><option value="manager" ${u.role === "manager" ? "selected" : ""}>Бренд-менеджер</option><option value="logistics" ${u.role === "logistics" ? "selected" : ""}>Логист</option></select></td><td>${u.enabled ? "Активен" : "Отключён"}<span class="cell-sub">${u.password_set ? "Пароль установлен" : u.setup_pending ? "Ожидает установки пароля" : "Нужен код первого входа"}</span></td><td><button data-action="reset-password" data-id="${e(u.username)}">Сбросить пароль</button> <button data-action="user-toggle" data-id="${e(u.username)}" data-enabled="${u.enabled ? "0" : "1"}">${u.enabled ? "Отключить" : "Включить"}</button></td></tr>`).join("")}</table></div><form id="user-form"><div class="toolbar"><input id="username" placeholder="Новый username" required><select id="new-user-role" aria-label="Роль нового пользователя"><option value="manager">Бренд-менеджер</option><option value="logistics">Логист</option></select><button>Добавить</button></div></form></div><div class="card" data-admin-panel="connections"><h2>Подключения и подпись</h2><p>Сертификат: ${overview.signer_configured ? "Настроен" : "Нужны токен подписанта и отпечаток сертификата в конфигурации сервера"}</p>${["true", "oms"].map((k) => `<p>${k === "true" ? "ГИС МТ" : "СУЗ"}: ${overview.tokens[k] ? "Токен получен · срок " + e(overview.tokens[k].expires || "не указан ЧЗ") : "Требуется авторизация"} <button data-action="auth" data-id="${k}">Обновить доступ</button></p>`).join("")}<p class="muted">Физический Рутокен остаётся на Windows-ПК. При запросе PIN задания ждут его ввода на этом ПК.</p><a href="https://docs.crpt.ru/gismt/True_API/" target="_blank" rel="noreferrer">Документация True API</a></div></div><div class="card" data-admin-panel="organization"><h2>Наша организация</h2><form id="config-form"><div class="fields">${[
       ["organization", "Наименование"],
       ["inn", "ИНН"],
       ["oms_id", "OMS ID"],
@@ -766,12 +819,14 @@ async function adminPage() {
   $("#user-form").onsubmit = async (ev) => {
     ev.preventDefault();
     try {
-      await api("/admin/users", {
-        username: $("#username").value,
+      const username = $("#username").value;
+      const result = await api("/admin/users", {
+        username,
         enabled: true,
         role: $("#new-user-role").value,
       });
       await adminPage();
+      if (result.setup) showSetupCode(username, result.setup);
     } catch (err) {
       toast(err.message);
     }
@@ -890,6 +945,38 @@ async function action(name, id, b) {
       break;
     case "user-login":
       login();
+      break;
+    case "setup-login":
+      login(false, true);
+      break;
+    case "reset-password": {
+      if (!confirm("Сбросить пароль пользователя " + id + "? Все его сессии завершатся.")) break;
+      const setup = await api("/admin/users/" + encodeURIComponent(id) + "/reset-password", {});
+      await adminPage();
+      showSetupCode(id, setup);
+      break;
+    }
+    case "copy-setup-code": {
+      const code = $("#setup-code-issued")?.textContent || "";
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(code);
+      } else {
+        // Corporate HTTP environments may not allow Clipboard API.
+        const field = document.createElement("textarea");
+        field.value = code;
+        field.style.position = "fixed";
+        field.style.opacity = "0";
+        document.body.append(field);
+        field.select();
+        const copied = document.execCommand("copy");
+        field.remove();
+        if (!copied) throw new Error("Не удалось скопировать. Выделите код вручную.");
+      }
+      toast("Код скопирован");
+      break;
+    }
+    case "change-password":
+      await changeOwnPassword();
       break;
     case "logout":
       await api("/session", null, "DELETE");

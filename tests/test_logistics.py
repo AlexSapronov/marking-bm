@@ -152,7 +152,10 @@ def test_manager_cannot_assign_role_or_access_logist_registry(env):
         ).status_code
         == 403
     )
-    response = c.post("/api/session", json={"username": "alice", "role": "logistics"})
+    response = c.post(
+        "/api/session",
+        json={"username": "alice", "password": "test-password-long", "role": "logistics"},
+    )
     assert response.status_code == 200 and response.json()["role"] == "manager"
 
 
@@ -205,7 +208,9 @@ def test_legacy_database_migrates_roles_without_losing_users(tmp_path):
     for _ in range(2):
         store = Store(path)
         assert store.one("SELECT * FROM users")["role"] == "manager"
-        assert store.one("SELECT MAX(version) v FROM schema_version")["v"] == 3
+        assert store.one("SELECT MAX(version) v FROM schema_version")["v"] == 4
+        assert store.one("SELECT password_hash FROM users WHERE username='old-manager'")["password_hash"] is None
+        assert store.one("SELECT setup_token_hash FROM users WHERE username='old-manager'")["setup_token_hash"] is None
     with store.transaction() as db:
         with pytest.raises(sqlite3.IntegrityError):
             db.execute("UPDATE users SET role='admin'")

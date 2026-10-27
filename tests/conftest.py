@@ -223,7 +223,10 @@ def env(tmp_path):
         }.items():
             db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (k, dumps(v)))
         for u in ("alice", "bob"):
-            db.execute("INSERT INTO users(username) VALUES(?)", (u,))
+            db.execute(
+                "INSERT INTO users(username,password_hash) VALUES(?,?)",
+                (u, hash_password("test-password-long")),
+            )
     return app, s, registry
 
 
@@ -260,10 +263,23 @@ def advance(app, steps=12):
 def client(app, username="alice", admin=False):
     c = TestClient(app)
     c.headers["X-Requested-With"] = "marking-bm"
+    # Test-only convenience for legacy fixtures that create employee rows
+    # directly or via the admin endpoint; production never sets defaults.
+    if not admin:
+        with app.state.service.store.transaction() as db:
+            user = db.execute(
+                "SELECT password_hash FROM users WHERE username=?", (username,)
+            ).fetchone()
+            if user and not user["password_hash"]:
+                db.execute(
+                    "UPDATE users SET password_hash=?,setup_token_hash=NULL,"
+                    "setup_expires=NULL WHERE username=?",
+                    (hash_password("test-password-long"), username),
+                )
     body = {
         "username": username,
         "admin": admin,
-        "password": "test-password-long" if admin else "",
+        "password": "test-password-long",
     }
     r = c.post("/api/session", json=body)
     assert r.status_code == 200, r.text
