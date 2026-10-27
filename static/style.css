@@ -259,13 +259,6 @@ main {
   padding: 26px 20px;
   min-width: 0;
 }
-.app-footer {
-  max-width: 1320px;
-  margin: auto;
-  padding: 0 20px 25px;
-  font-size: 12px;
-  color: var(--muted);
-}
 .topbar,
 .toolbar,
 .actions {
@@ -706,9 +699,6 @@ summary {
   .topbar {
     align-items: flex-start;
   }
-  .app-footer {
-    padding: 0 14px 20px;
-  }
   dialog {
     padding: 20px;
   }
@@ -725,6 +715,29 @@ select {
   font-weight: 400;
 }
 
+.mapping-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  column-gap: 16px;
+}
+.mapping-settings label {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+.mapping-settings select,
+.mapping-settings input { width: 100%; }
+.mapping-hint {
+  display: block;
+  min-height: 17px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--muted);
+  font-weight: 400;
+}
 .mapping-table {
   margin-top: 20px;
 }
@@ -794,10 +807,40 @@ main > .topbar p { margin-bottom: 0; }
 .stage-filters button { background: var(--surface); border-color: var(--border-soft); color: var(--muted); padding: 10px 14px; }
 .stage-filters button b { min-width: 24px; background: var(--surface-2); color: var(--text); border-radius: 5px; padding: 1px 6px; font-size: 12px; }
 .stage-filters [aria-pressed="true"] { border-color: var(--primary); color: var(--primary); background: var(--surface-2); }
-.document-filters { display: grid; grid-template-columns: 1.6fr 1.6fr 1.4fr 1fr 1fr; gap: 14px; }
+.document-filters { display: grid; grid-template-columns: minmax(200px, 1.6fr) minmax(200px, 1.4fr) minmax(145px, 1fr) minmax(145px, 1fr); gap: 14px; }
 .list-caption { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin: 16px 0; }
 .selection-bar { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 0 0; margin-top: 18px; border-top: 1px solid var(--border-soft); }
 .selection-bar .cell-sub { max-width: none; }
+.invoice-register-scroll th.register-select-cell,
+.invoice-register-scroll td.register-select-cell {
+  width: 238px;
+  min-width: 220px;
+  white-space: normal;
+}
+.selection-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 20px;
+}
+.invoice-register-scroll .register-select-cell input[type="checkbox"] {
+  width: 19px;
+  height: 19px;
+  min-width: 19px;
+  max-width: 19px;
+  margin: 0;
+  flex: 0 0 19px;
+}
+.selection-control .selection-reason {
+  display: inline-block;
+  margin: 0;
+  max-width: none;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 760px) {
+  .mapping-settings { grid-template-columns: minmax(0, 1fr); row-gap: 14px; }
+}
 .next-step { background: var(--surface); border: 1px solid var(--border-soft); border-left: 4px solid var(--primary); border-radius: 12px; padding: 20px 24px; margin: 20px 0; }
 .next-step h2 { margin: 5px 0; font-size: 19px; }
 .next-step p { color: var(--muted); margin: 6px 0 10px; max-width: 850px; font-size: 14px; }
@@ -824,7 +867,6 @@ main > .topbar p { margin-bottom: 0; }
 @media (max-width: 600px) {
   .document-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .document-filters label:first-child { grid-column: 1 / -1; }
-  .document-filters label:nth-child(3) { grid-column: 1 / -1; }
   .stage-filters { gap: 6px; }
   .stage-filters button { flex-grow: 1; padding: 8px; font-size: 12px; }
   .next-step { padding: 17px; }

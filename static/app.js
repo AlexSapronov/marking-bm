@@ -97,7 +97,7 @@ let user,
   adminSection = "overview",
   documentTab = "content",
   documentDirty = false,
-  documentFilters = {search: "", status: "", supplier: "", from: "", to: "", stage: "all"};
+  documentFilters = {search: "", supplier: "", from: "", to: "", stage: "all"};
 let documentPage = 0;
 let documentPageSize = 50;
 let documentSort = "newest";
@@ -266,7 +266,7 @@ function shell(content) {
   const canManage = user.admin || user.role === "manager";
   const canReadRegistry = user.admin || user.role === "logistics";
   $("#app").innerHTML =
-    `<div class="layout"><header class="app-header"><div class="header-inner"><div><div class="eyebrow">Честный ЗНАК · Радиоэлектроника</div><div class="app-title">Маркировка импортных товаров</div><div class="header-meta">${e(roleNames[user.role] || roleNames.manager)} · ${e(user.username)}</div></div><div class="header-actions"><span class="muted user-label">${e(user.username)}</span>${!user.admin ? '<button data-action="change-password">Сменить пароль</button>' : ""}<button class="icon-btn" data-action="refresh-page" aria-label="Обновить страницу" title="Обновить">↻</button><button class="icon-btn" data-theme-toggle aria-label="Тема">☾</button><button data-action="logout">Выйти</button></div></div></header><nav class="app-nav" aria-label="Разделы приложения"><div class="nav-inner">${canManage ? `<button data-action="list" class="${!adminMode && !archive && !registryMode ? "active" : ""}">Накладные</button><button data-action="archive" class="${archive && !registryMode && !adminMode ? "active" : ""}">Архив</button>` : ""}${canReadRegistry ? `<button data-action="logistics" class="${registryMode ? "active" : ""}">Реестр АТК</button>` : ""}${user.admin ? `<button data-action="admin" class="${adminMode ? "active" : ""}">Администрирование</button>` : ""}</div></nav><main>${content}</main><footer class="app-footer">Честный ЗНАК · ${user.role === "logistics" ? "АТК, итоговые файлы и завершение накладных" : "PDF 58 × 40 мм · печатайте в масштабе 100%"}</footer></div>`;
+    `<div class="layout"><header class="app-header"><div class="header-inner"><div><div class="eyebrow">Честный ЗНАК · Радиоэлектроника</div><div class="app-title">Маркировка импортных товаров</div><div class="header-meta">${e(roleNames[user.role] || roleNames.manager)} · ${e(user.username)}</div></div><div class="header-actions"><span class="muted user-label">${e(user.username)}</span>${!user.admin ? '<button data-action="change-password">Сменить пароль</button>' : ""}<button class="icon-btn" data-action="refresh-page" aria-label="Обновить страницу" title="Обновить">↻</button><button class="icon-btn" data-theme-toggle aria-label="Тема">☾</button><button data-action="logout">Выйти</button></div></div></header><nav class="app-nav" aria-label="Разделы приложения"><div class="nav-inner">${canManage ? `<button data-action="list" class="${!adminMode && !archive && !registryMode ? "active" : ""}">Накладные</button><button data-action="archive" class="${archive && !registryMode && !adminMode ? "active" : ""}">Архив</button>` : ""}${canReadRegistry ? `<button data-action="logistics" class="${registryMode ? "active" : ""}">Реестр АТК</button>` : ""}${user.admin ? `<button data-action="admin" class="${adminMode ? "active" : ""}">Администрирование</button>` : ""}</div></nav><main>${content}</main></div>`;
   window.GisTheme.refresh();
 }
 function login(admin = false, setup = false) {
@@ -351,7 +351,6 @@ async function changeOwnPassword() {
 async function list() {
   if (documentListArchive !== archive) {
     documentFilters.stage = "all";
-    documentFilters.status = "";
     documentListArchive = archive;
     documentPage = 0;
   }
@@ -374,16 +373,16 @@ function renderList() {
        stopped: documentStages.stopped};
   shell(`<div class="topbar"><div><div class="eyebrow">${user.admin ? "Все сотрудники" : "Мои документы"}</div><h1>${archive ? "Архив накладных" : "Накладные"}</h1><p class="muted">${archive ? "Завершённые документы и сохранённые файлы" : "Подготовьте этикетки, передайте поставщику и подтвердите нанесение"}</p></div>${archive ? "" : '<button class="primary" data-action="new">+ Новая накладная</button>'}</div>
   <div class="stage-filters" aria-label="Этапы накладных">${Object.entries(stages).map(([key, stage]) => `<button data-stage="${key}" aria-pressed="${documentFilters.stage === key}">${stage.title}<b>${docs.filter(d => stage.matches(d)).length}</b></button>`).join("")}</div>
-  <section class="card document-list"><h2>${archive ? "Архивные документы" : "Рабочие документы"}</h2><div class="document-filters"><label>Номер накладной<input id="search" placeholder="Поиск по номеру" value="${e(documentFilters.search)}"></label><label>Поставщик<select id="supplier"><option value="">Все поставщики</option>${[...new Set(docs.map(d => d.supplier))].sort().map(v => `<option ${v === documentFilters.supplier ? "selected" : ""}>${e(v)}</option>`).join("")}</select></label><label>Статус<select id="status"><option value="">Все статусы</option>${[...new Set(docs.map(d => d.display_status || d.status))].map(v => `<option value="${e(v)}" ${v === documentFilters.status ? "selected" : ""}>${e(v === "done" ? "Комплект сформирован" : v === "archive" ? "В архиве" : states[v] || v)}</option>`).join("")}</select></label><label>Создана с<input type="date" id="from" value="${e(documentFilters.from)}"></label><label>Создана по<input type="date" id="to" value="${e(documentFilters.to)}"></label></div>
+  <section class="card document-list"><h2>${archive ? "Архивные документы" : "Рабочие документы"}</h2><div class="document-filters"><label>Номер накладной<input id="search" placeholder="Поиск по номеру" value="${e(documentFilters.search)}"></label><label>Поставщик<select id="supplier"><option value="">Все поставщики</option>${[...new Set(docs.map(d => d.supplier))].sort().map(v => `<option ${v === documentFilters.supplier ? "selected" : ""}>${e(v)}</option>`).join("")}</select></label><label>Создана с<input type="date" id="from" value="${e(documentFilters.from)}"></label><label>Создана по<input type="date" id="to" value="${e(documentFilters.to)}"></label></div>
   <div class="list-caption"><span id="document-count" class="muted" role="status"></span><button class="linkbutton" data-action="reset-doc-filters">Сбросить фильтры</button></div>
   <div class="register-controls"><label>Сортировка<select id="document-sort"><option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option><option value="number">По номеру накладной</option><option value="supplier">По поставщику</option><option value="status">По статусу</option><option value="units">По количеству товара</option></select></label><label>Строк на странице<select id="document-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label></div>
-  <div class="table-wrap invoice-register-scroll"><table><thead><tr><th><input id="select-all" type="checkbox" aria-label="Выбрать все доступные для нанесения на текущей странице"></th><th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Штук</th><th>Создана</th>${user.admin ? "<th>Владелец</th>" : ""}</tr></thead><tbody id="doc-rows"></tbody></table></div>
+  <div class="table-wrap invoice-register-scroll"><table><thead><tr><th class="register-select-cell"><input id="select-all" type="checkbox" aria-label="Выбрать все доступные для нанесения на текущей странице"></th><th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Штук</th><th>Создана</th>${user.admin ? "<th>Владелец</th>" : ""}</tr></thead><tbody id="doc-rows"></tbody></table></div>
   <div class="register-pager"><span id="document-page-label" role="status"></span><div class="actions"><button id="document-prev" type="button">Предыдущая</button><button id="document-next" type="button">Следующая</button></div></div>
   ${archive ? "" : '<div class="selection-bar"><div><b id="selected-count">Накладные не выбраны</b><span class="cell-sub" id="selection-description">Выберите документы со статусом «Ожидает нанесения».</span></div><button type="button" id="clear-doc-selection" hidden>Снять выбор</button><button class="primary" data-action="batch" disabled>Подтвердить нанесение и создать отчёты</button></div>'}</section>`);
   $("#document-sort").value = documentSort;
   $("#document-page-size").value = String(documentPageSize);
   filterRows();
-  for (const key of ["search", "status", "supplier", "from", "to"])
+  for (const key of ["search", "supplier", "from", "to"])
     $("#" + key).oninput = () => {
       documentFilters[key] = $("#" + key).value;
       documentPage = 0;
@@ -431,7 +430,7 @@ function filterRows() {
     : documentStages;
   const ds = docs.filter(d => (stages[f.stage] || stages.all).matches(d) &&
     (!f.search || d.number.toLowerCase().includes(f.search.toLowerCase())) &&
-    (!f.status || (d.display_status || d.status) === f.status) && (!f.supplier || d.supplier === f.supplier) &&
+    (!f.supplier || d.supplier === f.supplier) &&
     (!f.from || d.created.slice(0, 10) >= f.from) && (!f.to || d.created.slice(0, 10) <= f.to));
   ds.sort((a, b) => {
     const textSort = (key) => String(a[key] || "").localeCompare(String(b[key] || ""), "ru", {numeric: true});
@@ -453,7 +452,7 @@ function filterRows() {
     "Подходящих накладных нет";
   $("#document-prev").disabled = documentPage === 0;
   $("#document-next").disabled = documentPage + 1 >= pages;
-  $("#doc-rows").innerHTML = visible.length ? visible.map(d => `<tr><td><input type="checkbox" class="doc-select" value="${e(d.id)}" ${eligibleIds.has(String(d.id)) ? "" : `disabled aria-describedby="select-reason-${e(d.id)}" title="${e(reportSelectionReason(d))}"`} ${documentSelectedIds.has(String(d.id)) ? "checked" : ""} aria-label="Выбрать ${e(d.number)}">${eligibleIds.has(String(d.id)) ? "" : `<span id="select-reason-${e(d.id)}" class="cell-sub selection-reason">${e(reportSelectionReason(d))}</span>`}</td><td><button class="linkbutton" data-action="open" data-id="${e(d.id)}"><b>${e(d.number)}</b></button></td><td>${e(d.supplier)}</td><td>${documentBadge(d)}</td><td>${fmt(d.units)}</td><td>${date(d.created)}</td>${user.admin ? `<td>${e(d.owner)}</td>` : ""}</tr>`).join("") : `<tr><td colspan="${user.admin ? 7 : 6}"><div class="empty"><b>${docs.length ? "По выбранным условиям ничего не найдено" : archive ? "Архив пока пуст" : "Накладных пока нет"}</b>${docs.length ? "Сбросьте фильтры или выберите другой этап." : archive ? "Здесь появятся завершённые документы." : "Создайте накладную и загрузите состав из Excel."}</div></td></tr>`;
+  $("#doc-rows").innerHTML = visible.length ? visible.map(d => `<tr><td class="register-select-cell"><div class="selection-control"><input type="checkbox" class="doc-select" value="${e(d.id)}" ${eligibleIds.has(String(d.id)) ? "" : `disabled aria-describedby="select-reason-${e(d.id)}" title="${e(reportSelectionReason(d))}"`} ${documentSelectedIds.has(String(d.id)) ? "checked" : ""} aria-label="Выбрать ${e(d.number)}">${eligibleIds.has(String(d.id)) ? "" : `<span id="select-reason-${e(d.id)}" class="cell-sub selection-reason">${e(reportSelectionReason(d))}</span>`}</div></td><td><button class="linkbutton" data-action="open" data-id="${e(d.id)}"><b>${e(d.number)}</b></button></td><td>${e(d.supplier)}</td><td>${documentBadge(d)}</td><td>${fmt(d.units)}</td><td>${date(d.created)}</td>${user.admin ? `<td>${e(d.owner)}</td>` : ""}</tr>`).join("") : `<tr><td colspan="${user.admin ? 7 : 6}"><div class="empty"><b>${docs.length ? "По выбранным условиям ничего не найдено" : archive ? "Архив пока пуст" : "Накладных пока нет"}</b>${docs.length ? "Сбросьте фильтры или выберите другой этап." : archive ? "Здесь появятся завершённые документы." : "Создайте накладную и загрузите состав из Excel."}</div></td></tr>`;
   $$(".doc-select").forEach(input => input.onchange = () => {
     if (input.checked) documentSelectedIds.add(input.value);
     else documentSelectedIds.delete(input.value);
@@ -719,7 +718,7 @@ function excelMapping(context, inspection, previous = {}) {
     const sampleRows = sheet.preview
       .filter((r) => r.row > Number(headerRow))
       .slice(0, 3);
-    const content = `<div class="eyebrow">Импорт Excel</div><h2>Сопоставление столбцов</h2><p class="muted">Не удалось однозначно определить все поля. Проверьте лист и укажите, какой столбец содержит каждое значение. Формат ячеек менять не нужно.</p><form id="excel-mapping-form"><div class="fields"><label>Лист<select id="excel-sheet">${inspection.sheets.map((s) => `<option value="${e(s.name)}" ${s.name === sheet.name ? "selected" : ""}>${e(s.name)}</option>`).join("")}</select></label><label>Строка заголовков<input id="excel-header-row" type="number" min="0" max="${sheet.row_count}" value="${headerRow}" required><span class="muted">0 — файл без заголовков</span></label></div><div class="table-wrap mapping-table"><table><thead><tr><th>Поле в приложении</th><th>Столбец Excel</th><th>Примеры значений</th></tr></thead><tbody>${Object.entries(
+    const content = `<div class="eyebrow">Импорт Excel</div><h2>Сопоставление столбцов</h2><p class="muted">Не удалось однозначно определить все поля. Проверьте лист и укажите, какой столбец содержит каждое значение. Формат ячеек менять не нужно.</p><form id="excel-mapping-form"><div class="mapping-settings"><label><span>Лист</span><select id="excel-sheet">${inspection.sheets.map((s) => `<option value="${e(s.name)}" ${s.name === sheet.name ? "selected" : ""}>${e(s.name)}</option>`).join("")}</select><span class="mapping-hint">Выберите лист исходного Excel</span></label><label><span>Строка заголовков</span><input id="excel-header-row" type="number" min="0" max="${sheet.row_count}" value="${headerRow}" required><span class="mapping-hint">0 — файл без заголовков</span></label></div><div class="table-wrap mapping-table"><table><thead><tr><th>Поле в приложении</th><th>Столбец Excel</th><th>Примеры значений</th></tr></thead><tbody>${Object.entries(
       inspection.fields,
     )
       .map(
@@ -1223,7 +1222,7 @@ async function action(name, id, b) {
       selectDocumentTab(id);
       break;
     case "reset-doc-filters":
-      documentFilters = {search: "", status: "", supplier: "", from: "", to: "", stage: "all"};
+      documentFilters = {search: "", supplier: "", from: "", to: "", stage: "all"};
       documentPage = 0;
       renderList();
       break;
