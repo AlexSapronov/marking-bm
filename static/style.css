@@ -877,6 +877,22 @@ main > .topbar p { margin-bottom: 0; }
 .move-impact th:first-child { text-align: left; }
 .registry-supplier-row th { text-align: left; padding: 12px 14px; background: var(--surface-2); border-top: 2px solid var(--border); }
 .registry-next-action { min-width: 175px; max-width: 230px; font-weight: 500; white-space: normal; }
+/* Pin the critical completion action on horizontally scrollable desktop registries. */
+#atk-table thead th:last-child,
+#atk-table tbody tr:not(.registry-supplier-row) > td:last-child {
+  position: sticky;
+  right: 0;
+  min-width: 148px;
+  z-index: 2;
+  background: var(--surface);
+  box-shadow: -5px 0 9px -8px #0008;
+}
+#atk-table thead th:last-child {
+  z-index: 3;
+  background: var(--surface-2);
+}
+#atk-table tbody tr.registry-supplier-row th { position: static; }
+
 .registry-selection-summary { margin: 18px 0 10px; padding: 13px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); line-height: 1.6; overflow-wrap: anywhere; }
 
 /* Desktop UX: searchable supplier selection, visible errors, dense work tables. */
