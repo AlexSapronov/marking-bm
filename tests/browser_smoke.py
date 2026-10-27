@@ -847,7 +847,7 @@ with tempfile.TemporaryDirectory() as tmp:
             row.get_by_role("button", name="STOP-UI").click()
             expect(page.locator(".topbar .badge")).to_have_text("Ошибка")
             expect(page.get_by_role("heading", name="Ошибка отчёта о нанесении")).to_be_visible()
-            expect(page.locator('.next-step [data-action="retry-report-doc"]')).to_have_text("Отправить повторно")
+            expect(page.locator('.next-step [data-action="retry-report-doc"]')).to_have_text("Повторить отчёт о нанесении")
             page.screenshot(path=str(out / "report-error-retry.png"), full_page=True)
             assert not errors, errors
             browser.close()
