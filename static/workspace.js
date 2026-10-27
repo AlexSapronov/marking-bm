@@ -3,9 +3,9 @@
 const documentStages = {
   all: {title: "Все", matches: () => true},
   preparation: {title: "Подготовка", matches: d => ["draft", "repack"].includes(d.status)},
-  processing: {title: "В обработке", matches: d => ["ordering", "receiving", "reporting", "reported", "aggregating"].includes(d.status)},
+  processing: {title: "В обработке", matches: d => ["ordering", "receiving", "reporting", "reported", "aggregating"].includes(d.display_status || d.status)},
   supplier: {title: "Поставщик", matches: d => ["ready", "transferred"].includes(d.status)},
-  attention: {title: "Требуют проверки", matches: d => ["attention", "label_error", "preflight_blocked", "unknown", "blocked"].includes(d.status)},
+  attention: {title: "Требуют проверки", matches: d => ["attention", "label_error", "report_error", "preflight_blocked", "unknown", "blocked"].includes(d.display_status || d.status)},
   done: {title: "Завершены", matches: d => !d.stopped && ["done", "archive"].includes(d.status)},
   stopped: {title: "Остановлены", matches: d => !!d.stopped},
 };
@@ -111,8 +111,9 @@ function organizeDocument(editable) {
     done: ["Документ завершён", "АТК и итоговые файлы доступны ниже. Дополнительный товар оформите отдельным дополнением."],
     archive: ["Документ в архиве", "Состав и сохранённые версии файлов доступны для просмотра."],
     label_error: ["Исправьте состав для этикеток", "Проверьте сообщение об ошибке и сохраните исправленный состав. Полученные коды сохраняются."],
+    report_error: ["Ошибка отчёта о нанесении", "СУЗ отклонила отчёт или обработала его частично. После проверки карточек в НК нажмите «Отправить повторно». Уже нанесённые КМ повторно отправлены не будут."],
   };
-  const [title, description] = (doc.stopped ? ["Обработка остановлена", "Документ в архиве. Возврат доступен только администратору; отправленные операции требуют сверки."] : guidance[doc.status]) || ["Документ в обработке", "Проверьте состояние на вкладке «Обработка и файлы». Дополнительные действия выполняются после завершения текущего этапа."];
+  const [title, description] = (doc.stopped ? ["Обработка остановлена", "Документ в архиве. Возврат доступен только администратору; отправленные операции требуют сверки."] : guidance[doc.display_status || doc.status]) || ["Документ в обработке", "Проверьте состояние на вкладке «Обработка и файлы». Дополнительные действия выполняются после завершения текущего этапа."];
   const next = document.createElement("section");
   next.className = "next-step";
   next.innerHTML = `<div><span class="eyebrow">Следующий шаг</span><h2>${title}</h2><p>${description}</p><span id="document-save-state" class="muted" role="status">${editable ? "Все изменения состава сохранены" : "Состав доступен для просмотра"}</span></div>`;
