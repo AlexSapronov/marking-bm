@@ -92,6 +92,13 @@ function documentListSignature(items) {
   return JSON.stringify(items.map(d =>
     [d.id, d.status, d.display_status, d.updated, d.units, d.stopped]));
 }
+function logisticsStatusSignature(items) {
+  return JSON.stringify(items.map(a => [
+    a.id, a.status, a.error, a.download_ready, a.archived,
+    a.files?.map(f => [f.id, f.version]),
+    a.documents?.map(d => [d.id, d.status, d.can_complete]),
+  ]));
+}
 function adminStatusSignature(items) {
   return JSON.stringify([
     items.operations.map(o => [o.id, o.state, o.updated, o.attention_resolved_at]),
@@ -130,6 +137,16 @@ async function pollStatuses() {
         const scroll = window.scrollY;
         docs = incoming;
         renderList();
+        window.scrollTo(0, scroll);
+      }
+    } else if (!wasAdmin && registryMode && $("#atk-table")) {
+      const incoming = await api("/logistics/atks?" + new URLSearchParams(registryFilters));
+      if (!registryMode || $("#modal").open ||
+          $("#app").querySelector("form:focus-within") ||
+          $(".atk-select:checked").length) return;
+      if (logisticsStatusSignature(incoming) !== logisticsStatusSignature(registryRows)) {
+        const scroll = window.scrollY;
+        await logisticsPage();
         window.scrollTo(0, scroll);
       }
     } else if (wasAdmin && adminSection === "overview") {
