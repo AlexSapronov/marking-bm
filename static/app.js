@@ -711,9 +711,16 @@ async function moveLinesModal(lineIds) {
         target_id: targetId, line_ids: lineIds,
       });
       $("#modal").close();
+      const comparison = (label, number, impact) => `<section class="move-impact">
+        <h3>${e(label)} · ${e(number)}</h3>
+        <table><thead><tr><th>Показатель</th><th>Сейчас</th><th>После</th></tr></thead>
+        <tbody>${[["Строки", "lines"], ["КМ", "codes"], ["Единицы товара", "units"]]
+          .map(([title, key]) => `<tr><th scope="row">${title}</th><td>${fmt(impact.before[key])}</td><td><b>${fmt(impact.after[key])}</b></td></tr>`).join("")}</tbody></table>
+        </section>`;
       modal(`<h2>Подтвердить перенос</h2>
         <p><b>${e(preview.source.number)}</b> → <b>${e(preview.target.number)}</b></p>
-        <p>${fmt(preview.lines.length)} строк · ${fmt(preview.codes)} КМ · ${fmt(preview.units)} единиц товара</p>
+        <p>Переместятся ${fmt(preview.lines.length)} строк · ${fmt(preview.codes)} КМ · ${fmt(preview.units)} единиц товара.</p>
+        <div class="move-impact-grid">${comparison("Источник", preview.source.number, preview.impact.source)}${comparison("Получатель", preview.target.number, preview.impact.target)}</div>
         <p class="notice">${e(preview.warning)}</p>
         <div class="actions">
           <button class="primary" id="confirm-move-lines">Перенести строки и КМ</button>
