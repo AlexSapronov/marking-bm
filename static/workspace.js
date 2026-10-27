@@ -21,13 +21,21 @@ const adminSections = {
   catalog: ["Коды и справочник", "Общий пул КМ, привязки GTIN и повторный подбор"],
   audit: ["Журнал действий", "История действий сотрудников и администратора"],
 };
+const adminAttentionStates = new Set(["unknown", "blocked", "preflight_blocked", "rejected", "partial"]);
+function adminOperationNeedsAttention(op) {
+  return adminAttentionStates.has(op.state) && !op.attention_resolved_at;
+}
+function adminOperationPending(op) {
+  return !op.stopped && !adminAttentionStates.has(op.state)
+    && !["done", "cancelled"].includes(op.state);
+}
 function organizeAdmin(hb) {
   const main = $("main");
   const stats = main.querySelector(".stats");
   const notice = main.querySelector(":scope > .notice");
-  const attention = overview.operations.filter(o => ["unknown", "blocked", "preflight_blocked", "rejected", "partial"].includes(o.state) && !o.attention_resolved_at);
+  const attention = overview.operations.filter(adminOperationNeedsAttention);
   const approvals = overview.transformations.filter(t => t.state === "approval");
-  const pending = overview.operations.filter(o => !["done", "rejected", "cancelled"].includes(o.state) && !o.stopped);
+  const pending = overview.operations.filter(adminOperationPending);
   const overviewPanel = document.createElement("section");
   overviewPanel.dataset.adminPanel = "overview";
   overviewPanel.innerHTML = `<div class="section-heading"><h2>Состояние системы</h2><p class="muted">Начните с задач, требующих решения. Настройки и история доступны в разделах слева.</p></div><div class="overview-tasks">${[
@@ -240,8 +248,8 @@ function setupAdminFilters() {
       const state = isOperations ? $("#operation-filter").value : "all";
       const filtered = entries.filter(({row, op}) => {
         const stateMatches = !isOperations || state === "all" ||
-          (state === "attention" && ["unknown", "blocked", "preflight_blocked", "rejected", "partial"].includes(op?.state) && !op?.attention_resolved_at) ||
-          (state === "pending" && !op?.stopped && !["done", "rejected", "cancelled"].includes(op?.state)) ||
+          (state === "attention" && adminOperationNeedsAttention(op)) ||
+          (state === "pending" && adminOperationPending(op)) ||
           (state === "stopped" && (op?.stopped || op?.state === "cancelled")) ||
           (state === "resolved" && Boolean(op?.attention_resolved_at)) ||
           (state === "done" && op?.state === "done");
