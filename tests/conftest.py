@@ -26,6 +26,7 @@ class Registry:
         self.calls = []
         self.partial = None
         self.fail_report = set()
+        self.partial_report = {}
         self.timeout_order = False
         self.timeout_codes = False
 
@@ -133,7 +134,13 @@ class Registry:
             ext = q["reportId"]
             if ext in self.fail_report:
                 return httpx.Response(
-                    200, json={"reportId": ext, "reportStatus": "REJECTED"}
+                    200, json={"reportId": ext, "reportStatus": "ERROR"}
+                )
+            if ext in self.partial_report:
+                for cis in self.partial_report[ext]:
+                    self.codes[cis]["status"] = "APPLIED"
+                return httpx.Response(
+                    200, json={"reportId": ext, "reportStatus": "PARTIALLY"}
                 )
             for raw in self.reports[ext]["sntins"]:
                 self.codes[raw[:38]]["status"] = "APPLIED"
