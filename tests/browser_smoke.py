@@ -121,10 +121,22 @@ with tempfile.TemporaryDirectory() as tmp:
             page.locator("#new-supplier").press("ArrowDown")
             page.locator("#new-supplier").press("Enter")
             expect(page.locator("#new-supplier")).to_have_value("Поставщик smoke")
-            page.locator("#number").fill("SMOKE-001")
+            page.locator("#number").fill("SMOKE-ERR")
+            # Exercise the error presentation with a controlled 409 response.
+            # All normal API calls continue to the actual FastAPI server.
+            def fail_invoice_create(route):
+                if route.request.method == "POST":
+                    route.fulfill(
+                        status=409, content_type="application/json",
+                        body=json.dumps({"detail": "Документ отклонён: исправьте данные"}),
+                    )
+                else:
+                    route.continue_()
+            page.route("**/api/documents", fail_invoice_create)
             page.get_by_role("button", name="Создать черновик").click()
             expect(page.locator("#modal .dialog-error")).to_be_visible()
-            expect(page.locator("#modal .dialog-error")).to_contain_text("накладн")
+            expect(page.locator("#modal .dialog-error")).to_contain_text("Документ отклонён")
+            page.unroute("**/api/documents")
             page.get_by_role("button", name="Отмена", exact=True).click()
             page.get_by_role("button", name="SMOKE-001", exact=True).click()
             page.get_by_role("heading", name="Накладная SMOKE-001").wait_for()
