@@ -814,8 +814,10 @@ async function moveLinesModal(lineIds) {
 async function batchModal(ids) {
   // A cross-page selection must always be fully visible before submitting
   // an irreversible external report operation.
-  const selected = docs.filter(d => ids.includes(String(d.id)));
-  if (selected.length !== ids.length || selected.some(d => d.status !== "transferred" || d.stopped)) {
+  const byId = new Map(docs.map(d => [String(d.id), d]));
+  if (doc) byId.set(String(doc.id), doc);
+  const selected = ids.map(id => byId.get(String(id)));
+  if (selected.some(d => !d)) {
     throw new Error("Состав выбранных накладных изменился. Обновите реестр и повторите выбор");
   }
   if (!ids.length) throw new Error("Выберите накладные");
