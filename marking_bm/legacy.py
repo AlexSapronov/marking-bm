@@ -19,16 +19,35 @@ def invoice_from_filename(filename):
     return match[1]
 
 
-def normalize_legacy_code(raw):
+def normalize_legacy_code(raw, quantity=None):
     if not isinstance(raw, str) or not raw:
         raise ValueError("Первый столбец должен содержать полный текст КМ")
-    # Older exports omit GS around the fixed 91(4)/92(44) crypto fields.
-    # Reintroduce ONLY these two separators, preserving serial/crypto bytes.
-    if len(raw) == 90 and re.fullmatch(r"01\d{14}21[\x21-\x7e]{20}91[\x21-\x7e]{4}92[\x21-\x7e]{44}", raw):
-        raw = raw[:38] + GS + raw[38:44] + GS + raw[44:]
+    # Old pack exports can omit GS between GS1 fields and append AI 30.
+    # The radio template has FIXED 20/4/44 lengths. Never search by "91",
+    # "92" or "30" inside serial or crypto: those bytes may occur naturally.
+    compact = re.fullmatch(
+        r"01\d{14}21[\x21-\x7e]{20}91[\x21-\x7e]{4}"
+        r"92[\x21-\x7e]{44}(?:30[0-9]{1,8})?",
+        raw,
+    )
+    if compact:
+        base = raw[:38] + GS + raw[38:44] + GS + raw[44:90]
+        # AI 30 has no GS in old compact exports. Insert it only at the
+        # known fixed boundary after the 44-byte cryptographic signature.
+        raw = base + (GS + raw[90:] if len(raw) > 90 else "")
     code = parse(raw)
     if code.quantity is not None:
-        raise ValueError("В старой выгрузке КМ должен быть без AI 30: количество берётся из столбца D")
+        if quantity is None:
+            raise ValueError("КМ содержит AI 30: количество необходимо сверить с Excel")
+        if code.quantity != quantity:
+            raise ValueError(
+                f"Количество в КМ (AI 30 = {code.quantity}) "
+                f"не совпадает со столбцом D ({quantity})"
+            )
+        # codes.raw stores the cryptographic base WITHOUT AI 30. Later
+        # with_quantity() adds the validated quantity exactly once.
+        raw = code.full[:code.full.rfind(GS + "30")]
+        code = parse(raw)
     return code
 
 
@@ -57,12 +76,12 @@ def parse_legacy_pack(content, filename):
                     continue
                 try:
                     raw, gtin_raw, pn_raw, quantity_raw, tnved_raw = row
-                    code = normalize_legacy_code(raw)
+                    quantity = integer_value(quantity_raw, "Штук в упаковке", 99999999)
+                    code = normalize_legacy_code(raw, quantity)
                     gtin, _ = identifier(gtin_raw, 14, "GTIN")
                     if gtin != code.gtin:
                         raise ValueError("GTIN в столбце B отличается от GTIN внутри КМ")
                     pn = pn_text(pn_raw)
-                    quantity = integer_value(quantity_raw, "Штук в упаковке", 99999999)
                     tnved, _ = identifier(tnved_raw, 10, "ТН ВЭД")
                     if code.cis in seen:
                         raise ValueError("Повторный КМ внутри файла")
