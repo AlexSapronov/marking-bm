@@ -72,6 +72,10 @@ with tempfile.TemporaryDirectory() as tmp:
                     f"HTTP={response.status if response else 'no response'}, "
                     f"browser_errors={errors}, body={page.locator('body').inner_text()[:1000]}"
                 ) from exc
+            out = Path(os.getenv("BM_SCREENSHOT_DIR", "docs/screenshots"))
+            out.mkdir(parents=True, exist_ok=True)
+            # These screens contain no credentials or live setup codes.
+            page.screenshot(path=str(out / "admin-login.png"), full_page=True)
             page.locator("#login-value").fill("browser-smoke-password")
             page.locator("#login-form button").click()
             page.get_by_role("heading", name="Администрирование", exact=True).wait_for()
@@ -114,6 +118,7 @@ with tempfile.TemporaryDirectory() as tmp:
             # Administrator can invalidate the first code and issue a reset code.
             page.locator('[data-action="reset-password"][data-id="smoke-user"]').click()
             expect(page.get_by_role("heading", name="Сбросить пароль сотрудника?")).to_be_visible()
+            page.screenshot(path=str(out / "admin-reset-confirm.png"), full_page=True)
             expect(page.locator("#confirm-action")).to_have_text("Сбросить пароль")
             page.locator("#confirm-action").click()
             expect(page.locator("#setup-code-issued")).to_be_visible()
@@ -536,6 +541,7 @@ with tempfile.TemporaryDirectory() as tmp:
             )
             page.set_viewport_size({"width": 1440, "height": 1000})
             page.get_by_role("button", name="Выйти", exact=True).click()
+            page.screenshot(path=str(out / "employee-login.png"), full_page=True)
             # Build a real finished invoice through the service; only external APIs
             # use the test transport. The browser still talks to the normal server.
             test_app, test_service, _ = workflow_env.__wrapped__(Path(tmp))
@@ -546,6 +552,7 @@ with tempfile.TemporaryDirectory() as tmp:
             test_service.batch("alice", [logistics_doc], "2026-01-01")
             advance(test_app)
             page.get_by_role("button", name="Первый вход / сброс пароля").click()
+            page.screenshot(path=str(out / "password-setup.png"), full_page=True)
             page.locator("#login-value").fill("smoke-logist")
             page.locator("#setup-code").fill(logist_setup_code)
             page.locator("#password-new").fill("8characters")
@@ -738,6 +745,10 @@ with tempfile.TemporaryDirectory() as tmp:
             page.locator("#login-password").fill("abcde123")
             page.locator("#login-form button").click()
             page.get_by_role("heading", name="Накладные", exact=True).wait_for()
+            page.get_by_role("button", name="Сменить пароль").click()
+            expect(page.get_by_role("heading", name="Сменить пароль")).to_be_visible()
+            page.screenshot(path=str(out / "change-own-password.png"), full_page=True)
+            page.locator("#modal [data-action='close']").click()
             expect(page.locator('[data-stage="preparation"]')).to_be_visible()
             expect(page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
             expect(page.get_by_role("button", name="Реестр АТК", exact=True)).to_have_count(0)
