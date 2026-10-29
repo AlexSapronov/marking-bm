@@ -79,7 +79,7 @@ def test_logist_sees_all_owners_filters_and_downloads(env):
 
 
 def test_supervisor_can_use_both_workspaces_without_admin_or_cross_owner_labels(env):
-    s = env[1]
+    app, s = env[0], env[1]
     ids, _, admin = prepare_atks(env)
     changed = admin.post(
         "/api/admin/users",
