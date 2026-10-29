@@ -39,7 +39,7 @@ def test_buttons_name_actions_instead_of_promising_completed_external_effect():
         "Запросить проверку статуса",
         "Запросить обновление доступа",
         "Сменить ответственного",
-        "Открыть для закрытия накладных",
+        "Завершить работу",
         "Закрыть накладную в архив",
     ):
         assert copy in APP, copy
