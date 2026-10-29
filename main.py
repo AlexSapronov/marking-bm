@@ -701,6 +701,10 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             elif a["doc_id"]:
                 service.document(db, a["doc_id"], s["username"], s["admin"])
             elif not s["admin"]:
+                if s["role"] == "supervisor" or not a["group_id"]:
+                    raise PermissionError(
+                        "Руководителю доступны только групповые файлы АТК и RESULT"
+                    )
                 batch_id, supplier = a["group_id"].split(":")
                 docs = rows(
                     db,
