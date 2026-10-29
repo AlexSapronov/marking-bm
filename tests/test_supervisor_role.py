@@ -2,7 +2,7 @@
 import sqlite3
 
 from marking_bm.db import Store
-from conftest import client
+from conftest import add_doc, client
 
 
 def anonymous(app):
@@ -13,7 +13,7 @@ def anonymous(app):
     return c
 
 
-def test_supervisor_can_use_bm_and_logistics_but_not_admin(env):
+def test_supervisor_can_view_all_invoices_and_download_only(env):
     app, service, _ = env
     admin = client(app, "administrator", True)
     created = admin.post(
@@ -21,50 +21,39 @@ def test_supervisor_can_use_bm_and_logistics_but_not_admin(env):
         json={"username": "team-lead", "role": "supervisor"},
     )
     assert created.status_code == 200, created.text
-    setup_code = created.json()["setup"]["code"]
+    supervisor = client(app, "team-lead")
 
-    employee = anonymous(app)
-    setup = employee.post(
-        "/api/users/set-password",
-        json={
-            "username": "team-lead",
-            "code": setup_code,
-            "password": "leader-pass-8",
-            "confirmation": "leader-pass-8",
-        },
-    )
-    assert setup.status_code == 200, setup.text
+    alice_doc = add_doc(service, "alice", "Supplier A", number="INV-ALICE")
+    bob_doc = add_doc(service, "bob", "Supplier B", number="INV-BOB")
 
-    signed = employee.post(
-        "/api/session",
-        json={"username": "team-lead", "password": "leader-pass-8"},
-    )
-    assert signed.status_code == 200, signed.text
-    assert signed.json()["role"] == "supervisor"
-    employee.headers["X-CSRF-Token"] = signed.json()["csrf"]
+    listed = supervisor.get("/api/supervisor/documents").json()
+    assert {d["id"] for d in listed} >= {alice_doc, bob_doc}
+    assert {d["owner"] for d in listed if d["id"] in {alice_doc, bob_doc}} == {
+        "alice", "bob"
+    }
+    detail = supervisor.get("/api/supervisor/documents/" + bob_doc)
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["owner"] == "bob"
+    assert detail.json()["number"] == "INV-BOB"
 
-    # The supervisor gets the same BM workspace/API as a manager and the
-    # shared logistics registry/API, but is never elevated to administrator.
-    assert employee.get("/api/documents").status_code == 200
-    assert employee.get("/api/template").status_code == 200
-    assert employee.get("/api/logistics/atks").status_code == 200
-    assert employee.get("/api/admin/overview").status_code == 403
-    assert employee.get("/api/admin/documents").status_code == 403
-    assert employee.post(
+    # Normal BM endpoints are not available to a supervisor, even by direct API.
+    assert supervisor.get("/api/documents").status_code == 403
+    assert supervisor.get("/api/documents/" + bob_doc).status_code == 403
+    assert supervisor.get("/api/template").status_code == 403
+    assert supervisor.post(
+        "/api/documents",
+        json={"number": "FORBIDDEN", "supplier": "Supplier C"},
+    ).status_code == 403
+    assert supervisor.post(
+        "/api/documents/" + bob_doc + "/order", json={}
+    ).status_code == 403
+
+    assert supervisor.get("/api/logistics/atks").status_code == 200
+    assert supervisor.get("/api/admin/overview").status_code == 403
+    assert supervisor.post(
         "/api/admin/users",
         json={"username": "attempted-admin-user", "role": "supervisor"},
     ).status_code == 403
-
-    created_document = employee.post(
-        "/api/documents",
-        json={"number": "LEAD-001", "supplier": "Supervisor test supplier"},
-    )
-    assert created_document.status_code == 200, created_document.text
-    documents = employee.get("/api/documents").json()
-    assert any(d["number"] == "LEAD-001" for d in documents)
-    assert service.store.one(
-        "SELECT role FROM users WHERE username='team-lead'"
-    )["role"] == "supervisor"
 
 
 def test_store_migrates_existing_role_constraint_without_losing_users(tmp_path):

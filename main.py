@@ -109,8 +109,13 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         return s
 
     def manager(s=Depends(session)):
-        if not s["admin"] and s["role"] not in ("manager", "supervisor"):
-            raise HTTPException(403, "Раздел доступен бренд-менеджерам и руководителям")
+        if not s["admin"] and s["role"] != "manager":
+            raise HTTPException(403, "Раздел доступен только бренд-менеджерам")
+        return s
+
+    def supervisor(s=Depends(session)):
+        if not s["admin"] and s["role"] != "supervisor":
+            raise HTTPException(403, "Раздел доступен руководителям")
         return s
 
     def logistics(s=Depends(session)):
@@ -384,6 +389,28 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                 sql += " AND " + condition
                 args.append(value)
         return store.all(sql + " ORDER BY d.created DESC", args)
+
+    @app.get("/api/supervisor/documents")
+    def supervisor_documents(archive: bool = False, s=Depends(supervisor)):
+        # Read-only cross-owner view. Mutating routes remain behind manager().
+        sql = (
+            "SELECT d.*,EXISTS(SELECT 1 FROM document_stops h WHERE h.doc_id=d.id "
+            "AND h.resumed_at IS NULL) stopped,p.name supplier,"
+            "(SELECT SUM(quantity*labels) FROM lines WHERE doc_id=d.id) units,"
+            "CASE WHEN d.status='reporting' AND NOT EXISTS("
+            "SELECT 1 FROM document_stops h WHERE h.doc_id=d.id AND h.resumed_at IS NULL"
+            ") AND (SELECT o.state FROM operations o WHERE o.doc_id=d.id "
+            "AND o.kind='report' ORDER BY o.rowid DESC LIMIT 1) IN ('rejected','partial') "
+            "THEN 'report_error' ELSE d.status END display_status "
+            "FROM documents d JOIN suppliers p ON p.id=d.supplier_id WHERE 1=1"
+        )
+        sql += " AND d.status" + ("=" if archive else "!=") + "'archive'"
+        return store.all(sql + " ORDER BY d.created DESC", [])
+
+    @app.get("/api/supervisor/documents/{doc_id}")
+    def supervisor_document(doc_id: str, s=Depends(supervisor)):
+        # The only cross-owner detail route for supervisors is read-only.
+        return service.get(doc_id, s["username"], True)
 
     class Create(BaseModel):
         number: str
@@ -674,6 +701,10 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             elif a["doc_id"]:
                 service.document(db, a["doc_id"], s["username"], s["admin"])
             elif not s["admin"]:
+                if s["role"] == "supervisor" or not a["group_id"]:
+                    raise PermissionError(
+                        "Руководителю доступны только групповые файлы АТК и RESULT"
+                    )
                 batch_id, supplier = a["group_id"].split(":")
                 docs = rows(
                     db,
@@ -763,6 +794,8 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
 
     @app.post("/api/logistics/documents/{doc_id}/complete")
     def logistics_complete(doc_id: str, s=Depends(logistics)):
+        if not s["admin"] and s["role"] == "supervisor":
+            raise HTTPException(403, "Руководителю доступны только просмотр и скачивание файлов")
         return service.logistics_complete(doc_id, s["username"])
 
     class LogisticsDownload(BaseModel):

@@ -144,7 +144,8 @@ async function pollStatuses() {
   const wasAdmin = adminMode;
   try {
     if (activeDocId && !wasAdmin && !registryMode) {
-      const fresh = await api("/documents/" + encodeURIComponent(activeDocId));
+      const endpoint = isSupervisor() ? "/supervisor/documents/" : "/documents/";
+      const fresh = await api(endpoint + encodeURIComponent(activeDocId));
       if (doc?.id !== activeDocId || documentDirty || $("#modal").open) return;
       statusLastChecked = new Date();
       if (documentStatusSignature(fresh) !== documentStatusSignature(doc)) {
@@ -160,7 +161,7 @@ async function pollStatuses() {
         mark.title = "Статус обновляется автоматически каждые 30 секунд";
       }
     } else if (!wasAdmin && !registryMode && $(".document-list")) {
-      const incoming = await api("/documents?archive=" + wasArchive);
+      const incoming = await api((isSupervisor() ? "/supervisor/documents?archive=" : "/documents?archive=") + wasArchive);
       if (doc || archive !== wasArchive || documentDirty || $("#modal").open ||
           $("#app").querySelector("form:focus-within")) return;
       if (documentListSignature(incoming) !== documentListSignature(docs)) {
@@ -263,6 +264,9 @@ let registryMode = false,
     date_to: "",
     archive: false,
   };
+function isSupervisor() {
+  return Boolean(user && !user.admin && user.role === "supervisor");
+}
 function shell(content) {
   const canManage = user.admin || ["manager", "supervisor"].includes(user.role);
   const canReadRegistry = user.admin || ["logistics", "supervisor"].includes(user.role);
@@ -357,6 +361,16 @@ async function list() {
   }
   documentSelectedIds.clear();
   if (user.role === "logistics" && !user.admin) return logisticsPage();
+  if (isSupervisor()) {
+    registryMode = false;
+    history.replaceState(null, "", location.pathname + (archive ? "#archive" : "#documents"));
+    adminMode = false;
+    doc = null;
+    documentDirty = false;
+    docs = await api("/supervisor/documents?archive=" + archive);
+    renderList();
+    return;
+  }
   registryMode = false;
   history.replaceState(null, "", location.pathname + (archive ? "#archive" : "#documents"));
   adminMode = false;
@@ -366,20 +380,21 @@ async function list() {
   renderList();
 }
 function renderList() {
+  const readOnly = isSupervisor();
   const stages = archive
     ? {all: documentStages.all, archived: documentStages.archived, stopped: documentStages.stopped}
     : {all: documentStages.all, preparation: documentStages.preparation,
        processing: documentStages.processing, labels_ready: documentStages.labels_ready,
        supplier: documentStages.supplier, attention: documentStages.attention,
        logistics: documentStages.logistics, stopped: documentStages.stopped};
-  shell(`<div class="topbar"><div><div class="eyebrow">${user.admin ? "Все сотрудники" : "Мои документы"}</div><h1>${archive ? "Архив накладных" : "Накладные"}</h1><p class="muted">${archive ? "Завершённые документы и сохранённые файлы" : "Подготовьте этикетки, передайте поставщику и подтвердите нанесение"}</p></div>${archive ? "" : '<button class="primary" data-action="new">+ Новая накладная</button>'}</div>
+  shell(`<div class="topbar"><div><div class="eyebrow">${user.admin || readOnly ? "Все сотрудники" : "Мои документы"}</div><h1>${archive ? "Архив накладных" : "Накладные"}</h1><p class="muted">${readOnly ? "Режим просмотра всех накладных. Для скачивания АТК и RESULT откройте реестр логистики." : archive ? "Завершённые документы и сохранённые файлы" : "Подготовьте состав накладной, закажите КМ и подтвердите нанесение"}</p></div>${archive || readOnly ? "" : '<button class="primary" data-action="new">+ Новая накладная</button>'}</div>
   <div class="stage-filters" aria-label="Этапы накладных">${Object.entries(stages).map(([key, stage]) => `<button data-stage="${key}" aria-pressed="${documentFilters.stage === key}">${stage.title}<b>${docs.filter(d => stage.matches(d)).length}</b></button>`).join("")}</div>
   <section class="card document-list"><h2>${archive ? "Архивные документы" : "Рабочие документы"}</h2><div class="document-filters"><label>Номер накладной<input id="search" placeholder="Поиск по номеру" value="${e(documentFilters.search)}"></label><label>Поставщик<select id="supplier"><option value="">Все поставщики</option>${[...new Set(docs.map(d => d.supplier))].sort().map(v => `<option ${v === documentFilters.supplier ? "selected" : ""}>${e(v)}</option>`).join("")}</select></label><label>Создана с<input type="date" id="from" value="${e(documentFilters.from)}"></label><label>Создана по<input type="date" id="to" value="${e(documentFilters.to)}"></label></div>
   <div class="list-caption"><span id="document-count" class="muted" role="status"></span><button class="linkbutton" data-action="reset-doc-filters">Сбросить фильтры</button></div>
   <div class="register-controls"><label>Сортировка<select id="document-sort"><option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option><option value="number">По номеру накладной</option><option value="supplier">По поставщику</option><option value="status">По статусу</option><option value="units">По количеству товара</option></select></label><label>Строк на странице<select id="document-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label></div>
-  <div class="table-wrap invoice-register-scroll"><table><thead><tr><th class="register-select-cell"><input id="select-all" type="checkbox" aria-label="Выбрать все доступные для нанесения на текущей странице"></th><th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Штук</th><th>Создана</th>${user.admin ? "<th>Владелец</th>" : ""}</tr></thead><tbody id="doc-rows"></tbody></table></div>
+  <div class="table-wrap invoice-register-scroll"><table><thead><tr>${readOnly ? "" : '<th class="register-select-cell"><input id="select-all" type="checkbox" aria-label="Выбрать все доступные для нанесения на текущей странице"></th>'}<th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Штук</th><th>Создана</th>${user.admin || readOnly ? "<th>Владелец</th>" : ""}</tr></thead><tbody id="doc-rows"></tbody></table></div>
   <div class="register-pager"><span id="document-page-label" role="status"></span><div class="actions"><button id="document-prev" type="button">Предыдущая</button><button id="document-next" type="button">Следующая</button></div></div>
-  ${archive ? "" : '<div class="selection-bar"><div><b id="selected-count">Накладные не выбраны</b><span class="cell-sub" id="selection-description">Выберите документы со статусом «Ожидает нанесения».</span></div><button type="button" id="clear-doc-selection" hidden>Снять выбор</button><button class="primary" data-action="batch" disabled>Подтвердить нанесение и создать отчёты</button></div>'}</section>`);
+  ${archive || readOnly ? "" : '<div class="selection-bar"><div><b id="selected-count">Накладные не выбраны</b><span class="cell-sub" id="selection-description">Выберите документы со статусом «Ожидает нанесения».</span></div><button type="button" id="clear-doc-selection" hidden>Снять выбор</button><button class="primary" data-action="batch" disabled>Подтвердить нанесение и создать отчёты</button></div>'}</section>`);
   $("#document-sort").value = documentSort;
   $("#document-page-size").value = String(documentPageSize);
   filterRows();
@@ -411,7 +426,7 @@ function renderList() {
     document.querySelectorAll("[data-stage]").forEach(b => b.setAttribute("aria-pressed", b === button));
     filterRows();
   });
-  $("#select-all").onchange = event => {
+  if ($("#select-all")) $("#select-all").onchange = event => {
     document.querySelectorAll(".doc-select:not(:disabled)").forEach(input => {
       input.checked = event.target.checked;
       if (input.checked) documentSelectedIds.add(input.value);
@@ -423,7 +438,8 @@ function renderList() {
 function filterRows() {
   const f = documentFilters;
   // Drop assignments that are no longer eligible after status refresh.
-  const eligibleIds = new Set(docs.filter(d => d.status === "transferred" && !archive && !d.stopped)
+  const readOnly = isSupervisor();
+  const eligibleIds = new Set(readOnly ? [] : docs.filter(d => d.status === "transferred" && !archive && !d.stopped)
     .map(d => String(d.id)));
   for (const id of documentSelectedIds) if (!eligibleIds.has(id)) documentSelectedIds.delete(id);
   const stages = archive
@@ -453,7 +469,7 @@ function filterRows() {
     "Подходящих накладных нет";
   $("#document-prev").disabled = documentPage === 0;
   $("#document-next").disabled = documentPage + 1 >= pages;
-  $("#doc-rows").innerHTML = visible.length ? visible.map(d => `<tr><td class="register-select-cell"><div class="selection-control"><input type="checkbox" class="doc-select" value="${e(d.id)}" ${eligibleIds.has(String(d.id)) ? "" : `disabled aria-describedby="select-reason-${e(d.id)}" title="${e(reportSelectionReason(d))}"`} ${documentSelectedIds.has(String(d.id)) ? "checked" : ""} aria-label="Выбрать ${e(d.number)}">${eligibleIds.has(String(d.id)) ? "" : `<span id="select-reason-${e(d.id)}" class="cell-sub selection-reason">${e(reportSelectionReason(d))}</span>`}</div></td><td><button class="linkbutton" data-action="open" data-id="${e(d.id)}"><b>${e(d.number)}</b></button></td><td>${e(d.supplier)}</td><td>${documentBadge(d)}</td><td>${fmt(d.units)}</td><td>${date(d.created)}</td>${user.admin ? `<td>${e(d.owner)}</td>` : ""}</tr>`).join("") : `<tr><td colspan="${user.admin ? 7 : 6}"><div class="empty"><b>${docs.length ? "По выбранным условиям ничего не найдено" : archive ? "Архив пока пуст" : "Накладных пока нет"}</b>${docs.length ? "Сбросьте фильтры или выберите другой этап." : archive ? "Здесь появятся завершённые документы." : "Создайте накладную и загрузите состав из Excel."}</div></td></tr>`;
+  $("#doc-rows").innerHTML = visible.length ? visible.map(d => `<tr>${readOnly ? "" : `<td class="register-select-cell"><div class="selection-control"><input type="checkbox" class="doc-select" value="${e(d.id)}" ${eligibleIds.has(String(d.id)) ? "" : `disabled aria-describedby="select-reason-${e(d.id)}" title="${e(reportSelectionReason(d))}"`} ${documentSelectedIds.has(String(d.id)) ? "checked" : ""} aria-label="Выбрать ${e(d.number)}">${eligibleIds.has(String(d.id)) ? "" : `<span id="select-reason-${e(d.id)}" class="cell-sub selection-reason">${e(reportSelectionReason(d))}</span>`}</div></td>`}<td><button class="linkbutton" data-action="open" data-id="${e(d.id)}"><b>${e(d.number)}</b></button></td><td>${e(d.supplier)}</td><td>${documentBadge(d)}</td><td>${fmt(d.units)}</td><td>${date(d.created)}</td>${user.admin || readOnly ? `<td>${e(d.owner)}</td>` : ""}</tr>`).join("") : `<tr><td colspan="${readOnly ? 6 : user.admin ? 7 : 6}"><div class="empty"><b>${docs.length ? "По выбранным условиям ничего не найдено" : archive ? "Архив пока пуст" : "Накладных пока нет"}</b>${docs.length ? "Сбросьте фильтры или выберите другой этап." : archive ? "Здесь появятся завершённые документы." : readOnly ? "Здесь появятся накладные всех сотрудников." : "Создайте накладную и загрузите состав из Excel."}</div></td></tr>`;
   $$(".doc-select").forEach(input => input.onchange = () => {
     if (input.checked) documentSelectedIds.add(input.value);
     else documentSelectedIds.delete(input.value);
@@ -462,6 +478,7 @@ function filterRows() {
   updateDocumentSelection();
 }
 function updateDocumentSelection() {
+  if (isSupervisor()) return;
   const eligible = $$(".doc-select:not(:disabled)");
   const localCount = eligible.filter(input => input.checked).length;
   const count = documentSelectedIds.size;
@@ -556,17 +573,18 @@ async function open(id) {
   );
   if (doc?.id !== id) documentTab = "content";
   documentDirty = false;
-  doc = await api("/documents/" + id);
+  doc = await api((isSupervisor() ? "/supervisor/documents/" : "/documents/") + encodeURIComponent(id));
   statusLastChecked = new Date();
   archive = doc.status === "archive";
   adminMode = false;
   renderDoc();
 }
 function renderDoc() {
-  const editable = ["draft", "ready", "transferred", "label_error"].includes(
+  const readOnly = isSupervisor();
+  const editable = !readOnly && ["draft", "ready", "transferred", "label_error"].includes(
     doc.status,
   );
-  const canMoveLines = !doc.stopped && !doc.group_stop && !doc.parent_id &&
+  const canMoveLines = !readOnly && !doc.stopped && !doc.group_stop && !doc.parent_id &&
     ["ready", "transferred"].includes(doc.status) &&
     !doc.operations.some(o => ["report", "atk", "transform"].includes(o.kind));
   const steps = [
@@ -590,7 +608,7 @@ function renderDoc() {
     (a) => a.kind === "labels" && a.version === doc.current_version,
   );
   shell(
-    `<div class="topbar"><div><button class="linkbutton" data-action="${archive ? "archive" : "list"}">${archive ? "← Архив накладных" : "← Накладные"}</button><h1>Накладная ${e(doc.number)}</h1><span class="muted">${e(doc.supplier)} · ${e(doc.owner)} · ${date(doc.created)}</span></div><div class="doc-status-meta">${documentBadge(doc)}<span id="status-checked" class="status-checked" title="Проверка каждые 30 секунд">Проверено: ${statusLastChecked ? statusLastChecked.toLocaleTimeString("ru-RU") : "—"}</span></div></div>${doc.stopped ? `<div class="notice"><b>Обработка остановлена пользователем ${e(doc.stop.actor)}</b><br>Новые операции и подпись заблокированы. Уже отправленные действия ЧЗ не отозваны; их результаты сохранены для сверки. Вернуть накладную из архива может только администратор.</div>` : doc.group_stop ? `<div class="notice">Общая обработка приостановлена: накладная ${e(doc.group_stop.number)} остановлена. Обратитесь к администратору.</div>` : ""}<div class="steps">${steps.map(([s, l]) => `<span class="step ${s === current ? "current" : ""}">${l}</span>`).join("")}</div><div class="stats"><div class="stat"><span class="muted">Единиц товара</span><b>${fmt(doc.units)}</b></div><div class="stat"><span class="muted">Получено КМ</span><b>${fmt(doc.codes.length)} / ${fmt(doc.required)}</b></div><div class="stat"><span class="muted">Версия этикеток</span><b>${doc.current_version || "—"}</b></div></div>${doc.last_error ? `<div class="error">Этикетки не сформированы: ${e(doc.last_error)}. Полученные КМ сохранены. Исправьте состав накладной.</div>` : ""}${doc.operations
+    `<div class="topbar"><div><button class="linkbutton" data-action="${archive ? "archive" : "list"}">${archive ? "← Архив накладных" : "← Накладные"}</button><h1>Накладная ${e(doc.number)}</h1><span class="muted">${e(doc.supplier)} · ${e(doc.owner)} · ${date(doc.created)}</span></div><div class="doc-status-meta">${documentBadge(doc)}<span id="status-checked" class="status-checked" title="Проверка каждые 30 секунд">Проверено: ${statusLastChecked ? statusLastChecked.toLocaleTimeString("ru-RU") : "—"}</span></div></div>${readOnly ? '<div class="notice">Режим руководителя: накладные доступны только для просмотра. Скачивание АТК и RESULT выполняется в разделе «Реестр АТК».</div>' : ""}${doc.stopped ? `<div class="notice"><b>Обработка остановлена пользователем ${e(doc.stop.actor)}</b><br>Новые операции и подпись заблокированы. Уже отправленные действия ЧЗ не отозваны; их результаты сохранены для сверки. Вернуть накладную из архива может только администратор.</div>` : doc.group_stop ? `<div class="notice">Общая обработка приостановлена: накладная ${e(doc.group_stop.number)} остановлена. Обратитесь к администратору.</div>` : ""}<div class="steps">${steps.map(([s, l]) => `<span class="step ${s === current ? "current" : ""}">${l}</span>`).join("")}</div><div class="stats"><div class="stat"><span class="muted">Единиц товара</span><b>${fmt(doc.units)}</b></div><div class="stat"><span class="muted">Получено КМ</span><b>${fmt(doc.codes.length)} / ${fmt(doc.required)}</b></div><div class="stat"><span class="muted">Версия этикеток</span><b>${doc.current_version || "—"}</b></div></div>${doc.last_error ? `<div class="error">Этикетки не сформированы: ${e(doc.last_error)}. Полученные КМ сохранены. Исправьте состав накладной.</div>` : ""}${doc.operations
       .filter((o) => o.error && (o.kind !== "report" || o.id === latestReport?.id))
       .map(
         (o) =>
@@ -598,9 +616,15 @@ function renderDoc() {
       )
       .join(
         "",
-      )}${doc.status === "receiving" ? '<div class="notice">PDF станет доступен после получения полного комплекта КМ. Повторный заказ не требуется.</div>' : ""}<div class="card"><div class="topbar"><h2>Состав накладной</h2>${editable ? '<div class="actions"><a href="/api/template">Скачать шаблон Excel</a><button data-action="import">Загрузить Excel</button><input type="file" id="excel-file" accept=".xlsx" hidden></div>' : ""}</div><div class="table-wrap"><table><thead><tr>${canMoveLines ? "<th>Перенести</th>" : ""}<th>PN</th><th>GTIN</th><th>Штук в этикетке</th><th>Этикеток</th><th>ТН ВЭД</th>${editable ? "<th></th>" : ""}</tr></thead><tbody id="edit-rows">${editable ? doc.lines.map(l => lineRow(l, canMoveLines)).join("") : doc.lines.map((l) => `<tr><td>${e(l.pn)}</td><td>${e(l.gtin)}</td><td>${fmt(l.quantity)}</td><td>${fmt(l.labels)}</td><td>${e(l.tnved)}</td></tr>`).join("")}</tbody></table></div>${editable ? '<div class="actions"><button data-action="add-line">+ Добавить строку</button><button data-action="save-lines">Проверить и сохранить состав</button></div>' : ""}<div class="actions">${canMoveLines ? '<button data-action="move-lines">Перенести строки и КМ</button>' : ""}${!doc.stopped && !doc.group_stop && reportIssue ? `<button class="primary" data-action="retry-report-doc" data-id="${e(reportIssue.id)}">Повторить отчёт о нанесении</button>` : ""}${user.admin && doc.status === "transferred" && doc.current_version === 0 ? '<button data-action="upload-legacy-pdf">Загрузить PDF</button><input type="file" id="legacy-pdf-file" accept=".pdf,application/pdf" hidden>' : ""}${doc.status === "draft" ? '<button class="primary" data-action="order">Заказать КМ</button>' : ""}${currentFile && doc.required > 0 && doc.codes.length === doc.required && !["draft", "repack", "receiving"].includes(doc.status) ? `<a class="button" href="/api/files/${e(currentFile.id)}">↓ Скачать ZIP с этикетками · v${doc.current_version}</a>` : ""}${["ready", "transferred"].includes(doc.status) ? `<button class="${doc.status === "ready" ? "primary" : ""}" data-action="transfer">${doc.status === "transferred" ? "Повторно подтвердить передачу" : "Подтвердить передачу этикеток"}</button>` : ""}${doc.status === "transferred" ? '<button class="primary" data-action="report">Подтвердить нанесение и создать отчёт</button>' : ""}${!doc.stopped && ["done", "archive", "reported"].includes(doc.status) ? '<button data-action="supplement">Создать дополнение</button>' : ""}${!doc.stopped ? '<button class="danger" data-action="stop-document">Остановить и архивировать</button>' : ""}${user.admin && doc.status === "archive" ? '<button data-action="restore-document">Вернуть из архива</button>' : ""}<button data-action="refresh-doc">Обновить состояние</button></div></div>${doc.atks.length ? `<div class="card"><h2>Таможенные коды</h2>${doc.atks.map((a) => `<div class="toolbar"><span>ТН ВЭД <b>${e(a.tnved)}</b> · ${a.code ? e(a.code) : "Ожидает формирования"}</span>${a.state === "done" ? `<button data-action="atk" data-id="${e(a.id)}">Состав и трансформации</button>` : badge(a.state)}</div>`).join("")}<div class="files">${doc.exports.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div></div>` : ""}<div class="split"><div class="card"><h2>Обработка</h2>${doc.operations.length ? doc.operations.map((o) => `<div class="history"><b>${e(kinds[o.kind])}</b>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)} <span class="muted">${date(o.updated)}</span>${o.error ? `<p class="muted">${e(o.error)}</p>` : ""}${!o.stopped && o.id === reportIssue?.id && o.kind === "report" && ["rejected", "partial"].includes(o.state) ? `<div class="actions"><button class="primary" data-action="retry-report-doc" data-id="${e(o.id)}">Создать повторный отчёт</button></div>` : ""}</div>`).join("") : '<p class="muted">Внешние операции ещё не запускались.</p>'}<details><summary>История файлов и прежние версии</summary><p class="muted">Скачанные поставщиком старые этикетки технически отозвать нельзя.</p><div class="files">${doc.artifacts.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · ${e(f.kind === "source" ? "Исходный Excel" : "v" + f.version)}</a>`).join("")}</div></details></div><div class="card"><h2>История документа</h2>${doc.history.map((h) => `<div class="history"><b>${e(h.action)}</b><span class="muted">${date(h.created)} · ${e(h.actor)}</span></div>`).join("")}</div></div>`,
+      )}${doc.status === "receiving" ? '<div class="notice">PDF станет доступен после получения полного комплекта КМ. Повторный заказ не требуется.</div>' : ""}<div class="card"><div class="topbar"><h2>Состав накладной</h2>${editable ? '<div class="actions"><a href="/api/template">Скачать шаблон Excel</a><button data-action="import">Загрузить Excel</button><input type="file" id="excel-file" accept=".xlsx" hidden></div>' : ""}</div><div class="table-wrap"><table><thead><tr>${canMoveLines ? "<th>Перенести</th>" : ""}<th>PN</th><th>GTIN</th><th>Штук в этикетке</th><th>Этикеток</th><th>ТН ВЭД</th>${editable ? "<th></th>" : ""}</tr></thead><tbody id="edit-rows">${editable ? doc.lines.map(l => lineRow(l, canMoveLines)).join("") : doc.lines.map((l) => `<tr><td>${e(l.pn)}</td><td>${e(l.gtin)}</td><td>${fmt(l.quantity)}</td><td>${fmt(l.labels)}</td><td>${e(l.tnved)}</td></tr>`).join("")}</tbody></table></div>${editable ? '<div class="actions"><button data-action="add-line">+ Добавить строку</button><button data-action="save-lines">Проверить и сохранить состав</button></div>' : ""}<div class="actions">${canMoveLines ? '<button data-action="move-lines">Перенести строки и КМ</button>' : ""}${!doc.stopped && !doc.group_stop && reportIssue ? `<button class="primary" data-action="retry-report-doc" data-id="${e(reportIssue.id)}">Повторить отчёт о нанесении</button>` : ""}${user.admin && doc.status === "transferred" && doc.current_version === 0 ? '<button data-action="upload-legacy-pdf">Загрузить PDF</button><input type="file" id="legacy-pdf-file" accept=".pdf,application/pdf" hidden>' : ""}${doc.status === "draft" ? '<button class="primary" data-action="order">Заказать КМ</button>' : ""}${currentFile && doc.required > 0 && doc.codes.length === doc.required && !["draft", "repack", "receiving"].includes(doc.status) ? (readOnly ? `<span class="muted">Этикетки · v${doc.current_version} · скачивание доступно владельцу</span>` : `<a class="button" href="/api/files/${e(currentFile.id)}">↓ Скачать ZIP с этикетками · v${doc.current_version}</a>`) : ""}${["ready", "transferred"].includes(doc.status) ? `<button class="${doc.status === "ready" ? "primary" : ""}" data-action="transfer">${doc.status === "transferred" ? "Повторно подтвердить передачу" : "Подтвердить передачу этикеток"}</button>` : ""}${doc.status === "transferred" ? '<button class="primary" data-action="report">Подтвердить нанесение и создать отчёт</button>' : ""}${!doc.stopped && ["done", "archive", "reported"].includes(doc.status) ? '<button data-action="supplement">Создать дополнение</button>' : ""}${!doc.stopped ? '<button class="danger" data-action="stop-document">Остановить и архивировать</button>' : ""}${user.admin && doc.status === "archive" ? '<button data-action="restore-document">Вернуть из архива</button>' : ""}<button data-action="refresh-doc">Обновить состояние</button></div></div>${doc.atks.length ? `<div class="card"><h2>Таможенные коды</h2>${doc.atks.map((a) => `<div class="toolbar"><span>ТН ВЭД <b>${e(a.tnved)}</b> · ${a.code ? e(a.code) : "Ожидает формирования"}</span>${a.state === "done" ? `<button data-action="atk" data-id="${e(a.id)}">Состав и трансформации</button>` : badge(a.state)}</div>`).join("")}<div class="files">${doc.exports.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div></div>` : ""}<div class="split"><div class="card"><h2>Обработка</h2>${doc.operations.length ? doc.operations.map((o) => `<div class="history"><b>${e(kinds[o.kind])}</b>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)} <span class="muted">${date(o.updated)}</span>${o.error ? `<p class="muted">${e(o.error)}</p>` : ""}${!o.stopped && o.id === reportIssue?.id && o.kind === "report" && ["rejected", "partial"].includes(o.state) ? `<div class="actions"><button class="primary" data-action="retry-report-doc" data-id="${e(o.id)}">Создать повторный отчёт</button></div>` : ""}</div>`).join("") : '<p class="muted">Внешние операции ещё не запускались.</p>'}<details><summary>История файлов и прежние версии</summary><p class="muted">Скачанные поставщиком старые этикетки технически отозвать нельзя.</p><div class="files">${doc.artifacts.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · ${e(f.kind === "source" ? "Исходный Excel" : "v" + f.version)}</a>`).join("")}</div></details></div><div class="card"><h2>История документа</h2>${doc.history.map((h) => `<div class="history"><b>${e(h.action)}</b><span class="muted">${date(h.created)} · ${e(h.actor)}</span></div>`).join("")}</div></div>`,
   );
   organizeDocument(editable);
+  if (readOnly) {
+    $$("main [data-action]").forEach(button => {
+      if (!["list", "archive", "refresh-doc", "document-tab"].includes(button.dataset.action)) button.remove();
+    });
+    $$("main a[href^=\"/api/files/\"]").forEach(link => link.replaceWith(document.createTextNode(link.textContent)));
+  }
   if ($("#legacy-pdf-file")) $("#legacy-pdf-file").onchange = async ev => {
     const file = ev.target.files[0];
     if (!file) return;
@@ -1200,6 +1224,14 @@ function reasonModal(title, callback) {
   };
 }
 async function action(name, id, b) {
+  if (isSupervisor() && ![
+    "list", "archive", "logistics", "registry-refresh", "registry-detail",
+    "registry-reset", "registry-download", "open", "refresh-doc",
+    "document-tab", "reset-doc-filters", "close", "change-password",
+    "logout", "refresh-page",
+  ].includes(name)) {
+    throw new Error("Руководитель может только просматривать накладные и скачивать файлы");
+  }
   switch (name) {
     case "upload-legacy-pdf":
       $("#legacy-pdf-file")?.click();
@@ -1234,12 +1266,14 @@ async function action(name, id, b) {
       await logisticsPage();
       break;
     case "logistics-complete": {
+      if (isSupervisor()) throw new Error("Руководителю доступен только просмотр и скачивание файлов");
       const item = registryRows.flatMap(a => a.documents).find(d => d.id === id);
       if (!item) throw new Error("Обновите реестр перед завершением накладной");
       modal(`<h2>Закрыть накладную ${e(item.number)} в системе?</h2><p>Накладная будет закрыта и перемещена в архив. Это не подтверждает фактическую доставку или приёмку груза. АТК и RESULT останутся доступны в архивном реестре.</p><div class="actions"><button class="primary" data-action="confirm-logistics-complete" data-id="${e(id)}">Закрыть накладную в архив</button><button data-action="close">Отмена</button></div>`);
       break;
     }
     case "confirm-logistics-complete":
+      if (isSupervisor()) throw new Error("Руководителю доступен только просмотр и скачивание файлов");
       await api("/logistics/documents/" + encodeURIComponent(id) + "/complete", {});
       $("#modal").close();
       await logisticsPage();
@@ -1614,6 +1648,10 @@ async function action(name, id, b) {
   }
 }
 function logisticsNextAction(a) {
+  if (isSupervisor()) {
+    if (!a.download_ready) return "Ожидание готовности файлов";
+    return a.archived ? "Файлы сохранены в архиве" : "Просмотр и скачивание файлов АТК + RESULT";
+  }
   if (a.status === "stopped") return "Обратитесь к администратору";
   if (a.status === "attention") return "Откройте АТК и проверьте причину";
   if (a.status === "transforming") return "Дождитесь завершения трансформации";
@@ -1678,7 +1716,7 @@ async function logisticsPage() {
       )
       .join(
         "",
-      )}</select></label><label>ТН ВЭД<input id="atk-tnved" name="tnved" inputmode="numeric" maxlength="10" value="${e(registryFilters.tnved)}" placeholder="Полный код или часть"></label><div class="filter-row"><label>Создан с<input id="atk-from" type="date" name="date_from" value="${e(registryFilters.date_from)}"></label><label>Создан по<input id="atk-to" type="date" name="date_to" value="${e(registryFilters.date_to)}"></label><label class="check-label"><input id="atk-archive" name="archive" type="checkbox" ${registryFilters.archive ? "checked" : ""}>Архивные АТК</label><button class="primary" type="submit">Применить фильтры</button><button type="button" data-action="registry-reset">Сбросить</button></div></form><div class="register-controls registry-controls"><label>Сортировка внутри поставщика<select id="atk-sort"><option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option><option value="code">По коду АТК</option><option value="status">По статусу</option><option value="units">По количеству товара</option></select></label><label>АТК на странице<select id="atk-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label></div><div class="table-wrap registry-table-scroll"><table id="atk-table"><thead><tr><th><input id="atk-select-all" type="checkbox" aria-label="Выбрать готовые АТК"></th><th>АТК / поставщик</th><th>Накладные / сотрудники</th><th>ТН ВЭД</th><th>Штук / КМ</th><th>Статус / создан</th><th>Файлы</th><th>Следующее действие</th><th>Завершение</th></tr></thead><tbody id="atk-rows"></tbody></table></div>${items.length ? "" : '<div class="empty"><b>АТК не найдены</b>Измените фильтры или дождитесь формирования таможенных кодов.</div>'}<div class="register-pager registry-pager"><span id="atk-page-label" role="status"></span><div class="actions"><button id="atk-prev" type="button">Предыдущая</button><button id="atk-next" type="button">Следующая</button></div></div><p id="registry-selection-summary" class="registry-selection-summary" role="status" aria-live="polite">Выберите готовые АТК для просмотра состава ZIP.</p><div class="actions"><button type="button" id="clear-atk-selection" hidden>Снять выбор</button><button class="primary" data-action="registry-download" disabled>Скачать выбранные · ZIP</button><span class="muted">Комплект АТК + RESULT на группу. Общие файлы включаются один раз.</span></div></section>`,
+      )}</select></label><label>ТН ВЭД<input id="atk-tnved" name="tnved" inputmode="numeric" maxlength="10" value="${e(registryFilters.tnved)}" placeholder="Полный код или часть"></label><div class="filter-row"><label>Создан с<input id="atk-from" type="date" name="date_from" value="${e(registryFilters.date_from)}"></label><label>Создан по<input id="atk-to" type="date" name="date_to" value="${e(registryFilters.date_to)}"></label><label class="check-label"><input id="atk-archive" name="archive" type="checkbox" ${registryFilters.archive ? "checked" : ""}>Архивные АТК</label><button class="primary" type="submit">Применить фильтры</button><button type="button" data-action="registry-reset">Сбросить</button></div></form><div class="register-controls registry-controls"><label>Сортировка внутри поставщика<select id="atk-sort"><option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option><option value="code">По коду АТК</option><option value="status">По статусу</option><option value="units">По количеству товара</option></select></label><label>АТК на странице<select id="atk-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label></div><div class="table-wrap registry-table-scroll"><table id="atk-table"><thead><tr><th><input id="atk-select-all" type="checkbox" aria-label="Выбрать готовые АТК"></th><th>АТК / поставщик</th><th>Накладные / сотрудники</th><th>ТН ВЭД</th><th>Штук / КМ</th><th>Статус / создан</th><th>Файлы</th><th>${isSupervisor() ? "Информация" : "Следующее действие"}</th><th>${isSupervisor() ? "Доступ" : "Завершение"}</th></tr></thead><tbody id="atk-rows"></tbody></table></div>${items.length ? "" : '<div class="empty"><b>АТК не найдены</b>Измените фильтры или дождитесь формирования таможенных кодов.</div>'}<div class="register-pager registry-pager"><span id="atk-page-label" role="status"></span><div class="actions"><button id="atk-prev" type="button">Предыдущая</button><button id="atk-next" type="button">Следующая</button></div></div><p id="registry-selection-summary" class="registry-selection-summary" role="status" aria-live="polite">Выберите готовые АТК для просмотра состава ZIP.</p><div class="actions"><button type="button" id="clear-atk-selection" hidden>Снять выбор</button><button class="primary" data-action="registry-download" disabled>Скачать выбранные · ZIP</button><span class="muted">Комплект АТК + RESULT на группу. Общие файлы включаются один раз.</span></div></section>`,
   );
   $("#registry-filters").onsubmit = async (ev) => {
     ev.preventDefault();
@@ -1717,7 +1755,7 @@ async function logisticsPage() {
     tbody.innerHTML = onPage.map((a, i) =>
       `${i === 0 || onPage[i - 1].supplier_id !== a.supplier_id
         ? `<tr class="registry-supplier-row"><th colspan="9" scope="colgroup">${e(a.supplier)} · всего ${fmt(supplierCounts.get(a.supplier_id))} АТК</th></tr>` : ""}
-        <tr><td><input type="checkbox" class="atk-select" value="${e(a.id)}" ${a.download_ready ? "" : `disabled aria-describedby="atk-unavailable-${e(a.id)}"`} aria-label="Выбрать АТК ${e(a.code || a.id)}">${a.download_ready ? "" : `<span id="atk-unavailable-${e(a.id)}" class="cell-sub selection-reason">Файл АТК ещё не готов</span>`}</td><td><button class="linkbutton registry-code" data-action="registry-detail" data-id="${e(a.id)}">${a.code ? e(a.code) : "АТК формируется"}</button><span class="cell-sub">${e(a.supplier)}</span></td><td>${a.invoices.map(e).join(", ")}<span class="cell-sub">${a.owners.map(e).join(", ")}</span></td><td>${e(a.tnved)}</td><td><b>${fmt(a.units)}</b><span class="cell-sub">${fmt(a.labels)} КМ</span></td><td><span class="badge ${e(a.status)}">${registryLabels[a.status]}</span><span class="cell-sub">${date(a.created)}</span>${a.error ? `<span class="cell-sub">${e(a.error)}</span>` : ""}</td><td><div class="download-actions">${a.files.map((f) => `<a href="/api/files/${e(f.id)}" class="button" title="${e(f.name)}">${f.kind === "atk" ? "АТК" : "RESULT"} · v${f.version}</a>`).join("")}</div>${a.download_ready ? "" : '<span class="cell-sub">Комплект ещё не готов</span>'}<span class="cell-sub">${groupCounts.get(a.group_id) > 1 ? "Общий комплект · " + fmt(groupCounts.get(a.group_id)) + " АТК" : "Отдельный комплект"}</span></td><td class="registry-next-action">${e(logisticsNextAction(a))}</td><td>${a.documents.some(d => d.can_complete) ? `<button data-action="registry-detail" data-id="${e(a.id)}">Открыть для закрытия накладных</button>` : a.status === "stopped" ? '<span class="badge cancelled">Остановлена</span>' : a.archived ? '<span class="badge done">В архиве</span>' : '<span class="muted">Ожидание готовности</span>'}</td></tr>`).join("");
+        <tr><td><input type="checkbox" class="atk-select" value="${e(a.id)}" ${a.download_ready ? "" : `disabled aria-describedby="atk-unavailable-${e(a.id)}"`} aria-label="Выбрать АТК ${e(a.code || a.id)}">${a.download_ready ? "" : `<span id="atk-unavailable-${e(a.id)}" class="cell-sub selection-reason">Файл АТК ещё не готов</span>`}</td><td><button class="linkbutton registry-code" data-action="registry-detail" data-id="${e(a.id)}">${a.code ? e(a.code) : "АТК формируется"}</button><span class="cell-sub">${e(a.supplier)}</span></td><td>${a.invoices.map(e).join(", ")}<span class="cell-sub">${a.owners.map(e).join(", ")}</span></td><td>${e(a.tnved)}</td><td><b>${fmt(a.units)}</b><span class="cell-sub">${fmt(a.labels)} КМ</span></td><td><span class="badge ${e(a.status)}">${registryLabels[a.status]}</span><span class="cell-sub">${date(a.created)}</span>${a.error ? `<span class="cell-sub">${e(a.error)}</span>` : ""}</td><td><div class="download-actions">${a.files.map((f) => `<a href="/api/files/${e(f.id)}" class="button" title="${e(f.name)}">${f.kind === "atk" ? "АТК" : "RESULT"} · v${f.version}</a>`).join("")}</div>${a.download_ready ? "" : '<span class="cell-sub">Комплект ещё не готов</span>'}<span class="cell-sub">${groupCounts.get(a.group_id) > 1 ? "Общий комплект · " + fmt(groupCounts.get(a.group_id)) + " АТК" : "Отдельный комплект"}</span></td><td class="registry-next-action">${e(logisticsNextAction(a))}</td><td>${isSupervisor() ? (a.download_ready ? '<span class="muted">Только просмотр и скачивание</span>' : '<span class="muted">Ожидание готовности</span>') : a.documents.some(d => d.can_complete) ? `<button data-action="registry-detail" data-id="${e(a.id)}">Открыть для закрытия накладных</button>` : a.status === "stopped" ? '<span class="badge cancelled">Остановлена</span>' : a.archived ? '<span class="badge done">В архиве</span>' : '<span class="muted">Ожидание готовности</span>'}</td></tr>`).join("");
     $("#atk-page-label").textContent = groupedItems.length
       ? `АТК ${from + 1}–${from + onPage.length} из ${groupedItems.length} · страница ${registryPage + 1} из ${pages}`
       : "АТК по выбранным фильтрам нет";
@@ -1788,7 +1826,7 @@ async function logisticsDetail(id) {
   const currentFileIds = new Set(a.files.map(file => String(file.id)));
   const oldFiles = a.history_files.filter(file => !currentFileIds.has(String(file.id)));
   modal(
-    `<div class="eyebrow">Логистика · Накладные и АТК</div><h2>${a.code ? "АТК " + e(a.code) : "АТК формируется"}</h2><p>${e(a.supplier)} · ТН ВЭД ${e(a.tnved)} · версия состава ${a.version}</p><p class="muted">Статус: ${e(states[a.status] || a.status)} · Последнее изменение операции: ${date(a.updated)}</p><p class="muted">Накладные: ${a.invoices.map(e).join(", ")}<br>Сотрудники: ${a.owners.map(e).join(", ")}</p><h3>Актуальные файлы АТК + RESULT</h3>${a.files.length ? `<div class="files">${a.files.map(f => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div>` : '<p class="muted">Актуальный комплект ещё не готов.</p>'}<h3>Накладные</h3><div class="table-wrap"><table><thead><tr><th>Номер</th><th>Сотрудник</th><th>Завершение</th></tr></thead><tbody>${a.documents.map(d => `<tr><td>${e(d.number)}</td><td>${e(d.owner)}</td><td>${d.can_complete ? `<button class="primary" data-action="logistics-complete" data-id="${e(d.id)}">Закрыть накладную</button>` : d.stopped ? '<span class="badge cancelled">Остановлена · архив</span>' : d.status === "archive" ? '<span class="badge done">Завершена · архив</span>' : '<span class="muted">Ожидание готовности</span>'}</td></tr>`).join("")}</tbody></table></div><h3>Состав: ${fmt(a.labels)} КМ, ${fmt(a.units)} шт.</h3><div class="table-wrap"><table><thead><tr><th>КИ</th><th>PN</th><th>Штук</th></tr></thead><tbody>${a.codes.map((c) => `<tr><td class="mono">${e(c.cis)}</td><td>${e(c.pn)}</td><td>${fmt(c.quantity)}</td></tr>`).join("")}</tbody></table></div>${oldFiles.length ? `<details><summary>Предыдущие версии файлов · ${fmt(oldFiles.length)}</summary><p class="muted">Сохранены для истории. Используйте актуальные файлы выше.</p><div class="files">${oldFiles.map(f => `<a class="outdated-artifact" href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}<span class="file-warning">Устаревшая версия · не использовать для оформления</span></a>`).join("")}</div></details>` : '<p class="muted">Предыдущих версий файлов нет.</p>'}<div class="actions"><button data-action="close">Закрыть</button></div>`,
+    `<div class="eyebrow">Логистика · Накладные и АТК</div><h2>${a.code ? "АТК " + e(a.code) : "АТК формируется"}</h2><p>${e(a.supplier)} · ТН ВЭД ${e(a.tnved)} · версия состава ${a.version}</p><p class="muted">Статус: ${e(states[a.status] || a.status)} · Последнее изменение операции: ${date(a.updated)}</p><p class="muted">Накладные: ${a.invoices.map(e).join(", ")}<br>Сотрудники: ${a.owners.map(e).join(", ")}</p><h3>Актуальные файлы АТК + RESULT</h3>${a.files.length ? `<div class="files">${a.files.map(f => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div>` : '<p class="muted">Актуальный комплект ещё не готов.</p>'}<h3>Накладные</h3><div class="table-wrap"><table><thead><tr><th>Номер</th><th>Сотрудник</th><th>${isSupervisor() ? "Доступ" : "Завершение"}</th></tr></thead><tbody>${a.documents.map(d => `<tr><td>${e(d.number)}</td><td>${e(d.owner)}</td><td>${isSupervisor() ? (d.status === "archive" ? '<span class="badge done">В архиве</span>' : '<span class="muted">Только просмотр</span>') : d.can_complete ? `<button class="primary" data-action="logistics-complete" data-id="${e(d.id)}">Закрыть накладную</button>` : d.stopped ? '<span class="badge cancelled">Остановлена · архив</span>' : d.status === "archive" ? '<span class="badge done">Завершена · архив</span>' : '<span class="muted">Ожидание готовности</span>'}</td></tr>`).join("")}</tbody></table></div><h3>Состав: ${fmt(a.labels)} КМ, ${fmt(a.units)} шт.</h3><div class="table-wrap"><table><thead><tr><th>КИ</th><th>PN</th><th>Штук</th></tr></thead><tbody>${a.codes.map((c) => `<tr><td class="mono">${e(c.cis)}</td><td>${e(c.pn)}</td><td>${fmt(c.quantity)}</td></tr>`).join("")}</tbody></table></div>${oldFiles.length ? `<details><summary>Предыдущие версии файлов · ${fmt(oldFiles.length)}</summary><p class="muted">Сохранены для истории. Используйте актуальные файлы выше.</p><div class="files">${oldFiles.map(f => `<a class="outdated-artifact" href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}<span class="file-warning">Устаревшая версия · не использовать для оформления</span></a>`).join("")}</div></details>` : '<p class="muted">Предыдущих версий файлов нет.</p>'}<div class="actions"><button data-action="close">Закрыть</button></div>`,
   );
 }
 async function downloadRegistry(ids) {
