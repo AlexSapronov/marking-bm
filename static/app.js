@@ -1006,11 +1006,11 @@ async function loadAdminDocuments() {
   try {
     const invoices = await api("/admin/documents?q=" + encodeURIComponent(search));
     if (!$("#admin-doc-results")) return;
-    const managers = overview.users.filter(u => u.enabled && ["manager", "supervisor"].includes(u.role));
+    const managers = overview.users.filter(u => u.enabled && u.role === "manager");
     result.innerHTML = invoices.length
       ? `<div class="table-wrap"><table><thead><tr><th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Текущий ответственный</th><th>Новый ответственный</th><th>Действие</th></tr></thead><tbody>${invoices.map(d => {
           const options = managers.filter(u => u.username !== d.owner);
-          return `<tr data-owner="${e(d.owner)}" data-number="${e(d.number)}"><td><b>${e(d.number)}</b></td><td>${e(d.supplier)}</td><td>${documentBadge(d)}</td><td>${e(d.owner)}</td><td><select class="user-role" aria-label="Назначить ответственного для ${e(d.number)}"><option value="">Выберите сотрудника</option>${options.map(u => `<option value="${e(u.username)}">${e(u.username)}</option>`).join("")}</select></td><td><button data-action="reassign-document" data-id="${e(d.id)}" ${options.length ? "" : `disabled aria-describedby="reassign-reason-${e(d.id)}"`}>Сменить ответственного</button>${options.length ? "" : `<span id="reassign-reason-${e(d.id)}" class="cell-sub selection-reason">Нет другого активного ответственного ОБМ или руководителя</span>`}</td></tr>`;
+          return `<tr data-owner="${e(d.owner)}" data-number="${e(d.number)}"><td><b>${e(d.number)}</b></td><td>${e(d.supplier)}</td><td>${documentBadge(d)}</td><td>${e(d.owner)}</td><td><select class="user-role" aria-label="Назначить ответственного для ${e(d.number)}"><option value="">Выберите сотрудника</option>${options.map(u => `<option value="${e(u.username)}">${e(u.username)}</option>`).join("")}</select></td><td><button data-action="reassign-document" data-id="${e(d.id)}" ${options.length ? "" : `disabled aria-describedby="reassign-reason-${e(d.id)}"`}>Сменить ответственного</button>${options.length ? "" : `<span id="reassign-reason-${e(d.id)}" class="cell-sub selection-reason">Нет другого активного бренд-менеджера</span>`}</td></tr>`;
         }).join("")}</tbody></table></div>`
       : '<p class="empty">Накладные не найдены. Измените запрос.</p>';
     $("#admin-doc-count").textContent = `Показано ${invoices.length} накладных${invoices.length === 100 ? " (первые 100; уточните поиск)" : ""}. Архивные документы тоже учитываются.`;
@@ -1025,7 +1025,7 @@ function setupAdminDocumentPanel() {
   panel.dataset.adminPanel = "documents";
   panel.innerHTML = `<h2>Передать накладную другому сотруднику</h2><p class="muted">Администратор может изменить ответственного, включая архивные накладные. История и полученные КМ сохраняются. Новый сотрудник получит доступ, прежний его потеряет.</p><form id="admin-doc-search-form" class="admin-filter-bar"><label>Поиск накладной, поставщика или владельца<input id="admin-doc-q" type="search" maxlength="120" placeholder="Номер, поставщик или username"></label><button class="primary" type="submit">Найти</button></form><p id="admin-doc-count" class="muted" role="status"></p><div id="admin-doc-results"></div>`;
   // Import old KM packs without requesting or rendering new labels.
-  const managers = overview.users.filter(u => u.enabled && ["manager", "supervisor"].includes(u.role));
+  const managers = overview.users.filter(u => u.enabled && u.role === "manager");
   const legacy = document.createElement("div");
   legacy.className = "card";
   legacy.innerHTML = `<h3>Импорт старой накладной из паков</h3>
