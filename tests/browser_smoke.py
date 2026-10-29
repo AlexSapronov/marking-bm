@@ -144,7 +144,24 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("heading", name="Накладные", exact=True).wait_for()
             # Stage pills are the single business-stage selector. No duplicate
             # Status dropdown and no irrelevant print instructions for BM.
-            expect(page.locator(".stage-filters [data-stage]")).to_have_count(7)
+            expect(page.locator(".stage-filters [data-stage]")).to_have_count(8)
+            expect(page.locator(".stage-filters [data-stage='labels_ready']")).to_contain_text("Этикетки готовы")
+            stage_matches = page.evaluate(
+                """() => ({
+                  labelsReady: documentStages.labels_ready.matches({status: "ready"}),
+                  transferredNotLabelsReady: !documentStages.labels_ready.matches({status: "transferred"}),
+                  supplierReady: documentStages.supplier.matches({status: "ready"}),
+                  supplierTransferred: documentStages.supplier.matches({status: "transferred"}),
+                  stoppedNotSupplier: !documentStages.supplier.matches({status: "transferred", stopped: true}),
+                })"""
+            )
+            assert stage_matches == {
+                "labelsReady": True,
+                "transferredNotLabelsReady": True,
+                "supplierReady": False,
+                "supplierTransferred": True,
+                "stoppedNotSupplier": True,
+            }
             expect(page.locator(".document-filters label")).to_have_count(4)
             expect(page.locator("#status")).to_have_count(0)
             expect(page.locator(".app-footer")).to_have_count(0)
@@ -336,6 +353,8 @@ with tempfile.TemporaryDirectory() as tmp:
                     "Товары": [
                         HEADERS,
                         ["MAPPED-PN", "04640638349704", "1000", "2", 8536699008],
+                        ["MAPPED-PN", "04640638349704", "500", "2", 8536699008],
+                        ["MAPPED-PN", "04640638349704", "100", "5", 8536699008],
                     ]
                 }
             )
@@ -350,6 +369,39 @@ with tempfile.TemporaryDirectory() as tmp:
                 "Excel загружен в предпросмотр"
             )
             expect(page.locator("#modal")).not_to_be_visible()
+            expect(page.locator("#edit-rows tr")).to_have_count(3)
+            cell_counts = page.locator("#edit-rows tr").evaluate_all(
+                "rows => rows.map(row => row.cells.length)"
+            )
+            assert cell_counts == [6, 6, 6], cell_counts
+            assert page.locator(".pn-input").evaluate_all(
+                "inputs => inputs.map(input => input.value)"
+            ) == ["MAPPED-PN"] * 3
+            assert page.locator(".gtin-input").evaluate_all(
+                "inputs => inputs.map(input => input.value)"
+            ) == ["04640638349704"] * 3
+
+            # Restore the original one-line composition so the rest of the smoke
+            # test continues through the same workflow after checking multi-row alignment.
+            ordinary_single = xlsx(
+                {
+                    "Товары": [
+                        HEADERS,
+                        ["MAPPED-PN", "04640638349704", "1000", "2", 8536699008],
+                    ]
+                }
+            )
+            page.locator("#excel-file").set_input_files(
+                {
+                    "name": "ordinary-single.xlsx",
+                    "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "buffer": ordinary_single,
+                }
+            )
+            expect(page.locator("#toast")).to_contain_text(
+                "Excel загружен в предпросмотр"
+            )
+            expect(page.locator("#edit-rows tr")).to_have_count(1)
             # Preserve edits on a cancelled navigation, then save before leaving.
             page.get_by_role("button", name="Накладные", exact=True).click()
             expect(page.get_by_role("heading", name="Покинуть документ?")).to_be_visible()
