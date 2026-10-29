@@ -368,9 +368,9 @@ function renderList() {
   const stages = archive
     ? {all: documentStages.all, archived: documentStages.archived, stopped: documentStages.stopped}
     : {all: documentStages.all, preparation: documentStages.preparation,
-       processing: documentStages.processing, supplier: documentStages.supplier,
-       attention: documentStages.attention, logistics: documentStages.logistics,
-       stopped: documentStages.stopped};
+       processing: documentStages.processing, labels_ready: documentStages.labels_ready,
+       supplier: documentStages.supplier, attention: documentStages.attention,
+       logistics: documentStages.logistics, stopped: documentStages.stopped};
   shell(`<div class="topbar"><div><div class="eyebrow">${user.admin ? "Все сотрудники" : "Мои документы"}</div><h1>${archive ? "Архив накладных" : "Накладные"}</h1><p class="muted">${archive ? "Завершённые документы и сохранённые файлы" : "Подготовьте этикетки, передайте поставщику и подтвердите нанесение"}</p></div>${archive ? "" : '<button class="primary" data-action="new">+ Новая накладная</button>'}</div>
   <div class="stage-filters" aria-label="Этапы накладных">${Object.entries(stages).map(([key, stage]) => `<button data-stage="${key}" aria-pressed="${documentFilters.stage === key}">${stage.title}<b>${docs.filter(d => stage.matches(d)).length}</b></button>`).join("")}</div>
   <section class="card document-list"><h2>${archive ? "Архивные документы" : "Рабочие документы"}</h2><div class="document-filters"><label>Номер накладной<input id="search" placeholder="Поиск по номеру" value="${e(documentFilters.search)}"></label><label>Поставщик<select id="supplier"><option value="">Все поставщики</option>${[...new Set(docs.map(d => d.supplier))].sort().map(v => `<option ${v === documentFilters.supplier ? "selected" : ""}>${e(v)}</option>`).join("")}</select></label><label>Создана с<input type="date" id="from" value="${e(documentFilters.from)}"></label><label>Создана по<input type="date" id="to" value="${e(documentFilters.to)}"></label></div>
