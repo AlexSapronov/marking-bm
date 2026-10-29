@@ -479,7 +479,7 @@ function filterRows() {
 }
 function updateDocumentSelection() {
   if (isSupervisor()) return;
-  const eligible = $(".doc-select:not(:disabled)");
+  const eligible = $$(".doc-select:not(:disabled)");
   const localCount = eligible.filter(input => input.checked).length;
   const count = documentSelectedIds.size;
   $("#select-all").disabled = !eligible.length;
