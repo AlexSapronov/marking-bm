@@ -115,6 +115,13 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.locator("#setup-code-issued")).to_be_visible()
             logist_setup_code = page.locator("#setup-code-issued").inner_text()
             page.locator("#modal [data-action=close]").click()
+            page.locator("#username").fill("smoke-supervisor")
+            page.locator("#new-user-role").select_option("supervisor")
+            page.locator("#user-form button").click()
+            page.get_by_role("cell", name="smoke-supervisor", exact=True).wait_for()
+            expect(page.locator("#setup-code-issued")).to_be_visible()
+            supervisor_setup_code = page.locator("#setup-code-issued").inner_text()
+            page.locator("#modal [data-action=close]").click()
             # Administrator can invalidate the first code and issue a reset code.
             page.locator('[data-action="reset-password"][data-id="smoke-user"]').click()
             expect(page.get_by_role("heading", name="Сбросить пароль сотрудника?")).to_be_visible()
@@ -999,10 +1006,47 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.get_by_role("heading", name="Ошибка отчёта о нанесении")).to_be_visible()
             expect(page.locator('.next-step [data-action="retry-report-doc"]')).to_have_text("Повторить отчёт о нанесении")
             page.screenshot(path=str(out / "report-error-retry.png"), full_page=True)
+
+            # A supervisor gets both business workspaces, but no admin UI or API.
+            supervisor_page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            supervisor_errors = []
+            supervisor_page.on("pageerror", lambda err: supervisor_errors.append(str(err)))
+            supervisor_page.goto(url + "/")
+            supervisor_page.get_by_role("button", name="Первый вход / сброс пароля").click()
+            supervisor_page.locator("#login-value").fill("smoke-supervisor")
+            supervisor_page.locator("#setup-code").fill(supervisor_setup_code)
+            supervisor_page.locator("#password-new").fill("supervisor-pass")
+            supervisor_page.locator("#password-repeat").fill("supervisor-pass")
+            supervisor_page.locator("#login-form button").click()
+            supervisor_page.get_by_text("Пароль установлен. Теперь войдите с новым паролем").wait_for()
+            supervisor_page.locator("#login-password").fill("supervisor-pass")
+            supervisor_page.locator("#login-form button").click()
+            supervisor_page.get_by_role("heading", name="Накладные", exact=True).wait_for()
+            expect(supervisor_page.get_by_role("button", name="Накладные", exact=True)).to_be_visible()
+            expect(supervisor_page.get_by_role("button", name="Архив", exact=True)).to_be_visible()
+            expect(supervisor_page.get_by_role("button", name="Реестр АТК", exact=True)).to_be_visible()
+            expect(supervisor_page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
+            role_api_status = await supervisor_page.evaluate("""
+              async () => {
+                const [bm, logistics, admin] = await Promise.all([
+                  fetch('/api/documents').then(r => r.status),
+                  fetch('/api/logistics/atks').then(r => r.status),
+                  fetch('/api/admin/overview').then(r => r.status),
+                ]);
+                return {bm, logistics, admin};
+              }
+            """)
+            assert role_api_status == {"bm": 200, "logistics": 200, "admin": 403}, role_api_status
+            supervisor_page.get_by_role("button", name="Реестр АТК", exact=True).click()
+            supervisor_page.get_by_role("heading", name="Реестр АТК", exact=True).wait_for()
+            expect(supervisor_page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
+            supervisor_page.get_by_role("button", name="Накладные", exact=True).click()
+            supervisor_page.get_by_role("heading", name="Накладные", exact=True).wait_for()
+            assert not supervisor_errors, supervisor_errors
             assert not errors, errors
             browser.close()
         print(
-            "Browser smoke: managers and logistics roles, registry, completion, typed stop and admin-only restoration, shared light/dark themes, saved preference, invoice editing, Excel automatic detection and mapping, persistence, filters and mobile layout OK. External writes disabled."
+            "Browser smoke: manager, supervisor and logistics roles, supervisor access to both workspaces without admin, registry, completion, typed stop and admin-only restoration, shared light/dark themes, saved preference, invoice editing, Excel automatic detection and mapping, persistence, filters and mobile layout OK. External writes disabled."
         )
     finally:
         process.terminate()
