@@ -278,11 +278,11 @@ class Service:
                 raise ValueError("Накладная не найдена")
             user = one(
                 db,
-                "SELECT username FROM users WHERE username=? AND enabled=1 AND role='manager'",
+                "SELECT username FROM users WHERE username=? AND enabled=1 AND role IN ('manager','supervisor')",
                 (username,),
             )
             if not user:
-                raise ValueError("Выберите активного пользователя с ролью Бренд-менеджер")
+                raise ValueError("Выберите активного бренд-менеджера или руководителя")
             if doc["owner"] == username:
                 raise Conflict("Этот сотрудник уже назначен ответственным")
             stamp = now()
@@ -541,11 +541,11 @@ class Service:
             raise ValueError("Нет строк для импорта")
         with self.store.transaction() as db:
             manager = one(
-                db, "SELECT username FROM users WHERE username=? AND enabled=1 AND role='manager'",
+                db, "SELECT username FROM users WHERE username=? AND enabled=1 AND role IN ('manager','supervisor')",
                 (owner,),
             )
             if not manager:
-                raise ValueError("Ответственный должен быть активным бренд-менеджером")
+                raise ValueError("Ответственный должен быть активным бренд-менеджером или руководителем")
             review = self.legacy_archive_candidates(db, parsed)
             if review["duplicate_invoice"]:
                 raise Conflict("Накладная уже есть среди активных документов")
