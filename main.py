@@ -109,13 +109,13 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         return s
 
     def manager(s=Depends(session)):
-        if not s["admin"] and s["role"] != "manager":
-            raise HTTPException(403, "Раздел доступен бренд-менеджерам")
+        if not s["admin"] and s["role"] not in ("manager", "supervisor"):
+            raise HTTPException(403, "Раздел доступен бренд-менеджерам и руководителям")
         return s
 
     def logistics(s=Depends(session)):
-        if not s["admin"] and s["role"] != "logistics":
-            raise HTTPException(403, "Раздел доступен логистам")
+        if not s["admin"] and s["role"] not in ("logistics", "supervisor"):
+            raise HTTPException(403, "Раздел доступен логистам и руководителям")
         return s
 
     def admin(s=Depends(session)):
@@ -653,13 +653,17 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         if not a:
             raise HTTPException(404, "Файл не найден")
         with store.transaction() as db:
-            if s["role"] == "logistics":
+            if s["role"] == "logistics" or (
+                s["role"] == "supervisor"
+                and not a["doc_id"]
+                and a["kind"] in ("atk", "result")
+            ):
                 if (
                     a["doc_id"]
                     or a["kind"] not in ("atk", "result")
                     or not a["group_id"]
                 ):
-                    raise PermissionError("Логисту доступны только файлы АТК и RESULT")
+                    raise PermissionError("Доступны только групповые файлы АТК и RESULT")
                 batch_id, supplier_id = a["group_id"].split(":")
                 if not one(
                     db,
@@ -853,7 +857,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
     class UserBody(BaseModel):
         username: str
         enabled: bool = True
-        role: Literal["manager", "logistics"] | None = None
+        role: Literal["manager", "logistics", "supervisor"] | None = None
 
     @app.post("/api/admin/users/{username}/reset-password")
     def reset_employee_password(username: str, s=Depends(admin)):

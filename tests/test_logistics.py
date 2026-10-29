@@ -78,6 +78,38 @@ def test_logist_sees_all_owners_filters_and_downloads(env):
         assert all("/" not in name for name in z.namelist())
 
 
+def test_supervisor_can_use_both_workspaces_without_admin_or_cross_owner_labels(env):
+    app, s = env[0], env[1]
+    ids, _, admin = prepare_atks(env)
+    changed = admin.post(
+        "/api/admin/users",
+        json={"username": "logist", "role": "supervisor"},
+    )
+    assert changed.status_code == 200, changed.text
+
+    supervisor = client(app, "logist")
+    assert supervisor.get("/api/session").json()["role"] == "supervisor"
+    assert supervisor.get("/api/documents").status_code == 200
+    items = supervisor.get("/api/logistics/atks").json()
+    assert len(items) == 2
+    for file in items[0]["files"]:
+        response = supervisor.get("/api/files/" + file["id"])
+        assert response.status_code == 200, response.text
+
+    # Logistics can see shared ATK/RESULT files, but the supervisor's BM access
+    # still obeys normal document ownership and does not become admin access.
+    label = s.store.one(
+        "SELECT id FROM artifacts WHERE doc_id=? AND kind='labels'", (ids[0],)
+    )
+    assert label is not None
+    assert supervisor.get("/api/files/" + label["id"]).status_code == 403
+    assert supervisor.get("/api/admin/overview").status_code == 403
+    assert supervisor.post(
+        "/api/admin/users",
+        json={"username": "blocked-user", "role": "manager"},
+    ).status_code == 403
+
+
 def test_logistics_export_preserves_colliding_filenames_flat(env, monkeypatch):
     app, service, _ = env
     _, logistics, _ = prepare_atks(env)
@@ -208,7 +240,7 @@ def test_legacy_database_migrates_roles_without_losing_users(tmp_path):
     for _ in range(2):
         store = Store(path)
         assert store.one("SELECT * FROM users")["role"] == "manager"
-        assert store.one("SELECT MAX(version) v FROM schema_version")["v"] == 4
+        assert store.one("SELECT MAX(version) v FROM schema_version")["v"] == 5
         assert store.one("SELECT password_hash FROM users WHERE username='old-manager'")["password_hash"] is None
         assert store.one("SELECT setup_token_hash FROM users WHERE username='old-manager'")["setup_token_hash"] is None
     with store.transaction() as db:
