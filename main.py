@@ -679,6 +679,10 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         a = store.one("SELECT * FROM artifacts WHERE id=?", (file_id,))
         if not a:
             raise HTTPException(404, "Файл не найден")
+        if s["role"] == "supervisor" and a["doc_id"]:
+            raise PermissionError(
+                "Руководителю доступны только групповые файлы АТК и RESULT"
+            )
         with store.transaction() as db:
             if s["role"] == "logistics" or (
                 s["role"] == "supervisor"

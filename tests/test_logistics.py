@@ -106,6 +106,11 @@ def test_supervisor_can_view_invoices_download_atks_but_not_complete(env):
     )
     assert label is not None
     assert supervisor.get("/api/files/" + label["id"]).status_code == 403
+    # Even a legacy document assigned to this username must not grant access
+    # to invoice-specific files through the supervisor role.
+    with s.store.transaction() as db:
+        db.execute("UPDATE documents SET owner='logist' WHERE id=?", (ids[0],))
+    assert supervisor.get("/api/files/" + label["id"]).status_code == 403
 
     # Downloading is allowed, but completing logistics work is not.
     download = supervisor.post(
