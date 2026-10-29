@@ -1065,7 +1065,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 expect(supervisor_page.locator('button[data-action="order"]')).to_have_count(0)
                 expect(supervisor_page.locator('button[data-action="stop-document"]')).to_have_count(0)
                 expect(supervisor_page.locator('a[href^="/api/files/"]')).to_have_count(0)
-                supervisor_page.locator('button[data-action="list"]').click()
+                supervisor_page.locator('main button[data-action="list"]').click()
                 supervisor_page.get_by_role("heading", name="Накладные", exact=True).wait_for()
             supervisor_page.get_by_role("button", name="Реестр АТК", exact=True).click()
             supervisor_page.get_by_role("heading", name="Реестр АТК", exact=True).wait_for()
