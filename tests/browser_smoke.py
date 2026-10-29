@@ -721,7 +721,7 @@ with tempfile.TemporaryDirectory() as tmp:
             page.locator('#modal [data-action="logistics-complete"]').click()
             expect(page.locator("#modal")).to_contain_text("не подтверждает фактическую доставку")
             page.get_by_role("button", name="Отмена", exact=True).click()
-            expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row):not(.registry-invoice-row)')).to_have_count(1)
+            expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row):not(.registry-invoice-row)')).to_have_count(2)
             base_atk_row.get_by_role("button", name="Завершить работу", exact=True).click()
             page.locator('#modal [data-action="logistics-complete"]').click()
             page.locator('#modal [data-action="confirm-logistics-complete"]').click()
