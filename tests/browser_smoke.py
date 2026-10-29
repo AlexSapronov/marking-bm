@@ -1026,7 +1026,7 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(supervisor_page.get_by_role("button", name="Архив", exact=True)).to_be_visible()
             expect(supervisor_page.get_by_role("button", name="Реестр АТК", exact=True)).to_be_visible()
             expect(supervisor_page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
-            role_api_status = await supervisor_page.evaluate("""
+            role_api_status = supervisor_page.evaluate("""
               async () => {
                 const [bm, logistics, admin] = await Promise.all([
                   fetch('/api/documents').then(r => r.status),
