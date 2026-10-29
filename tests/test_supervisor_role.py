@@ -2,7 +2,7 @@
 import sqlite3
 
 from marking_bm.db import Store
-from conftest import client
+from conftest import add_doc, client
 
 
 def anonymous(app):
