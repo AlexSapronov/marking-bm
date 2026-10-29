@@ -693,7 +693,7 @@ async function runExcelImport(context, options = {}) {
     return;
   }
   if ($("#modal").open) $("#modal").close();
-  $("#edit-rows").innerHTML = result.lines.map(lineRow).join("");
+  $("#edit-rows").innerHTML = result.lines.map((line) => lineRow(line)).join("");
   markDocumentDirty();
   if (result.warnings.length) {
     modal(
