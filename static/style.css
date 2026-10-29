@@ -957,6 +957,7 @@ main > .topbar p { margin-bottom: 0; }
 .move-impact td, .move-impact th { padding: 8px; text-align: right; }
 .move-impact th:first-child { text-align: left; }
 .registry-supplier-row th { text-align: left; padding: 12px 14px; background: var(--surface-2); border-top: 2px solid var(--border); }
+.registry-invoice-row th { text-align: left; padding: 9px 14px; background: var(--surface); border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft); font-weight: 600; }
 .registry-next-action { min-width: 175px; max-width: 230px; font-weight: 500; white-space: normal; }
 /* Pin the critical completion action on horizontally scrollable desktop registries. */
 #atk-table thead th:last-child,

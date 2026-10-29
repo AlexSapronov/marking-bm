@@ -610,6 +610,12 @@ with tempfile.TemporaryDirectory() as tmp:
             test_service.transferred(logistics_doc, "alice", 1)
             test_service.batch("alice", [logistics_doc], "2026-01-01")
             advance(test_app)
+            logistics_doc_2 = add_doc(test_service, number="LOGISTICS-READY-2", supplier="Supplier A")
+            test_service.order(logistics_doc_2, "alice")
+            advance(test_app)
+            test_service.transferred(logistics_doc_2, "alice", 1)
+            test_service.batch("alice", [logistics_doc_2], "2026-01-01")
+            advance(test_app)
             page.get_by_role("button", name="Первый вход / сброс пароля").click()
             page.screenshot(path=str(out / "password-setup.png"), full_page=True)
             page.locator("#login-value").fill("smoke-logist")
@@ -625,17 +631,28 @@ with tempfile.TemporaryDirectory() as tmp:
             assert page.get_by_role("button", name="+ Новая накладная").count() == 0
             assert page.locator("#atk-table").count() == 1
             expect(page.locator(".registry-supplier-row")).to_have_count(1)
+            expect(page.locator(".registry-supplier-row")).to_contain_text("всего 2 АТК")
+            expect(page.locator(".registry-invoice-row")).to_have_count(2)
+            expect(page.locator(".registry-invoice-row").filter(has_text="Накладная LOGISTICS-READY · 1 АТК")).to_be_visible()
+            expect(page.locator(".registry-invoice-row").filter(has_text="Накладная LOGISTICS-READY-2 · 1 АТК")).to_be_visible()
             expect(page.get_by_role("columnheader", name="Следующее действие")).to_be_visible()
             expect(page.locator("#registry-selection-summary")).to_contain_text("Выберите готовые АТК")
-            page.locator(".atk-select").check()
+            base_invoice_group = page.locator(".registry-invoice-row").filter(has_text="Накладная LOGISTICS-READY · 1 АТК")
+            base_atk_row = base_invoice_group.locator("xpath=following-sibling::tr[1]")
+            expect(base_invoice_group).to_be_visible()
+            expect(base_atk_row.locator(".download-actions .button")).to_have_text(["АТК", "RESULT"])
+            base_atk_row.locator(".atk-select").check()
             expect(page.locator("#registry-selection-summary")).to_contain_text("Уникальных комплектов: 1")
             expect(page.locator("#registry-selection-summary")).to_contain_text("Файлов Excel: 2")
             expect(page.locator("#registry-selection-summary")).to_contain_text("LOGISTICS-READY")
-            page.locator(".atk-select").uncheck()
+            base_atk_row.locator(".atk-select").uncheck()
             # A historical RESULT file must not be presented as current.
             with sqlite3.connect(Path(tmp) / "marking-bm.sqlite3") as db:
                 group = db.execute(
-                    "SELECT batch_id || ':' || supplier_id FROM atks LIMIT 1"
+                    "SELECT a.batch_id || ':' || a.supplier_id FROM atks a "
+                    "JOIN batch_docs b ON b.batch_id=a.batch_id AND b.supplier_id=a.supplier_id "
+                    "WHERE b.doc_id=? LIMIT 1",
+                    (logistics_doc,),
                 ).fetchone()[0]
                 original = db.execute(
                     "SELECT content,sha256,snapshot,created FROM artifacts "
@@ -649,17 +666,19 @@ with tempfile.TemporaryDirectory() as tmp:
                     "VALUES(?,NULL,?,0,'result',?,?,?,?,?)",
                     (uuid4().hex, group, "ux-outdated-RESULT.xlsx", *original),
                 )
-            page.locator("#atk-table .registry-code").click()
+            base_atk_row.locator(".registry-code").click()
             expect(page.locator("#modal")).to_contain_text("Актуальные файлы АТК + RESULT")
             expect(page.locator("#modal")).to_contain_text("Последнее изменение операции:")
             expect(page.locator("#modal .outdated-artifact")).to_have_count(1)
             expect(page.locator("#modal .outdated-artifact")).to_contain_text("ux-outdated-RESULT.xlsx")
             expect(page.locator("#modal .outdated-artifact")).to_contain_text("Устаревшая версия")
             expect(page.locator("#modal .files a:not(.outdated-artifact)")).to_have_count(2)
+            assert all(" · v" not in text for text in page.locator("#modal .files a:not(.outdated-artifact)").all_text_contents())
+            expect(page.locator("#modal [data-action='close']")).to_have_text("Закрыть окно")
             page.locator("#modal [data-action='close']").click()
             expect(page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
-            expect(page.get_by_role("button", name="Открыть для закрытия накладных", exact=True)).to_be_visible()
-            expect(page.get_by_role("button", name="Открыть для закрытия накладных", exact=True)).to_be_in_viewport(ratio=1)
+            expect(page.get_by_role("button", name="Завершить работу", exact=True)).to_have_count(2)
+            expect(page.get_by_role("button", name="Завершить работу", exact=True).first).to_be_in_viewport(ratio=1)
             # The action column remains visible without horizontal table scrolling
             # at all supported desktop viewport widths.
             for width, height in ((1366, 768), (1920, 1080), (2560, 1440)):
@@ -695,25 +714,34 @@ with tempfile.TemporaryDirectory() as tmp:
             )
             assert not errors, errors
             page.set_viewport_size({"width": 1440, "height": 1000})
-            page.get_by_role("button", name="Открыть для закрытия накладных", exact=True).click()
+            base_atk_row.get_by_role("button", name="Завершить работу", exact=True).click()
             expect(page.locator("#modal")).to_contain_text("Закрыть накладную")
             # Opening an ATK detail is navigation, not completion.
             assert test_service.get(logistics_doc, "alice")["status"] == "done"
             page.locator('#modal [data-action="logistics-complete"]').click()
             expect(page.locator("#modal")).to_contain_text("не подтверждает фактическую доставку")
             page.get_by_role("button", name="Отмена", exact=True).click()
-            expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row)')).to_have_count(1)
-            page.get_by_role("button", name="Открыть для закрытия накладных", exact=True).click()
+            expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row):not(.registry-invoice-row)')).to_have_count(2)
+            base_atk_row.get_by_role("button", name="Завершить работу", exact=True).click()
             page.locator('#modal [data-action="logistics-complete"]').click()
             page.locator('#modal [data-action="confirm-logistics-complete"]').click()
-            expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row)')).to_have_count(0)
+            expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row):not(.registry-invoice-row)')).to_have_count(1)
             page.locator("#atk-archive").check()
-            expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row)')).to_have_count(1)
+            expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row):not(.registry-invoice-row)')).to_have_count(1)
             expect(page.locator('#atk-table')).to_contain_text("LOGISTICS-READY")
-            expect(page.get_by_role("button", name="Открыть для закрытия накладных", exact=True)).to_have_count(0)
+            expect(page.get_by_role("button", name="Завершить работу", exact=True)).to_have_count(0)
             page.reload()
             # Archive choice is an in-session filter; the completed invoice stays out of work.
-            expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row)')).to_have_count(0)
+            expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row):not(.registry-invoice-row)')).to_have_count(1)
+            expect(page.locator("#atk-table")).to_contain_text("LOGISTICS-READY-2")
+            second_invoice_group = page.locator(".registry-invoice-row").filter(has_text="Накладная LOGISTICS-READY-2 · 1 АТК")
+            second_atk_row = second_invoice_group.locator("xpath=following-sibling::tr[1]")
+            second_atk_row.get_by_role("button", name="Завершить работу", exact=True).click()
+            expect(page.locator("#modal")).to_contain_text("Закрыть накладную")
+            page.locator('#modal [data-action="logistics-complete"]').click()
+            page.locator('#modal [data-action="confirm-logistics-complete"]').click()
+            expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row):not(.registry-invoice-row)')).to_have_count(0)
+            expect(page.get_by_role("button", name="Завершить работу", exact=True)).to_have_count(0)
             # Many real database ATK records check paging without mocked HTTP/UI
             # responses. The temporary test database is discarded after the smoke run.
             with sqlite3.connect(Path(tmp) / "marking-bm.sqlite3") as db:
@@ -1074,7 +1102,7 @@ with tempfile.TemporaryDirectory() as tmp:
             supervisor_page.get_by_role("button", name="Реестр АТК", exact=True).click()
             supervisor_page.get_by_role("heading", name="Реестр АТК", exact=True).wait_for()
             expect(supervisor_page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
-            expect(supervisor_page.get_by_role("button", name="Открыть для закрытия накладных", exact=True)).to_have_count(0)
+            expect(supervisor_page.get_by_role("button", name="Завершить работу", exact=True)).to_have_count(0)
             expect(supervisor_page.locator('button[data-action="logistics-complete"]')).to_have_count(0)
             supervisor_page.get_by_role("button", name="Накладные", exact=True).click()
             supervisor_page.get_by_role("heading", name="Накладные", exact=True).wait_for()
