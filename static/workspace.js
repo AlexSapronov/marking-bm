@@ -9,7 +9,6 @@ const documentStages = {
   attention: {title: "Требуют проверки", matches: d => ["attention", "label_error", "report_error", "preflight_blocked", "unknown", "blocked"].includes(d.display_status || d.status)},
   logistics: {title: "Комплект сформирован", matches: d => !d.stopped && d.status === "done"},
   archived: {title: "Закрыты", matches: d => !d.stopped && d.status === "archive"},
-  stopped: {title: "Остановлены", matches: d => !!d.stopped},
 };
 const adminSections = {
   overview: ["Обзор", "Состояние системы и задачи, требующие внимания"],

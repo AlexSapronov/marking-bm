@@ -382,11 +382,11 @@ async function list() {
 function renderList() {
   const readOnly = isSupervisor();
   const stages = archive
-    ? {all: documentStages.all, archived: documentStages.archived, stopped: documentStages.stopped}
+    ? {all: documentStages.all, archived: documentStages.archived}
     : {all: documentStages.all, preparation: documentStages.preparation,
        processing: documentStages.processing, labels_ready: documentStages.labels_ready,
        supplier: documentStages.supplier, attention: documentStages.attention,
-       logistics: documentStages.logistics, stopped: documentStages.stopped};
+       logistics: documentStages.logistics};
   shell(`<div class="topbar"><div><div class="eyebrow">${user.admin || readOnly ? "Все сотрудники" : "Мои документы"}</div><h1>${archive ? "Архив накладных" : "Накладные"}</h1><p class="muted">${readOnly ? "Режим просмотра всех накладных. Для скачивания АТК и RESULT откройте реестр логистики." : archive ? "Завершённые документы и сохранённые файлы" : "Подготовьте состав накладной, закажите КМ и подтвердите нанесение"}</p></div>${archive || readOnly ? "" : '<button class="primary" data-action="new">+ Новая накладная</button>'}</div>
   <div class="stage-filters" aria-label="Этапы накладных">${Object.entries(stages).map(([key, stage]) => `<button data-stage="${key}" aria-pressed="${documentFilters.stage === key}">${stage.title}<b>${docs.filter(d => stage.matches(d)).length}</b></button>`).join("")}</div>
   <section class="card document-list"><h2>${archive ? "Архивные документы" : "Рабочие документы"}</h2><div class="document-filters"><label>Номер накладной<input id="search" placeholder="Поиск по номеру" value="${e(documentFilters.search)}"></label><label>Поставщик<select id="supplier"><option value="">Все поставщики</option>${[...new Set(docs.map(d => d.supplier))].sort().map(v => `<option ${v === documentFilters.supplier ? "selected" : ""}>${e(v)}</option>`).join("")}</select></label><label>Создана с<input type="date" id="from" value="${e(documentFilters.from)}"></label><label>Создана по<input type="date" id="to" value="${e(documentFilters.to)}"></label></div>
@@ -443,7 +443,7 @@ function filterRows() {
     .map(d => String(d.id)));
   for (const id of documentSelectedIds) if (!eligibleIds.has(id)) documentSelectedIds.delete(id);
   const stages = archive
-    ? {all: documentStages.all, archived: documentStages.archived, stopped: documentStages.stopped}
+    ? {all: documentStages.all, archived: documentStages.archived}
     : documentStages;
   const ds = docs.filter(d => (stages[f.stage] || stages.all).matches(d) &&
     (!f.search || d.number.toLowerCase().includes(f.search.toLowerCase())) &&

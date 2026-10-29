@@ -961,7 +961,8 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("heading", name="Обработка остановлена", exact=True).wait_for()
             page.screenshot(path=str(out / "stopped-invoice.png"), full_page=True)
             page.get_by_role("button", name="← Архив накладных", exact=True).click()
-            page.locator('[data-stage="stopped"]').click()
+            expect(page.locator('[data-stage="stopped"]')).to_have_count(0)
+            page.locator('[data-stage="all"]').click()
             expect(page.locator("#doc-rows")).to_contain_text("STOP-UI")
             page.get_by_role("button", name="Выйти", exact=True).click()
             page.get_by_role("button", name="Вход администратора", exact=True).click()
@@ -1027,6 +1028,9 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(supervisor_page.get_by_role("button", name="Реестр АТК", exact=True)).to_be_visible()
             expect(supervisor_page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
             expect(supervisor_page.get_by_role("button", name="+ Новая накладная", exact=True)).to_have_count(0)
+            expect(supervisor_page.locator(".topbar p.muted")).to_contain_text("Режим просмотра всех накладных")
+            expect(supervisor_page.locator('[data-stage="stopped"]')).to_have_count(0)
+            expect(supervisor_page.locator("#doc-rows")).to_contain_text("STOP-UI")
             role_api_status = supervisor_page.evaluate("""
               async () => {
                 const session = await fetch('/api/session').then(r => r.json());
