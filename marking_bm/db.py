@@ -20,7 +20,7 @@ def dumps(value):
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version(version INTEGER PRIMARY KEY);
 INSERT OR IGNORE INTO schema_version VALUES(1);
-CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1,role TEXT NOT NULL DEFAULT 'manager' CHECK(role IN ('manager','logistics')));
+CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1,role TEXT NOT NULL DEFAULT 'manager' CHECK(role IN ('manager','logistics','supervisor')));
 CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,username TEXT,admin INTEGER NOT NULL,csrf TEXT NOT NULL,expires REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS login_attempts(ip TEXT PRIMARY KEY,failures INTEGER NOT NULL,until REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS suppliers(id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,merged_into TEXT REFERENCES suppliers(id));
@@ -87,7 +87,7 @@ class Store:
                 db.execute("ALTER TABLE documents ADD COLUMN last_error TEXT")
             if "role" not in {r[1] for r in db.execute("PRAGMA table_info(users)")}:
                 db.execute(
-                    "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'manager' CHECK(role IN ('manager','logistics'))"
+                    "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'manager' CHECK(role IN ('manager','logistics','supervisor'))"
                 )
             # Passwords are opt-in only through one-time admin-issued setup codes.
             # Existing passwordless sessions must NOT survive the migration.
@@ -102,6 +102,45 @@ class Store:
             db.execute("INSERT OR IGNORE INTO schema_version VALUES(2)")
             db.execute("INSERT OR IGNORE INTO schema_version VALUES(3)")
             db.execute("INSERT OR IGNORE INTO schema_version VALUES(4)")
+            db.commit()
+
+            # SQLite cannot widen a CHECK constraint with ALTER TABLE. Existing
+            # installations may still restrict users.role to manager/logistics,
+            # so rebuild only that table while preserving accounts and sessions.
+            user_table = db.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
+            ).fetchone()
+            if user_table and "'supervisor'" not in (user_table["sql"] or ""):
+                db.execute("PRAGMA foreign_keys=OFF")
+                db.execute("BEGIN IMMEDIATE")
+                try:
+                    db.execute(
+                        "CREATE TABLE users_new("
+                        "username TEXT PRIMARY KEY,"
+                        "enabled INTEGER NOT NULL DEFAULT 1,"
+                        "role TEXT NOT NULL DEFAULT 'manager' "
+                        "CHECK(role IN ('manager','logistics','supervisor')),"
+                        "password_hash TEXT,"
+                        "setup_token_hash TEXT,"
+                        "setup_expires REAL)"
+                    )
+                    db.execute(
+                        "INSERT INTO users_new(username,enabled,role,password_hash,"
+                        "setup_token_hash,setup_expires) "
+                        "SELECT username,enabled,"
+                        "CASE WHEN role IN ('manager','logistics','supervisor') "
+                        "THEN role ELSE 'manager' END,"
+                        "password_hash,setup_token_hash,setup_expires FROM users"
+                    )
+                    db.execute("DROP TABLE users")
+                    db.execute("ALTER TABLE users_new RENAME TO users")
+                    db.commit()
+                except BaseException:
+                    db.rollback()
+                    raise
+                finally:
+                    db.execute("PRAGMA foreign_keys=ON")
+            db.execute("INSERT OR IGNORE INTO schema_version VALUES(5)")
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=30)
