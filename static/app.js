@@ -144,7 +144,8 @@ async function pollStatuses() {
   const wasAdmin = adminMode;
   try {
     if (activeDocId && !wasAdmin && !registryMode) {
-      const fresh = await api("/documents/" + encodeURIComponent(activeDocId));
+      const endpoint = isSupervisor() ? "/supervisor/documents/" : "/documents/";
+      const fresh = await api(endpoint + encodeURIComponent(activeDocId));
       if (doc?.id !== activeDocId || documentDirty || $("#modal").open) return;
       statusLastChecked = new Date();
       if (documentStatusSignature(fresh) !== documentStatusSignature(doc)) {
@@ -160,7 +161,7 @@ async function pollStatuses() {
         mark.title = "Статус обновляется автоматически каждые 30 секунд";
       }
     } else if (!wasAdmin && !registryMode && $(".document-list")) {
-      const incoming = await api("/documents?archive=" + wasArchive);
+      const incoming = await api((isSupervisor() ? "/supervisor/documents?archive=" : "/documents?archive=") + wasArchive);
       if (doc || archive !== wasArchive || documentDirty || $("#modal").open ||
           $("#app").querySelector("form:focus-within")) return;
       if (documentListSignature(incoming) !== documentListSignature(docs)) {
@@ -263,6 +264,9 @@ let registryMode = false,
     date_to: "",
     archive: false,
   };
+function isSupervisor() {
+  return Boolean(user && !user.admin && user.role === "supervisor");
+}
 function shell(content) {
   const canManage = user.admin || ["manager", "supervisor"].includes(user.role);
   const canReadRegistry = user.admin || ["logistics", "supervisor"].includes(user.role);
@@ -357,6 +361,16 @@ async function list() {
   }
   documentSelectedIds.clear();
   if (user.role === "logistics" && !user.admin) return logisticsPage();
+  if (isSupervisor()) {
+    registryMode = false;
+    history.replaceState(null, "", location.pathname + (archive ? "#archive" : "#documents"));
+    adminMode = false;
+    doc = null;
+    documentDirty = false;
+    docs = await api("/supervisor/documents?archive=" + archive);
+    renderList();
+    return;
+  }
   registryMode = false;
   history.replaceState(null, "", location.pathname + (archive ? "#archive" : "#documents"));
   adminMode = false;
@@ -366,20 +380,21 @@ async function list() {
   renderList();
 }
 function renderList() {
+  const readOnly = isSupervisor();
   const stages = archive
     ? {all: documentStages.all, archived: documentStages.archived, stopped: documentStages.stopped}
     : {all: documentStages.all, preparation: documentStages.preparation,
        processing: documentStages.processing, labels_ready: documentStages.labels_ready,
        supplier: documentStages.supplier, attention: documentStages.attention,
        logistics: documentStages.logistics, stopped: documentStages.stopped};
-  shell(`<div class="topbar"><div><div class="eyebrow">${user.admin ? "Все сотрудники" : "Мои документы"}</div><h1>${archive ? "Архив накладных" : "Накладные"}</h1><p class="muted">${archive ? "Завершённые документы и сохранённые файлы" : "Подготовьте этикетки, передайте поставщику и подтвердите нанесение"}</p></div>${archive ? "" : '<button class="primary" data-action="new">+ Новая накладная</button>'}</div>
+  shell(`<div class="topbar"><div><div class="eyebrow">${user.admin || readOnly ? "Все сотрудники" : "Мои документы"}</div><h1>${archive ? "Архив накладных" : "Накладные"}</h1><p class="muted">${readOnly ? "Режим просмотра всех накладных. Для скачивания АТК и RESULT откройте реестр логистики." : archive ? "Завершённые документы и сохранённые файлы" : "Подготовьте состав накладной, закажите КМ и подтвердите нанесение"}</p></div>${archive || readOnly ? "" : '<button class="primary" data-action="new">+ Новая накладная</button>'}</div>
   <div class="stage-filters" aria-label="Этапы накладных">${Object.entries(stages).map(([key, stage]) => `<button data-stage="${key}" aria-pressed="${documentFilters.stage === key}">${stage.title}<b>${docs.filter(d => stage.matches(d)).length}</b></button>`).join("")}</div>
   <section class="card document-list"><h2>${archive ? "Архивные документы" : "Рабочие документы"}</h2><div class="document-filters"><label>Номер накладной<input id="search" placeholder="Поиск по номеру" value="${e(documentFilters.search)}"></label><label>Поставщик<select id="supplier"><option value="">Все поставщики</option>${[...new Set(docs.map(d => d.supplier))].sort().map(v => `<option ${v === documentFilters.supplier ? "selected" : ""}>${e(v)}</option>`).join("")}</select></label><label>Создана с<input type="date" id="from" value="${e(documentFilters.from)}"></label><label>Создана по<input type="date" id="to" value="${e(documentFilters.to)}"></label></div>
   <div class="list-caption"><span id="document-count" class="muted" role="status"></span><button class="linkbutton" data-action="reset-doc-filters">Сбросить фильтры</button></div>
   <div class="register-controls"><label>Сортировка<select id="document-sort"><option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option><option value="number">По номеру накладной</option><option value="supplier">По поставщику</option><option value="status">По статусу</option><option value="units">По количеству товара</option></select></label><label>Строк на странице<select id="document-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label></div>
-  <div class="table-wrap invoice-register-scroll"><table><thead><tr><th class="register-select-cell"><input id="select-all" type="checkbox" aria-label="Выбрать все доступные для нанесения на текущей странице"></th><th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Штук</th><th>Создана</th>${user.admin ? "<th>Владелец</th>" : ""}</tr></thead><tbody id="doc-rows"></tbody></table></div>
+  <div class="table-wrap invoice-register-scroll"><table><thead><tr>${readOnly ? "" : '<th class="register-select-cell"><input id="select-all" type="checkbox" aria-label="Выбрать все доступные для нанесения на текущей странице"></th>'}<th>Накладная</th><th>Поставщик</th><th>Статус</th><th>Штук</th><th>Создана</th>${user.admin || readOnly ? "<th>Владелец</th>" : ""}</tr></thead><tbody id="doc-rows"></tbody></table></div>
   <div class="register-pager"><span id="document-page-label" role="status"></span><div class="actions"><button id="document-prev" type="button">Предыдущая</button><button id="document-next" type="button">Следующая</button></div></div>
-  ${archive ? "" : '<div class="selection-bar"><div><b id="selected-count">Накладные не выбраны</b><span class="cell-sub" id="selection-description">Выберите документы со статусом «Ожидает нанесения».</span></div><button type="button" id="clear-doc-selection" hidden>Снять выбор</button><button class="primary" data-action="batch" disabled>Подтвердить нанесение и создать отчёты</button></div>'}</section>`);
+  ${archive || readOnly ? "" : '<div class="selection-bar"><div><b id="selected-count">Накладные не выбраны</b><span class="cell-sub" id="selection-description">Выберите документы со статусом «Ожидает нанесения».</span></div><button type="button" id="clear-doc-selection" hidden>Снять выбор</button><button class="primary" data-action="batch" disabled>Подтвердить нанесение и создать отчёты</button></div>'}</section>`);
   $("#document-sort").value = documentSort;
   $("#document-page-size").value = String(documentPageSize);
   filterRows();
@@ -411,7 +426,7 @@ function renderList() {
     document.querySelectorAll("[data-stage]").forEach(b => b.setAttribute("aria-pressed", b === button));
     filterRows();
   });
-  $("#select-all").onchange = event => {
+  if ($("#select-all")) $("#select-all").onchange = event => {
     document.querySelectorAll(".doc-select:not(:disabled)").forEach(input => {
       input.checked = event.target.checked;
       if (input.checked) documentSelectedIds.add(input.value);
@@ -423,7 +438,8 @@ function renderList() {
 function filterRows() {
   const f = documentFilters;
   // Drop assignments that are no longer eligible after status refresh.
-  const eligibleIds = new Set(docs.filter(d => d.status === "transferred" && !archive && !d.stopped)
+  const readOnly = isSupervisor();
+  const eligibleIds = new Set(readOnly ? [] : docs.filter(d => d.status === "transferred" && !archive && !d.stopped)
     .map(d => String(d.id)));
   for (const id of documentSelectedIds) if (!eligibleIds.has(id)) documentSelectedIds.delete(id);
   const stages = archive
@@ -462,7 +478,8 @@ function filterRows() {
   updateDocumentSelection();
 }
 function updateDocumentSelection() {
-  const eligible = $$(".doc-select:not(:disabled)");
+  if (isSupervisor()) return;
+  const eligible = $(".doc-select:not(:disabled)");
   const localCount = eligible.filter(input => input.checked).length;
   const count = documentSelectedIds.size;
   $("#select-all").disabled = !eligible.length;
@@ -556,17 +573,18 @@ async function open(id) {
   );
   if (doc?.id !== id) documentTab = "content";
   documentDirty = false;
-  doc = await api("/documents/" + id);
+  doc = await api((isSupervisor() ? "/supervisor/documents/" : "/documents/") + encodeURIComponent(id));
   statusLastChecked = new Date();
   archive = doc.status === "archive";
   adminMode = false;
   renderDoc();
 }
 function renderDoc() {
-  const editable = ["draft", "ready", "transferred", "label_error"].includes(
+  const readOnly = isSupervisor();
+  const editable = !readOnly && ["draft", "ready", "transferred", "label_error"].includes(
     doc.status,
   );
-  const canMoveLines = !doc.stopped && !doc.group_stop && !doc.parent_id &&
+  const canMoveLines = !readOnly && !doc.stopped && !doc.group_stop && !doc.parent_id &&
     ["ready", "transferred"].includes(doc.status) &&
     !doc.operations.some(o => ["report", "atk", "transform"].includes(o.kind));
   const steps = [
@@ -601,6 +619,13 @@ function renderDoc() {
       )}${doc.status === "receiving" ? '<div class="notice">PDF станет доступен после получения полного комплекта КМ. Повторный заказ не требуется.</div>' : ""}<div class="card"><div class="topbar"><h2>Состав накладной</h2>${editable ? '<div class="actions"><a href="/api/template">Скачать шаблон Excel</a><button data-action="import">Загрузить Excel</button><input type="file" id="excel-file" accept=".xlsx" hidden></div>' : ""}</div><div class="table-wrap"><table><thead><tr>${canMoveLines ? "<th>Перенести</th>" : ""}<th>PN</th><th>GTIN</th><th>Штук в этикетке</th><th>Этикеток</th><th>ТН ВЭД</th>${editable ? "<th></th>" : ""}</tr></thead><tbody id="edit-rows">${editable ? doc.lines.map(l => lineRow(l, canMoveLines)).join("") : doc.lines.map((l) => `<tr><td>${e(l.pn)}</td><td>${e(l.gtin)}</td><td>${fmt(l.quantity)}</td><td>${fmt(l.labels)}</td><td>${e(l.tnved)}</td></tr>`).join("")}</tbody></table></div>${editable ? '<div class="actions"><button data-action="add-line">+ Добавить строку</button><button data-action="save-lines">Проверить и сохранить состав</button></div>' : ""}<div class="actions">${canMoveLines ? '<button data-action="move-lines">Перенести строки и КМ</button>' : ""}${!doc.stopped && !doc.group_stop && reportIssue ? `<button class="primary" data-action="retry-report-doc" data-id="${e(reportIssue.id)}">Повторить отчёт о нанесении</button>` : ""}${user.admin && doc.status === "transferred" && doc.current_version === 0 ? '<button data-action="upload-legacy-pdf">Загрузить PDF</button><input type="file" id="legacy-pdf-file" accept=".pdf,application/pdf" hidden>' : ""}${doc.status === "draft" ? '<button class="primary" data-action="order">Заказать КМ</button>' : ""}${currentFile && doc.required > 0 && doc.codes.length === doc.required && !["draft", "repack", "receiving"].includes(doc.status) ? `<a class="button" href="/api/files/${e(currentFile.id)}">↓ Скачать ZIP с этикетками · v${doc.current_version}</a>` : ""}${["ready", "transferred"].includes(doc.status) ? `<button class="${doc.status === "ready" ? "primary" : ""}" data-action="transfer">${doc.status === "transferred" ? "Повторно подтвердить передачу" : "Подтвердить передачу этикеток"}</button>` : ""}${doc.status === "transferred" ? '<button class="primary" data-action="report">Подтвердить нанесение и создать отчёт</button>' : ""}${!doc.stopped && ["done", "archive", "reported"].includes(doc.status) ? '<button data-action="supplement">Создать дополнение</button>' : ""}${!doc.stopped ? '<button class="danger" data-action="stop-document">Остановить и архивировать</button>' : ""}${user.admin && doc.status === "archive" ? '<button data-action="restore-document">Вернуть из архива</button>' : ""}<button data-action="refresh-doc">Обновить состояние</button></div></div>${doc.atks.length ? `<div class="card"><h2>Таможенные коды</h2>${doc.atks.map((a) => `<div class="toolbar"><span>ТН ВЭД <b>${e(a.tnved)}</b> · ${a.code ? e(a.code) : "Ожидает формирования"}</span>${a.state === "done" ? `<button data-action="atk" data-id="${e(a.id)}">Состав и трансформации</button>` : badge(a.state)}</div>`).join("")}<div class="files">${doc.exports.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}</a>`).join("")}</div></div>` : ""}<div class="split"><div class="card"><h2>Обработка</h2>${doc.operations.length ? doc.operations.map((o) => `<div class="history"><b>${e(kinds[o.kind])}</b>${o.stopped && o.state !== "cancelled" ? badge("cancelled") + " " : ""}${badge(o.state)} <span class="muted">${date(o.updated)}</span>${o.error ? `<p class="muted">${e(o.error)}</p>` : ""}${!o.stopped && o.id === reportIssue?.id && o.kind === "report" && ["rejected", "partial"].includes(o.state) ? `<div class="actions"><button class="primary" data-action="retry-report-doc" data-id="${e(o.id)}">Создать повторный отчёт</button></div>` : ""}</div>`).join("") : '<p class="muted">Внешние операции ещё не запускались.</p>'}<details><summary>История файлов и прежние версии</summary><p class="muted">Скачанные поставщиком старые этикетки технически отозвать нельзя.</p><div class="files">${doc.artifacts.map((f) => `<a href="/api/files/${e(f.id)}">${e(f.name)} · ${e(f.kind === "source" ? "Исходный Excel" : "v" + f.version)}</a>`).join("")}</div></details></div><div class="card"><h2>История документа</h2>${doc.history.map((h) => `<div class="history"><b>${e(h.action)}</b><span class="muted">${date(h.created)} · ${e(h.actor)}</span></div>`).join("")}</div></div>`,
   );
   organizeDocument(editable);
+  if (readOnly) {
+    $("main [data-action]");
+    $("main [data-action]").forEach(button => {
+      if (!["list", "archive", "refresh-doc", "document-tab"].includes(button.dataset.action)) button.remove();
+    });
+    $("main a[href^=\"/api/files/\"]").forEach(link => link.replaceWith(document.createTextNode(link.textContent)));
+  }
   if ($("#legacy-pdf-file")) $("#legacy-pdf-file").onchange = async ev => {
     const file = ev.target.files[0];
     if (!file) return;
