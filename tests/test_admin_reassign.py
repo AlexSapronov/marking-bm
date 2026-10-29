@@ -54,6 +54,8 @@ def test_reassignment_guards_invalid_users_and_supports_archive(env):
 
     assert admin.post("/api/admin/users", json={"username": "bob", "role": "logistics", "enabled": True}).status_code == 200
     assert admin.put(url, json={"owner": "bob"}).status_code == 422
+    assert admin.post("/api/admin/users", json={"username": "team-lead", "role": "supervisor", "enabled": True}).status_code == 200
+    assert admin.put(url, json={"owner": "team-lead"}).status_code == 422
     assert admin.post("/api/admin/users", json={"username": "bob", "role": "manager", "enabled": False}).status_code == 200
     assert admin.put(url, json={"owner": "bob"}).status_code == 422
     assert admin.post("/api/admin/users", json={"username": "bob", "role": "manager", "enabled": True}).status_code == 200

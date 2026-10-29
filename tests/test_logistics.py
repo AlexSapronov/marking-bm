@@ -78,8 +78,8 @@ def test_logist_sees_all_owners_filters_and_downloads(env):
         assert all("/" not in name for name in z.namelist())
 
 
-def test_supervisor_can_use_both_workspaces_without_admin_or_cross_owner_labels(env):
-    app, s = env[0], env[1]
+def test_supervisor_can_view_invoices_download_atks_but_not_complete(env):
+    app, s, _ = env
     ids, _, admin = prepare_atks(env)
     changed = admin.post(
         "/api/admin/users",
@@ -89,20 +89,38 @@ def test_supervisor_can_use_both_workspaces_without_admin_or_cross_owner_labels(
 
     supervisor = client(app, "logist")
     assert supervisor.get("/api/session").json()["role"] == "supervisor"
-    assert supervisor.get("/api/documents").status_code == 200
+    assert supervisor.get("/api/documents").status_code == 403
+    listed = supervisor.get("/api/supervisor/documents").json()
+    assert {d["id"] for d in listed} >= set(ids)
+    assert supervisor.get("/api/supervisor/documents/" + ids[1]).status_code == 200
+
     items = supervisor.get("/api/logistics/atks").json()
     assert len(items) == 2
     for file in items[0]["files"]:
         response = supervisor.get("/api/files/" + file["id"])
         assert response.status_code == 200, response.text
 
-    # Logistics can see shared ATK/RESULT files, but the supervisor's BM access
-    # still obeys normal document ownership and does not become admin access.
+    # Invoice-specific artifacts remain unavailable in the BM view.
     label = s.store.one(
         "SELECT id FROM artifacts WHERE doc_id=? AND kind='labels'", (ids[0],)
     )
     assert label is not None
     assert supervisor.get("/api/files/" + label["id"]).status_code == 403
+    # Even a legacy document assigned to this username must not grant access
+    # to invoice-specific files through the supervisor role.
+    with s.store.transaction() as db:
+        db.execute("UPDATE documents SET owner='logist' WHERE id=?", (ids[0],))
+    assert supervisor.get("/api/files/" + label["id"]).status_code == 403
+
+    # Downloading is allowed, but completing logistics work is not.
+    download = supervisor.post(
+        "/api/logistics/download", json={"atks": [a["id"] for a in items]}
+    )
+    assert download.status_code == 200, download.text
+    assert supervisor.post(
+        "/api/logistics/documents/" + ids[0] + "/complete", json={}
+    ).status_code == 403
+
     assert supervisor.get("/api/admin/overview").status_code == 403
     assert supervisor.post(
         "/api/admin/users",

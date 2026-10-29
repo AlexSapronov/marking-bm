@@ -151,7 +151,7 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("heading", name="Накладные", exact=True).wait_for()
             # Stage pills are the single business-stage selector. No duplicate
             # Status dropdown and no irrelevant print instructions for BM.
-            expect(page.locator(".stage-filters [data-stage]")).to_have_count(8)
+            expect(page.locator(".stage-filters [data-stage]")).to_have_count(7)
             expect(page.locator(".stage-filters [data-stage='labels_ready']")).to_contain_text("Этикетки готовы")
             stage_matches = page.evaluate(
                 """() => ({
@@ -961,7 +961,8 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("heading", name="Обработка остановлена", exact=True).wait_for()
             page.screenshot(path=str(out / "stopped-invoice.png"), full_page=True)
             page.get_by_role("button", name="← Архив накладных", exact=True).click()
-            page.locator('[data-stage="stopped"]').click()
+            expect(page.locator('[data-stage="stopped"]')).to_have_count(0)
+            page.locator('[data-stage="all"]').click()
             expect(page.locator("#doc-rows")).to_contain_text("STOP-UI")
             page.get_by_role("button", name="Выйти", exact=True).click()
             page.get_by_role("button", name="Вход администратора", exact=True).click()
@@ -1026,20 +1027,55 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(supervisor_page.get_by_role("button", name="Архив", exact=True)).to_be_visible()
             expect(supervisor_page.get_by_role("button", name="Реестр АТК", exact=True)).to_be_visible()
             expect(supervisor_page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
+            expect(supervisor_page.get_by_role("button", name="+ Новая накладная", exact=True)).to_have_count(0)
+            expect(supervisor_page.locator(".topbar p.muted")).to_contain_text("Режим просмотра всех накладных")
+            expect(supervisor_page.locator('[data-stage="stopped"]')).to_have_count(0)
+            expect(supervisor_page.locator("#doc-rows")).to_contain_text("STOP-UI")
             role_api_status = supervisor_page.evaluate("""
               async () => {
-                const [bm, logistics, admin] = await Promise.all([
+                const session = await fetch('/api/session').then(r => r.json());
+                const headers = {
+                  'Content-Type': 'application/json',
+                  'X-Requested-With': 'marking-bm',
+                  'X-CSRF-Token': session.csrf,
+                };
+                const [supervisorDocs, bm, logistics, admin, create] = await Promise.all([
+                  fetch('/api/supervisor/documents').then(r => r.status),
                   fetch('/api/documents').then(r => r.status),
                   fetch('/api/logistics/atks').then(r => r.status),
                   fetch('/api/admin/overview').then(r => r.status),
+                  fetch('/api/documents', {
+                    method: 'POST', headers,
+                    body: JSON.stringify({number: 'SUPERVISOR-FORBIDDEN', supplier: 'Test'}),
+                  }).then(r => r.status),
                 ]);
-                return {bm, logistics, admin};
+                const docs = await fetch('/api/supervisor/documents').then(r => r.json());
+                const complete = docs.length ? await fetch(
+                  '/api/logistics/documents/' + encodeURIComponent(docs[0].id) + '/complete',
+                  {method: 'POST', headers, body: '{}'},
+                ).then(r => r.status) : null;
+                return {supervisorDocs, bm, logistics, admin, create, complete};
               }
             """)
-            assert role_api_status == {"bm": 200, "logistics": 200, "admin": 403}, role_api_status
+            assert role_api_status["supervisorDocs"] == 200, role_api_status
+            assert role_api_status["bm"] == 403, role_api_status
+            assert role_api_status["logistics"] == 200, role_api_status
+            assert role_api_status["admin"] == 403, role_api_status
+            assert role_api_status["create"] == 403, role_api_status
+            assert role_api_status["complete"] in (403, None), role_api_status
+            if supervisor_page.locator('button[data-action="open"]').count():
+                supervisor_page.locator('button[data-action="open"]').first.click()
+                supervisor_page.locator("h1").filter(has_text="Накладная").wait_for()
+                expect(supervisor_page.locator('button[data-action="order"]')).to_have_count(0)
+                expect(supervisor_page.locator('button[data-action="stop-document"]')).to_have_count(0)
+                expect(supervisor_page.locator('a[href^="/api/files/"]')).to_have_count(0)
+                supervisor_page.locator('main button[data-action="list"]').click()
+                supervisor_page.get_by_role("heading", name="Накладные", exact=True).wait_for()
             supervisor_page.get_by_role("button", name="Реестр АТК", exact=True).click()
             supervisor_page.get_by_role("heading", name="Реестр АТК", exact=True).wait_for()
             expect(supervisor_page.get_by_role("button", name="Администрирование", exact=True)).to_have_count(0)
+            expect(supervisor_page.get_by_role("button", name="Открыть для закрытия накладных", exact=True)).to_have_count(0)
+            expect(supervisor_page.locator('button[data-action="logistics-complete"]')).to_have_count(0)
             supervisor_page.get_by_role("button", name="Накладные", exact=True).click()
             supervisor_page.get_by_role("heading", name="Накладные", exact=True).wait_for()
             assert not supervisor_errors, supervisor_errors
