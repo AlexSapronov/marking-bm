@@ -1224,6 +1224,14 @@ function reasonModal(title, callback) {
   };
 }
 async function action(name, id, b) {
+  if (isSupervisor() && ![
+    "list", "archive", "logistics", "registry-refresh", "registry-detail",
+    "registry-reset", "registry-download", "open", "refresh-doc",
+    "document-tab", "reset-doc-filters", "close", "change-password",
+    "logout", "refresh-page",
+  ].includes(name)) {
+    throw new Error("Руководитель может только просматривать накладные и скачивать файлы");
+  }
   switch (name) {
     case "upload-legacy-pdf":
       $("#legacy-pdf-file")?.click();
@@ -1258,12 +1266,14 @@ async function action(name, id, b) {
       await logisticsPage();
       break;
     case "logistics-complete": {
+      if (isSupervisor()) throw new Error("Руководителю доступен только просмотр и скачивание файлов");
       const item = registryRows.flatMap(a => a.documents).find(d => d.id === id);
       if (!item) throw new Error("Обновите реестр перед завершением накладной");
       modal(`<h2>Закрыть накладную ${e(item.number)} в системе?</h2><p>Накладная будет закрыта и перемещена в архив. Это не подтверждает фактическую доставку или приёмку груза. АТК и RESULT останутся доступны в архивном реестре.</p><div class="actions"><button class="primary" data-action="confirm-logistics-complete" data-id="${e(id)}">Закрыть накладную в архив</button><button data-action="close">Отмена</button></div>`);
       break;
     }
     case "confirm-logistics-complete":
+      if (isSupervisor()) throw new Error("Руководителю доступен только просмотр и скачивание файлов");
       await api("/logistics/documents/" + encodeURIComponent(id) + "/complete", {});
       $("#modal").close();
       await logisticsPage();
@@ -1643,6 +1653,7 @@ function logisticsNextAction(a) {
   if (a.status === "transforming") return "Дождитесь завершения трансформации";
   if (a.status === "processing") return "Дождитесь формирования АТК";
   if (!a.download_ready) return "Дождитесь комплекта АТК + RESULT";
+  if (isSupervisor()) return a.archived ? "Файлы сохранены в архиве" : "Просмотр и скачивание файлов АТК + RESULT";
   if (a.documents.some(d => d.can_complete)) return "Проверьте комплект и закройте накладные в системе";
   if (a.archived) return "Документы сохранены в архиве";
   return "Скачать комплект АТК + RESULT";
