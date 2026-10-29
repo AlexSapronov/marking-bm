@@ -620,10 +620,10 @@ function renderDoc() {
   );
   organizeDocument(editable);
   if (readOnly) {
-    $("main [data-action]").forEach(button => {
+    $$("main [data-action]").forEach(button => {
       if (!["list", "archive", "refresh-doc", "document-tab"].includes(button.dataset.action)) button.remove();
     });
-    $("main a[href^=\"/api/files/\"]").forEach(link => link.replaceWith(document.createTextNode(link.textContent)));
+    $$("main a[href^=\"/api/files/\"]").forEach(link => link.replaceWith(document.createTextNode(link.textContent)));
   }
   if ($("#legacy-pdf-file")) $("#legacy-pdf-file").onchange = async ev => {
     const file = ev.target.files[0];
