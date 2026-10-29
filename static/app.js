@@ -1001,7 +1001,7 @@ function setupAdminDocumentPanel() {
   panel.dataset.adminPanel = "documents";
   panel.innerHTML = `<h2>Передать накладную другому сотруднику</h2><p class="muted">Администратор может изменить ответственного, включая архивные накладные. История и полученные КМ сохраняются. Новый сотрудник получит доступ, прежний его потеряет.</p><form id="admin-doc-search-form" class="admin-filter-bar"><label>Поиск накладной, поставщика или владельца<input id="admin-doc-q" type="search" maxlength="120" placeholder="Номер, поставщик или username"></label><button class="primary" type="submit">Найти</button></form><p id="admin-doc-count" class="muted" role="status"></p><div id="admin-doc-results"></div>`;
   // Import old KM packs without requesting or rendering new labels.
-  const managers = overview.users.filter(u => u.enabled && u.role === "manager");
+  const managers = overview.users.filter(u => u.enabled && ["manager", "supervisor"].includes(u.role));
   const legacy = document.createElement("div");
   legacy.className = "card";
   legacy.innerHTML = `<h3>Импорт старой накладной из паков</h3>
