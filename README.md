@@ -111,6 +111,7 @@ python scripts/backup.py /safe/backup.sqlite3 /var/lib/marking-bm/restored.sqlit
 
 - [Результат реализации и границы проверки](docs/IMPLEMENTATION.md)
 - [Сотруднику ОБМ](docs/USER.md)
+- [Руководителю](docs/SUPERVISOR.md)
 - [Логисту](docs/LOGISTICS.md)
 - [Администратору](docs/ADMIN.md)
 - [Руководство по работе и эксплуатации сервиса](docs/SERVICE_MANUAL.md)
