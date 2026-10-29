@@ -151,7 +151,7 @@ with tempfile.TemporaryDirectory() as tmp:
             page.get_by_role("heading", name="Накладные", exact=True).wait_for()
             # Stage pills are the single business-stage selector. No duplicate
             # Status dropdown and no irrelevant print instructions for BM.
-            expect(page.locator(".stage-filters [data-stage]")).to_have_count(8)
+            expect(page.locator(".stage-filters [data-stage]")).to_have_count(7)
             expect(page.locator(".stage-filters [data-stage='labels_ready']")).to_contain_text("Этикетки готовы")
             stage_matches = page.evaluate(
                 """() => ({
