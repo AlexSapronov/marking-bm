@@ -122,3 +122,34 @@ def test_manager_cannot_pick_another_owners_supplement_codes(env):
     advance(app)
     assert alice.get("/api/atks/" + atk["id"]).status_code == 403
     assert admin.get("/api/atks/" + atk["id"]).status_code == 200
+
+
+def test_upstream_order_http_400_requires_review_not_automatic_replay(env):
+    # Signing and external rejection are separate: a 400 means the request
+    # reached the external service, not that the signer is offline.
+    app, service, remote = env
+    doc_id = add_doc(service, number="HTTP400-ORDER")
+    service.order(doc_id, "alice")
+    sign_all(service)
+    seen = []
+    original = remote.handle
+
+    def reject_order(request):
+        if request.url.path.endswith("/order"):
+            seen.append(request.url.path)
+            return httpx.Response(400, json={"message": "Upstream request rejected"})
+        return original(request)
+
+    service.gateway.transport = httpx.MockTransport(reject_order)
+    worker = app.state.worker
+    worker.tick()
+    operation = service.store.one(
+        "SELECT state,external_id,error FROM operations WHERE kind='order' AND doc_id=?",
+        (doc_id,),
+    )
+    assert operation["state"] == "blocked"
+    assert operation["external_id"] is None
+    assert "HTTP 400" in operation["error"]
+    worker.tick()
+    worker.tick()
+    assert len(seen) == 1, "Do not replay an upstream rejection automatically"
