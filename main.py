@@ -1188,6 +1188,76 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                   op_id, {"previous_error": reason, "new_state": new_state})
         return {"ok": True, "state": new_state}
 
+
+    @app.get("/api/admin/operations/{op_id}/order-review")
+    def order_retry_review(op_id: str, s=Depends(admin)):
+        op = store.one("SELECT * FROM operations WHERE id=?", (op_id,))
+        if not op or op["kind"] != "order" or op["state"] != "blocked":
+            raise Conflict("Заказ не находится в состоянии блокировки")
+        if op["external_id"] or not (op["error"] or "").startswith("ЧЗ: HTTP 400."):
+            raise Conflict("Для этого результата повторная отправка не предусмотрена")
+        payload = json.loads(op["payload"])
+        doc = store.one(
+            "SELECT number FROM documents WHERE id=?", (op["doc_id"],)
+        )
+        return {
+            "id": op["id"],
+            "document": doc["number"] if doc else "—",
+            "products": [
+                {"gtin": product["gtin"], "quantity": product["quantity"]}
+                for product in payload.get("products", [])
+            ],
+            "production_order_id": payload.get("attributes", {}).get(
+                "productionOrderId", ""
+            ),
+            "error": op["error"],
+        }
+
+    class VerifiedOrderRetry(BaseModel):
+        confirmed_absent: Literal[True]
+        reason: str = Field(min_length=10, max_length=500)
+
+    @app.post("/api/admin/operations/{op_id}/retry-verified-order")
+    def retry_verified_order(op_id: str, body: VerifiedOrderRetry, s=Depends(admin)):
+        # HTTP 400 is not proof that an upstream order was not created.
+        # Only an administrator who has verified the specific GTIN/order in
+        # the SUZ account may resubmit the immutable original signed payload.
+        with store.transaction() as db:
+            op = one(db, "SELECT * FROM operations WHERE id=?", (op_id,))
+            if not op or op["kind"] != "order" or op["state"] != "blocked":
+                raise Conflict("Повторная отправка недоступна: состояние изменилось")
+            if (
+                op["external_id"] or not op["signature"]
+                or not (op["error"] or "").startswith("ЧЗ: HTTP 400.")
+            ):
+                raise Conflict(
+                    "Нельзя подтвердить безопасное повторение этой операции"
+                )
+            service.require_operation_active(db, op)
+            document = one(
+                db, "SELECT status FROM documents WHERE id=?", (op["doc_id"],)
+            )
+            if not document or document["status"] != "receiving":
+                raise Conflict("Накладная больше не ожидает получения КМ")
+            # The operation ID, key, payload and signature are deliberately
+            # preserved; only its state returns to the durable dispatch queue.
+            updated = db.execute(
+                "UPDATE operations SET state='queued',error=NULL,updated=? "
+                "WHERE id=? AND state='blocked' AND external_id IS NULL",
+                (now(), op_id),
+            )
+            if updated.rowcount != 1:
+                raise Conflict("Операция изменилась, повторите проверку")
+            db.execute("DELETE FROM operation_attention WHERE op_id=?", (op_id,))
+            audit(
+                db, s["username"],
+                "Повтор заказа КМ после сверки отсутствия заказа в СУЗ",
+                op_id,
+                {"reason": body.reason.strip(), "previous_error": op["error"],
+                 "confirmed_absent": True, "document": op["doc_id"]},
+            )
+        return {"ok": True, "state": "queued"}
+
     @app.post("/api/admin/operations/{op_id}/retry")
     def admin_retry_report(op_id: str, s=Depends(admin)):
         return service.retry_rejected_report(op_id, s["username"], admin=True)
