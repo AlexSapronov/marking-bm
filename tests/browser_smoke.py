@@ -61,7 +61,7 @@ with tempfile.TemporaryDirectory() as tmp:
             if os.getenv("BM_BROWSER_EXECUTABLE"):
                 kwargs["executable_path"] = os.environ["BM_BROWSER_EXECUTABLE"]
             browser = p.chromium.launch(**kwargs)
-            page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            page = browser.new_page(viewport={"width": 1440, "height": 1000}, locale="ru-RU")
             errors = []
             page.on("pageerror", lambda err: errors.append(str(err)))
             response = page.goto(url + "/admin")
@@ -760,8 +760,11 @@ with tempfile.TemporaryDirectory() as tmp:
             )
             assert not errors, errors
             page.set_viewport_size({"width": 1440, "height": 1000})
+            page.get_by_role("button", name="Светлая тема", exact=True).click()
+            page.screenshot(path=str(out / "guide-logistics-register.png"), full_page=True)
             base_atk_row.get_by_role("button", name="Ввести в оборот", exact=True).click()
             expect(page.locator("#modal")).to_contain_text("Ввести в оборот")
+            page.locator("#modal").screenshot(path=str(out / "guide-logistics-atk.png"))
             # Opening an ATK detail is navigation, not completion.
             assert test_service.get(logistics_doc, "alice")["status"] == "done"
             page.locator('#modal [data-action="logistics-complete"]').click()
@@ -773,8 +776,10 @@ with tempfile.TemporaryDirectory() as tmp:
             page.locator("#fts-number").fill("10000000/011026/0000001")
             page.locator("#fts-date").fill("2026-10-01")
             page.locator("#fts-country").fill("156")
+            page.locator("#modal").screenshot(path=str(out / "guide-logistics-fts-form.png"))
             page.locator('#modal [data-action="confirm-logistics-complete"]').click()
             expect(page.locator("#modal")).not_to_be_visible()
+            page.screenshot(path=str(out / "guide-logistics-signing.png"), full_page=True)
             advance(test_app)
             page.locator('[data-action="registry-refresh"]').click()
             expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row):not(.registry-invoice-row)')).to_have_count(1)
@@ -782,6 +787,11 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row):not(.registry-invoice-row)')).to_have_count(1)
             expect(page.locator('#atk-table')).to_contain_text("LOGISTICS-READY")
             expect(page.get_by_role("button", name="Ввести в оборот", exact=True)).to_have_count(0)
+            page.screenshot(path=str(out / "guide-logistics-archive.png"), full_page=True)
+            page.locator(".registry-code").first.click()
+            expect(page.locator("#modal")).to_contain_text("В обороте · архив")
+            page.locator("#modal").screenshot(path=str(out / "guide-logistics-introduced.png"))
+            page.get_by_role("button", name="Закрыть окно", exact=True).click()
             page.reload()
             # Archive choice is an in-session filter; the completed invoice stays out of work.
             expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row):not(.registry-invoice-row)')).to_have_count(1)
