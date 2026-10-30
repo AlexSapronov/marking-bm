@@ -1119,8 +1119,20 @@ with tempfile.TemporaryDirectory() as tmp:
             """)
             assert alerts.count('class="error"') == 1, alerts
             assert "5 операций" in alerts and "HTTP 400" in alerts, alerts
-            assert alerts.count('class="notice"') == 1, alerts
-            assert "автоматически продолжится" in alerts, alerts
+            assert alerts.count('class="notice"') == 0, alerts
+            pending_alert = page.evaluate("""
+              () => documentOperationAlerts([
+                {kind: 'order', state: 'queued', error: null},
+              ], true)
+            """)
+            assert pending_alert.count('class="notice"') == 1, pending_alert
+            assert "обновления доступа к СУЗ" in pending_alert, pending_alert
+            signing_alert = page.evaluate("""
+              () => documentOperationAlerts([
+                {kind: 'order', state: 'signing', error: null},
+              ])
+            """)
+            assert "автоматически продолжится" in signing_alert, signing_alert
 
             # A supervisor gets both business workspaces, but no admin UI or API.
             supervisor_page = browser.new_page(viewport={"width": 1440, "height": 1000})
