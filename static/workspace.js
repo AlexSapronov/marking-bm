@@ -131,13 +131,16 @@ function organizeDocument(editable) {
     ["blocked", "unknown", "preflight_blocked"].includes(op.state));
   const orderNeedsSignature = doc.status === "receiving" && doc.operations.some(op =>
     op.kind === "order" && !op.stopped && ["signing", "leased"].includes(op.state));
+  const waitingForOmsAuth = Boolean(doc.waiting_for_oms_auth);
   const [title, description] = (doc.stopped
     ? ["Обработка остановлена", "Документ в архиве. Возврат доступен только администратору; отправленные операции требуют сверки."]
     : orderNeedsReview
       ? ["Требуется проверка заказа КМ", "Часть операций заказа остановлена или имеет неподтверждённый результат. Обратитесь к администратору для сверки с СУЗ. Не создавайте повторный заказ."]
-      : orderNeedsSignature
-        ? ["Ожидаем подписи заказа КМ", "Если подписант сейчас выключен, заказ автоматически продолжится после его подключения и подписи. Повторный заказ не нужен."]
-        : guidance[doc.display_status || doc.status])
+      : waitingForOmsAuth
+        ? ["Ожидаем авторизации СУЗ", "Токен СУЗ истёк или близок к истечению. После подключения подписанта и обновления токена заказ продолжится автоматически."]
+        : orderNeedsSignature
+          ? ["Ожидаем подписи заказа КМ", "Если подписант сейчас выключен, заказ автоматически продолжится после его подключения и подписи. Повторный заказ не нужен."]
+          : guidance[doc.display_status || doc.status])
     || ["Документ в обработке", "Проверьте состояние на вкладке «Обработка и файлы». Дополнительные действия выполняются после завершения текущего этапа."];
   const next = document.createElement("section");
   next.className = "next-step";
