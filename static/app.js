@@ -629,7 +629,7 @@ function documentOperationAlerts(operations) {
     if (!op.error || op.stopped || ["done", "cancelled"].includes(op.state) ||
         (op.kind === "report" && op !== latestReport)) continue;
     const message = op.kind === "order" && op.state === "blocked" &&
-      /^ЧЗ: HTTP 400\\b/.test(op.error)
+      /^ЧЗ: HTTP 400\b/.test(op.error)
       ? "ЧЗ не принял заказ КМ (HTTP 400). Обратитесь к администратору для проверки в СУЗ. Повторно заказывать КМ не нужно: операция остановлена и не возобновится без проверки."
       : op.error;
     const key = JSON.stringify([op.kind, op.state, message]);
