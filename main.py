@@ -674,6 +674,11 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
     def restore_document(doc_id: str, body: RestoreDocument, s=Depends(admin)):
         return service.restore_document(doc_id, s["username"], body.reason)
 
+    @app.get("/api/documents/{doc_id}/supplier-codes.xls")
+    def supplier_codes_file(doc_id: str, version: int | None = None, s=Depends(manager)):
+        name, content = service.supplier_codes_file(doc_id, s["username"], s["admin"], version)
+        return download(content, name, "application/vnd.ms-excel")
+
     @app.get("/api/files/{file_id}")
     def file_get(file_id: str, s=Depends(session)):
         a = store.one("SELECT * FROM artifacts WHERE id=?", (file_id,))
@@ -1036,10 +1041,24 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         name: str = Field(min_length=1, max_length=160)
         merge_into: str | None = None
 
+    class SupplierCodesXls(BaseModel):
+        enabled: bool
+
+    @app.put("/api/admin/suppliers/{supplier_id}/codes-xls")
+    def supplier_codes_setting(supplier_id: str, body: SupplierCodesXls, s=Depends(admin)):
+        with store.transaction() as db:
+            supplier = one(db, "SELECT * FROM suppliers WHERE id=? AND merged_into IS NULL", (supplier_id,))
+            if not supplier:
+                raise ValueError("Поставщик не найден")
+            db.execute("UPDATE suppliers SET codes_xls=? WHERE id=?", (int(body.enabled), supplier_id))
+            audit(db, s["username"], "Выгрузка КМ поставщику в XLS", supplier_id,
+                  {"enabled": body.enabled})
+        return {"enabled": body.enabled}
+
     @app.post("/api/admin/suppliers")
     def supplier_edit(body: SupplierEdit, s=Depends(admin)):
         with store.transaction() as db:
-            if not one(db, "SELECT id FROM suppliers WHERE id=?", (body.id,)):
+            if not one(db, "SELECT id FROM suppliers WHERE id=? AND merged_into IS NULL", (body.id,)):
                 raise ValueError("Поставщик не найден")
             if body.merge_into:
                 target = one(
