@@ -3,6 +3,7 @@
 import base64
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 import httpx
 from .db import dumps
@@ -60,6 +61,29 @@ def report_rejection_message(response):
 class Gateway:
     def __init__(self, settings, config, transport=None):
         self.settings, self.config, self.transport = settings, config, transport
+
+    def token_ready(self, kind, *, margin=300):
+        """Only send requests when a saved access token remains valid.
+
+        Absent/invalid expiry metadata is treated as expired rather than
+        attempting a potentially costly mutation with an invalid token.
+        """
+        entry = self.settings.secrets().get(kind) or {}
+        if not entry.get("token"):
+            return False
+        try:
+            expires = entry.get("expires")
+            limit = (
+                datetime.fromisoformat(expires.replace("Z", "+00:00"))
+                if expires else
+                datetime.fromisoformat(entry["acquired"].replace("Z", "+00:00"))
+                + timedelta(hours=9)
+            )
+            if limit.tzinfo is None:
+                limit = limit.replace(tzinfo=timezone.utc)
+            return limit > datetime.now(timezone.utc) + timedelta(seconds=margin)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return False
 
     def request(
         self,

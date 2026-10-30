@@ -122,3 +122,76 @@ def test_manager_cannot_pick_another_owners_supplement_codes(env):
     advance(app)
     assert alice.get("/api/atks/" + atk["id"]).status_code == 403
     assert admin.get("/api/atks/" + atk["id"]).status_code == 200
+
+
+def test_upstream_order_http_400_requires_review_not_automatic_replay(env):
+    # Signing and external rejection are separate: a 400 means the request
+    # reached the external service, not that the signer is offline.
+    app, service, remote = env
+    doc_id = add_doc(service, number="HTTP400-ORDER")
+    service.order(doc_id, "alice")
+    sign_all(service)
+    seen = []
+    original = remote.handle
+
+    def reject_order(request):
+        if request.url.path.endswith("/order"):
+            seen.append(request.url.path)
+            return httpx.Response(400, json={"message": "Upstream request rejected"})
+        return original(request)
+
+    service.gateway.transport = httpx.MockTransport(reject_order)
+    worker = app.state.worker
+    worker.tick()
+    operation = service.store.one(
+        "SELECT state,external_id,error FROM operations WHERE kind='order' AND doc_id=?",
+        (doc_id,),
+    )
+    assert operation["state"] == "blocked"
+    assert operation["external_id"] is None
+    assert "HTTP 400" in operation["error"]
+    worker.tick()
+    worker.tick()
+    assert len(seen) == 1, "Do not replay an upstream rejection automatically"
+
+
+def test_expired_oms_access_token_pauses_signed_order_until_refresh(env):
+    app, service, remote = env
+    doc_id = add_doc(service, number="OMS-EXPIRED")
+    service.order(doc_id, "alice")
+    sign_all(service)
+    service.settings.save_token("oms", "expired", "2000-01-01T00:00:00+00:00")
+    worker = app.state.worker
+    worker.last_token_check = 0
+    worker.tick()
+    order = service.store.one("SELECT state,error FROM operations WHERE kind='order' AND doc_id=?", (doc_id,))
+    assert order == {"state": "queued", "error": None}
+    assert service.get(doc_id, "alice")["waiting_for_oms_auth"]
+    assert not remote.orders
+    auth = service.store.one("SELECT state FROM operations WHERE kind='auth_oms'")
+    assert auth and auth["state"] == "signing", "An unsigned refresh must remain queued for signer"
+    # The order still cannot be sent without signing the separate auth job.
+    worker.tick()
+    assert not remote.orders
+    sign_all(service)
+    worker.tick()
+    assert service.gateway.token_ready("oms")
+    worker.tick()
+    assert len(remote.orders) == 1
+    assert not service.get(doc_id, "alice")["waiting_for_oms_auth"]
+
+
+def test_oms_token_near_expiry_pauses_order_before_external_call(env):
+    app, service, remote = env
+    from datetime import datetime, timedelta, timezone
+    service.settings.save_token(
+        "oms", "nearly-expired",
+        (datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat(),
+    )
+    doc_id = add_doc(service, number="OMS-NEAR-EXPIRED")
+    service.order(doc_id, "alice")
+    sign_all(service)
+    app.state.worker.tick()
+    order = service.store.one("SELECT state FROM operations WHERE kind='order' AND doc_id=?", (doc_id,))
+    assert order["state"] == "queued"
+    assert not remote.orders
