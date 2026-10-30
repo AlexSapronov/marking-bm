@@ -1044,6 +1044,10 @@ function renderOperationRow(o) {
   if (!o.stopped && o.kind === "report" && ["rejected", "partial"].includes(o.state) && o.external_id) {
     buttons.push(`<button data-action="retry-report" data-id="${e(o.id)}">Создать повторный отчёт</button>`);
   }
+  if (!o.stopped && o.state === "blocked" && o.kind === "order" &&
+      !o.external_id && /^ЧЗ: HTTP 400\b/.test(o.error || "")) {
+    buttons.push(`<button data-action="retry-verified-order" data-id="${e(o.id)}">Повторить заказ после сверки</button>`);
+  }
   if (!o.stopped && o.state === "blocked" && !o.external_id &&
       ["Обновите доступ к ГИС МТ", "Обновите доступ к СУЗ", "Отправка операций отключена администратором сервера"]
         .some(text => (o.error || "").startsWith(text))) {
@@ -1599,6 +1603,45 @@ async function action(name, id, b) {
       await adminPage();
       toast("Локальное задание возвращено в очередь обработки", "success");
       break;
+    case "retry-verified-order": {
+      const review = await api("/admin/operations/" + encodeURIComponent(id) + "/order-review");
+      modal(`<h2>Повторить заказ КМ после сверки?</h2>
+        <p>Накладная: <b>${e(review.document)}</b>. Проверьте в ЛК СУЗ, что заказ по указанным GTIN и идентификатору действительно отсутствует.</p>
+        <div class="table-wrap"><table><thead><tr><th>GTIN</th><th>Количество КМ</th></tr></thead><tbody>
+        ${review.products.map(p => `<tr><td class="mono">${e(p.gtin)}</td><td>${fmt(p.quantity)}</td></tr>`).join("")}
+        </tbody></table></div>
+        <p class="muted">Идентификатор заказа (productionOrderId): <span class="mono">${e(review.production_order_id)}</span></p>
+        <p class="notice">Отправка повторится только для этой операции. Если заказ уже существует в СУЗ, повтор создаст риск дублирования платных КМ. Проверьте заказ до подтверждения.</p>
+        <form id="verified-order-retry-form">
+          <label class="check-label"><input type="checkbox" name="confirmed_absent" required>
+            Подтверждаю: в СУЗ нет заказа с этими данными</label>
+          <label>Результат проверки в СУЗ<input name="reason" required minlength="10" maxlength="500" placeholder="Где и что проверено; причина повторного запуска"></label>
+          <div class="actions">
+            <button class="primary" type="submit">Повторить этот заказ КМ</button>
+            <button type="button" data-action="close">Отмена</button>
+          </div>
+        </form>`);
+      $("#verified-order-retry-form").onsubmit = async ev => {
+        ev.preventDefault();
+        const form = ev.currentTarget;
+        const submit = form.querySelector('button[type="submit"]');
+        submit.disabled = true;
+        try {
+          const reason = form.elements.namedItem("reason").value.trim();
+          if (reason.length < 10) throw new Error("Укажите результат сверки, минимум 10 символов");
+          await api("/admin/operations/" + encodeURIComponent(id) + "/retry-verified-order",
+            {confirmed_absent: true, reason});
+          $("#modal").close();
+          await adminPage();
+          toast("Проверенный заказ возвращён в очередь. Отправка дождётся действующего токена СУЗ.", "success");
+        } catch (err) {
+          toast(err.message);
+        } finally {
+          submit.disabled = false;
+        }
+      };
+      break;
+    }
     case "retry-report":
       if (!await confirmAction("Повторить отчёт о нанесении?", "При частичной обработке в новый отчёт войдут только КМ, которые ГИС МТ подтвердит как ещё не нанесённые.", "Поставить отчёт в очередь")) break;
       await api("/admin/operations/" + id + "/retry", {});
