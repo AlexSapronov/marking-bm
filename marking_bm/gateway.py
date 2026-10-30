@@ -235,11 +235,11 @@ class Gateway:
             ):
                 raise RemoteError("Не подтверждено получение блока КМ", True)
             return {"id": r["blockId"], "complete": True, "receipt": r}
-        elif kind in ("atk", "transform"):
+        elif kind in ("atk", "transform", "introduce"):
             body = {
                 "document_format": "MANUAL",
                 "product_document": base64.b64encode(payload).decode(),
-                "type": "ATK_AGGREGATION" if kind == "atk" else "ATK_TRANSFORMATION",
+                "type": {"atk": "ATK_AGGREGATION", "transform": "ATK_TRANSFORMATION", "introduce": "LP_FTS_INTRODUCE"}[kind],
                 "signature": sig,
             }
             r = self.request(
@@ -250,7 +250,7 @@ class Gateway:
                 mutating=True,
             )
             if not isinstance(r, str):
-                raise RemoteError("Не подтверждён ID документа АТК", True)
+                raise RemoteError("Не подтверждён ID документа ГИС МТ", True)
             return {"id": self.mutation_id(r), "complete": False}
         else:
             raise ValueError("Недопустимый тип операции")
@@ -301,21 +301,21 @@ class Gateway:
             ):
                 raise ValueError("Нет окончательной успешной квитанции отчёта")
             return {"complete": True, "receipt": rec}
-        if kind in ("atk", "transform"):
+        if kind in ("atk", "transform", "introduce"):
             r = self.request(
                 "GET",
                 self.settings.true_url + f"/api/v4/true-api/doc/{ext}/info",
                 params={"pg": "radio", "body": "true", "content": "true"},
             )
             if not isinstance(r, list) or len(r) != 1 or r[0].get("number") != ext:
-                raise ValueError("ЧЗ не подтвердил документ АТК")
+                raise ValueError("ЧЗ не подтвердил документ")
             doc = r[0]
             if (
                 doc.get("errors")
                 or doc.get("commonErrors")
                 or doc.get("status") in ("CHECKED_NOT_OK", "PARSE_ERROR")
             ):
-                raise ValueError("Документ АТК обработан с ошибкой")
+                raise ValueError("Документ ГИС МТ обработан с ошибкой")
             if doc.get("status") != "CHECKED_OK":
                 return {"complete": False, "receipt": r}
             return {"complete": True, "receipt": r}

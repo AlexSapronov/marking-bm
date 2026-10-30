@@ -258,7 +258,7 @@ def test_legacy_database_migrates_roles_without_losing_users(tmp_path):
     for _ in range(2):
         store = Store(path)
         assert store.one("SELECT * FROM users")["role"] == "manager"
-        assert store.one("SELECT MAX(version) v FROM schema_version")["v"] == 5
+        assert store.one("SELECT MAX(version) v FROM schema_version")["v"] == 6
         assert store.one("SELECT password_hash FROM users WHERE username='old-manager'")["password_hash"] is None
         assert store.one("SELECT setup_token_hash FROM users WHERE username='old-manager'")["setup_token_hash"] is None
     with store.transaction() as db:
@@ -311,43 +311,68 @@ def test_registry_archive_and_pending_groups(env):
         )
 
 
-def test_logist_completes_ready_invoice_without_external_writes(env):
+def introduction_body(logist, doc_id):
+    scope = logist.get("/api/logistics/documents/" + doc_id + "/introduction")
+    assert scope.status_code == 200, scope.text
+    scope = scope.json()
+    return {"declaration_number": "10000000/011026/0000001", "declaration_date": "2026-10-01",
+            "countries": {l["id"]: "156" for l in scope["lines"]}, "snapshot": scope["snapshot"]}
+
+
+def test_introduction_archives_only_after_gis_confirmation(env):
     app, s, remote = env
     ids, logist, _ = prepare_atks(env)
-    before_calls = len(remote.calls)
-    before_ops = s.store.one("SELECT COUNT(*) n FROM operations")["n"]
-    before_files = s.store.all("SELECT id,sha256 FROM artifacts ORDER BY id")
-    first = next(a for a in logist.get("/api/logistics/atks").json() if a["invoices"] == ["AL-100"])
-    assert first["documents"][0]["can_complete"]
-    endpoint = "/api/logistics/documents/" + ids[0] + "/complete"
-    response = logist.post(endpoint, json={})
-    assert response.status_code == 200 and response.json()["status"] == "archive"
-    assert logist.post(endpoint, json={}).status_code == 200
+    body = introduction_body(logist, ids[0])
+    endpoint = "/api/logistics/documents/" + ids[0] + "/introduce"
+    response = logist.post(endpoint, json=body)
+    assert response.status_code == 200, response.text
+    assert s.get(ids[0], "alice")["status"] == "done"
+    assert logist.post(endpoint, json=body).status_code == 409
+    atk = s.get(ids[0], "alice")["atks"][0]
+    code = s.store.one("SELECT id FROM codes WHERE doc_id=?", (ids[0],))
+    with pytest.raises(ValueError, match="вводом в оборот"):
+        s.transform(atk["id"], "REMOVING", [code["id"]], "alice")
+    advance(app)
     assert s.get(ids[0], "alice")["status"] == "archive"
     assert s.get(ids[1], "bob")["status"] == "done"
-    assert len(logist.get("/api/logistics/atks").json()) == 1
-    archived = logist.get("/api/logistics/atks?archive=true").json()
-    assert len(archived) == 1 and archived[0]["id"] == first["id"]
-    assert not archived[0]["documents"][0]["can_complete"]
-    for f in archived[0]["files"]:
-        assert logist.get("/api/files/" + f["id"]).status_code == 200
-    assert s.store.one("SELECT COUNT(*) n FROM operations")["n"] == before_ops
-    assert s.store.all("SELECT id,sha256 FROM artifacts ORDER BY id") == before_files
-    assert len(remote.calls) == before_calls
-    entries = s.store.all("SELECT * FROM audit WHERE entity=? AND action LIKE '%завершена логистом%'", (ids[0],))
-    assert len(entries) == 1 and entries[0]["actor"] == "logist"
+    op = s.store.one("SELECT * FROM operations WHERE id=?", (response.json()["id"],))
+    assert op["state"] == "done" and op["external_id"]
+    assert all(c["external_status"] == "INTRODUCED" for c in s.store.all("SELECT * FROM codes WHERE doc_id=?", (ids[0],)))
+    assert s.store.one("SELECT op_id FROM receipts WHERE op_id=?", (op["id"],))
+    sent = [c[2] for c in remote.calls if c[1].endswith("/lk/documents/create")]
+    assert sent[-1]["type"] == "LP_FTS_INTRODUCE"
+    import base64
+    import json
+    payload = json.loads(base64.b64decode(sent[-1]["product_document"]))
+    assert all(c["tn_ved"] == TN and c["production_country_code"] == "156" for a in payload["products_list"] for c in a["children"])
+    assert logist.post("/api/logistics/documents/" + ids[1] + "/complete", json={}).status_code == 409
 
 
-def test_only_logist_or_admin_can_complete_and_csrf_is_required(env):
+def test_only_logist_or_admin_can_introduce_and_csrf_is_required(env):
     app, s, _ = env
     ids, logist, admin = prepare_atks(env)
-    endpoint = "/api/logistics/documents/" + ids[0] + "/complete"
-    assert client(app).post(endpoint, json={}).status_code == 403
+    endpoint = "/api/logistics/documents/" + ids[0] + "/introduce"
+    body = introduction_body(logist, ids[0])
+    assert client(app).post(endpoint, json=body).status_code == 403
     token = logist.headers.pop("X-CSRF-Token")
-    assert logist.post(endpoint, json={}).status_code == 403
+    assert logist.post(endpoint, json=body).status_code == 403
     logist.headers["X-CSRF-Token"] = token
-    assert admin.post(endpoint, json={}).status_code == 200
-    assert logist.post("/api/logistics/documents/missing/complete", json={}).status_code == 403
+    assert admin.post(endpoint, json=body).status_code == 200
+
+
+@pytest.mark.parametrize("change", ["date", "number", "country", "missing_country", "snapshot"])
+def test_introduction_validates_before_queueing(env, change):
+    app, s, _ = env
+    ids, logist, _ = prepare_atks(env)
+    body = introduction_body(logist, ids[0])
+    if change == "date": body["declaration_date"] = "2026-10-02"
+    if change == "number": body["declaration_number"] = "bad"
+    if change == "country": body["countries"] = {k: "CN" for k in body["countries"]}
+    if change == "missing_country": body["countries"] = {}
+    if change == "snapshot": body["snapshot"] = "0" * 64
+    response = logist.post("/api/logistics/documents/" + ids[0] + "/introduce", json=body)
+    assert response.status_code in (422, 409), response.text
+    assert not s.store.all("SELECT id FROM operations WHERE kind='introduce'")
 
 
 @pytest.mark.parametrize("block", ["draft", "pending_transform", "missing_files", "unfinished_atk", "unfinished_sibling_atk"])
@@ -378,7 +403,7 @@ def test_completion_rejects_unfinished_or_incomplete_invoice(env, block):
     assert len(remote.calls) == calls
 
 
-def test_shared_atk_stays_in_work_until_all_invoices_are_closed(env):
+def test_shared_atk_introduces_all_connected_invoices_together(env):
     app, s, _ = env
     _, logist, _ = prepare_atks(env)
     ids = [add_doc(s, number="SHARED-1", supplier="Shared"), add_doc(s, owner="bob", number="SHARED-2", supplier="Shared")]
@@ -389,9 +414,83 @@ def test_shared_atk_stays_in_work_until_all_invoices_are_closed(env):
         s.transferred(doc_id, owner, 1)
     s.batch("administrator", ids, "2026-01-01", admin=True)
     advance(app)
-    for index, doc_id in enumerate(ids):
-        assert logist.post("/api/logistics/documents/" + doc_id + "/complete", json={}).status_code == 200
-        active = logist.get("/api/logistics/atks?q=SHARED").json()
-        assert len(active) == (1 if index == 0 else 0)
+    body = introduction_body(logist, ids[0])
+    assert len(body["countries"]) == 2
+    values = list(body["countries"])
+    body["countries"][values[1]] = "158"
+    response = logist.post("/api/logistics/documents/" + ids[0] + "/introduce", json=body)
+    assert response.status_code == 200, response.text
+    advance(app)
+    assert all(s.store.one("SELECT status FROM documents WHERE id=?", (i,))["status"] == "archive" for i in ids)
     archived = logist.get("/api/logistics/atks?archive=true&q=SHARED").json()
     assert len(archived) == 1 and set(archived[0]["invoices"]) == {"SHARED-1", "SHARED-2"}
+
+
+@pytest.mark.parametrize("outcome", ["waiting", "negative", "partial", "foreign_owner", "document_rejected"])
+def test_fts_does_not_archive_without_every_code_confirmed(env, outcome):
+    from conftest import sign_all
+    app, s, remote = env
+    ids, logist, _ = prepare_atks(env)
+    body = introduction_body(logist, ids[0])
+    response = logist.post("/api/logistics/documents/" + ids[0] + "/introduce", json=body)
+    op_id = response.json()["id"]
+    sign_all(s)
+    app.state.worker.dispatch(s.store.one("SELECT * FROM operations WHERE id=?", (op_id,)))
+    codes = s.store.all("SELECT cis FROM codes WHERE doc_id=?", (ids[0],))
+    for index, code in enumerate(codes):
+        ci = remote.codes[code["cis"]]
+        if outcome in ("waiting", "negative") or outcome == "partial" and index == 0:
+            ci["status"] = "APPLIED"
+        if outcome == "negative": ci["statusEx"] = "FTS_RESPOND_NOT_OK"
+        if outcome == "foreign_owner": ci["ownerInn"] = "other"
+    op = s.store.one("SELECT * FROM operations WHERE id=?", (op_id,))
+    if outcome == "document_rejected":
+        remote.documents[op["external_id"]]["status"] = "CHECKED_NOT_OK"
+    advance(app, 2)
+    assert s.get(ids[0], "alice")["status"] == "done"
+    assert s.store.one("SELECT state FROM operations WHERE id=?", (op_id,))["state"] != "done"
+    assert not s.store.one("SELECT op_id FROM receipts WHERE op_id=?", (op_id,))
+
+
+def test_lost_fts_response_is_never_sent_again(env):
+    import httpx
+    app, s, remote = env
+    ids, logist, _ = prepare_atks(env)
+    body = introduction_body(logist, ids[0])
+    original = remote.handle
+    def lost_response(request):
+        result = original(request)
+        if request.url.path.endswith("/lk/documents/create"):
+            raise httpx.ReadTimeout("lost after acceptance", request=request)
+        return result
+    s.gateway.transport = httpx.MockTransport(lost_response)
+    response = logist.post("/api/logistics/documents/" + ids[0] + "/introduce", json=body)
+    calls = len([c for c in remote.calls if c[1].endswith("/lk/documents/create")])
+    advance(app)
+    assert s.store.one("SELECT state FROM operations WHERE id=?", (response.json()["id"],))["state"] == "unknown"
+    assert len([c for c in remote.calls if c[1].endswith("/lk/documents/create")]) == calls + 1
+    assert s.get(ids[0], "alice")["status"] == "done"
+    assert logist.post("/api/logistics/documents/" + ids[0] + "/introduce", json=body).status_code == 409
+
+
+@pytest.mark.parametrize("problem", ["missing_local", "different_registry"])
+def test_fts_requires_explicit_matching_tnved_for_every_code(env, problem):
+    app, s, remote = env
+    ids, logist, _ = prepare_atks(env)
+    body = introduction_body(logist, ids[0])
+    if problem == "missing_local":
+        # Production makes APPLIED assignments immutable; simulate a damaged
+        # legacy line, not a legal edit to an already-applied code.
+        with s.store.transaction() as db:
+            db.execute("UPDATE lines SET tnved='' WHERE doc_id=?", (ids[0],))
+        assert logist.post("/api/logistics/documents/" + ids[0] + "/introduce", json=body).status_code == 409
+        assert not s.store.all("SELECT id FROM operations WHERE kind='introduce'")
+    else:
+        for c in s.store.all("SELECT cis FROM codes WHERE doc_id=?", (ids[0],)):
+            remote.codes[c["cis"]]["tnVedEaes"] = "1234567890"
+        response = logist.post("/api/logistics/documents/" + ids[0] + "/introduce", json=body)
+        advance(app)
+        op = s.store.one("SELECT * FROM operations WHERE id=?", (response.json()["id"],))
+        assert op["state"] == "preflight_blocked"
+        assert "ТН ВЭД" in op["error"] and not op["external_id"]
+        assert s.get(ids[0], "alice")["status"] == "done"

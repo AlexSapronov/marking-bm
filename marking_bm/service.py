@@ -82,7 +82,8 @@ class Service:
 
     def operation_stopped(self, db, op):
         return bool(
-            self.document_stopped(db, op.get("doc_id"))
+            (op.get("kind") == "introduce" and one(db, "SELECT i.doc_id FROM introduction_documents i JOIN document_stops s ON s.doc_id=i.doc_id WHERE i.op_id=? AND s.resumed_at IS NULL LIMIT 1", (op.get("id"),)))
+            or self.document_stopped(db, op.get("doc_id"))
             or (
                 op.get("kind")
                 not in ("report", "order", "fetch", "auth_true", "auth_oms")
@@ -154,6 +155,7 @@ class Service:
             ):
                 if op["doc_id"] != doc_id and not (
                     op["kind"] in ("atk", "transform") and op["group_id"] in groups
+                    or op["kind"] == "introduce" and one(db, "SELECT doc_id FROM introduction_documents WHERE doc_id=? AND op_id=?", (doc_id, op["id"]))
                 ):
                     continue
                 db.execute(
@@ -1801,6 +1803,7 @@ class Service:
             raise ValueError("Неверная заявка")
         with self.store.transaction() as db:
             a = self.atk_access(db, atk_id, actor, admin)
+            self.require_atk_not_introducing(db, atk_id)
             self.require_operation_active(
                 db, {"group_id": a["batch_id"] + ":" + a["supplier_id"]}
             )
@@ -1872,6 +1875,7 @@ class Service:
             a = one(db, "SELECT * FROM atks WHERE id=?", (t["atk_id"],))
             op = None
             if approve:
+                self.require_atk_not_introducing(db, a["id"])
                 self.require_operation_active(
                     db, {"group_id": a["batch_id"] + ":" + a["supplier_id"]}
                 )
@@ -1919,7 +1923,7 @@ class Service:
     def archive(self, today=None):
         today = today or date.today()
         with self.store.transaction() as db:
-            for d in rows(db, "SELECT * FROM documents WHERE status='done'"):
+            for d in rows(db, "SELECT * FROM documents WHERE status='done' AND NOT EXISTS (SELECT 1 FROM introduction_documents i WHERE i.doc_id=documents.id)"):
                 dt = date.fromisoformat(d["completed"][:10])
                 m = dt.month + 6
                 y = dt.year + (m - 1) // 12
@@ -2043,6 +2047,11 @@ class Service:
             "WHERE t.atk_id=x.id AND t.state IN ('approval','approved','processing'))) LIMIT 1",
             (a["batch_id"], a["supplier_id"]),
         )
+        introduction = one(db, "SELECT o.state,o.error,o.updated FROM introduction_atks i JOIN operations o ON o.id=i.op_id WHERE i.atk_id=?", (a["id"],))
+        if introduction and not held:
+            op = introduction
+            error = introduction["error"]
+            state = "attention" if error else "done" if introduction["state"] == "done" else "processing"
         batch = one(db, "SELECT created FROM batches WHERE id=?", (a["batch_id"],))
         return {
             "id": a["id"],
@@ -2064,7 +2073,8 @@ class Service:
                 {
                     **d,
                     "stopped": bool(self.document_stopped(db, d["id"])),
-                    "can_complete": d["status"] == "done"
+                    "introduction": one(db, "SELECT o.id,o.state,o.error,o.external_id FROM introduction_documents i JOIN operations o ON o.id=i.op_id WHERE i.doc_id=?", (d["id"],)),
+                    "can_complete": not one(db, "SELECT op_id FROM introduction_documents WHERE doc_id=?", (d["id"],)) and d["status"] == "done"
                     and state == "done"
                     and not group_pending
                     and op["state"] == "done"
@@ -2082,39 +2092,99 @@ class Service:
         }
 
     def logistics_complete(self, doc_id, actor):
-        """Close local logistics work only; never send a new operation to GIS/OMS."""
+        raise Conflict("Для завершения накладной выполните ввод в оборот «Импорт с ФТС»")
+
+    def introduction_scope(self, db, doc_id):
+        if not one(db, "SELECT id FROM documents WHERE id=?", (doc_id,)):
+            raise PermissionError("Накладная недоступна")
+        # Whole ATKs must be sent as declared to FTS. Include all connected
+        # invoices and sibling ATKs, including supplements from other batches.
+        doc_ids, selected = {doc_id}, {}
+        summaries = [(a, self._logistics_summary(db, a)) for a in rows(db, "SELECT * FROM atks")]
+        while True:
+            previous = (len(doc_ids), len(selected))
+            for a, summary in summaries:
+                if doc_ids.intersection(d["id"] for d in summary["documents"]):
+                    selected[a["id"]] = (a, summary)
+                    doc_ids.update(d["id"] for d in summary["documents"])
+            if previous == (len(doc_ids), len(selected)):
+                break
+        documents = [one(db, "SELECT id,number,status FROM documents WHERE id=?", (i,)) for i in sorted(doc_ids)]
+        if not selected or any(d["status"] != "done" or self.document_stopped(db, d["id"]) for d in documents):
+            raise Conflict("Для ввода в оборот нужны готовые, действующие накладные с АТК")
+        if any(not summary["download_ready"] or summary["status"] != "done" or
+               summary["operation_state"] != "done" or
+               not all(d["can_complete"] for d in summary["documents"])
+               for a, summary in selected.values()):
+            raise Conflict("Дождитесь готовности всех АТК и файлов; проверьте операции ввода в оборот")
+        codes = []
+        atks = []
+        for a, summary in selected.values():
+            members = rows(db, "SELECT c.* FROM atk_versions v JOIN json_each(v.composition) j JOIN codes c ON c.id=j.value WHERE v.atk_id=? AND v.version=? ORDER BY c.id", (a["id"], a["version"]))
+            if not members or any(c["doc_id"] not in doc_ids or c["atk_id"] != a["id"] or c["external_status"] != "APPLIED" for c in members):
+                raise Conflict("Состав АТК изменился или содержит неподходящие КМ")
+            for c in members:
+                if (not re.fullmatch(r"[0-9]{10}", c["tnved"] or "") or c["tnved"] != a["tnved"]
+                        or not one(db, "SELECT id FROM lines WHERE doc_id=? AND pn=? AND gtin=? AND quantity=? AND tnved=?",
+                                   (c["doc_id"], c["pn"], c["gtin"], c["quantity"], c["tnved"]))):
+                    raise Conflict("Каждому КМ должен соответствовать полный 10-значный ТН ВЭД строки накладной и АТК")
+            codes.extend(members)
+            atks.append({"id": a["id"], "code": a["code"], "version": a["version"]})
+        expected = {c["id"] for i in doc_ids for c in rows(db, "SELECT id FROM codes WHERE doc_id=?", (i,))}
+        if expected != {c["id"] for c in codes} or len(codes) != len(expected):
+            raise Conflict("Не все КМ накладных входят в актуальные АТК")
+        lines = {}
+        for c in codes:
+            key = (c["doc_id"], c["pn"], c["gtin"], c["quantity"], c["tnved"])
+            lines.setdefault(key, {"id": c["id"], "doc_id": c["doc_id"], "pn": c["pn"], "gtin": c["gtin"], "quantity": c["quantity"], "tnved": c["tnved"]})
+        snapshot = {"documents": documents, "atks": sorted(atks, key=lambda a: a["id"]),
+                    "codes": [{k: c[k] for k in ("id", "cis", "doc_id", "pn", "gtin", "atk_id", "tnved")} for c in sorted(codes, key=lambda c: c["id"])]}
+        return {"documents": documents, "atks": atks, "lines": list(lines.values()),
+                "snapshot": sha256(dumps(snapshot).encode()).hexdigest()}, codes
+
+    def introduction_preview(self, doc_id):
+        with self.store.read() as db:
+            scope, _ = self.introduction_scope(db, doc_id)
+            return scope
+
+    def introduce(self, doc_id, actor, number, declaration_date, countries, snapshot):
+        number = number.strip()
+        try:
+            dt = date.fromisoformat(declaration_date)
+        except (ValueError, TypeError):
+            raise ValueError("Укажите дату ДТ в формате ГГГГ-ММ-ДД")
+        if (not re.fullmatch(r"[0-9]{8}/[0-9]{6}/[0-9]{7}", number)
+                or number.split("/")[1] != dt.strftime("%d%m%y")
+                or not date(2000, 1, 1) <= dt <= date.today()):
+            raise ValueError("Проверьте номер ДТ (XXXXXXXX/ДДММГГ/XXXXXXX) и дату регистрации")
         with self.store.transaction() as db:
-            d = one(db, "SELECT * FROM documents WHERE id=?", (doc_id,))
-            if not d:
-                raise PermissionError("Накладная недоступна")
-            if d["status"] == "archive":
-                return {"id": doc_id, "status": "archive"}
-            if d["status"] != "done":
-                raise Conflict(
-                    "Завершить можно только накладную с готовыми АТК и итоговыми файлами"
-                )
-            related = []
-            for a in rows(db, "SELECT * FROM atks"):
-                summary = self._logistics_summary(db, a)
-                if any(item["id"] == doc_id for item in summary["documents"]):
-                    related.append(summary)
-            if not related or any(
-                a["status"] != "done"
-                or a["operation_state"] != "done"
-                or not a["download_ready"]
-                for a in related
-            ):
-                raise Conflict(
-                    "Дождитесь готовности всех АТК, итоговых файлов и завершения трансформаций накладной"
-                )
-            db.execute(
-                "UPDATE documents SET status='archive',updated=? WHERE id=?",
-                (now(), doc_id),
-            )
-            audit(
-                db, actor, "Накладная завершена логистом и перемещена в архив", doc_id
-            )
-            return {"id": doc_id, "status": "archive"}
+            scope, codes = self.introduction_scope(db, doc_id)
+            if snapshot != scope["snapshot"]:
+                raise Conflict("Состав изменился. Откройте форму ввода в оборот заново")
+            if set(countries) != {line["id"] for line in scope["lines"]}:
+                raise ValueError("Укажите страну производства для каждой строки")
+            if any(not isinstance(v, str) or not re.fullmatch(r"[0-9]{3}", v) or v == "000" for v in countries.values()):
+                raise ValueError("Страна производства: трёхзначный числовой код ОКСМ, например 156 — Китай")
+            country_map = {(l["doc_id"], l["pn"], l["gtin"], l["quantity"], l["tnved"]): countries[l["id"]] for l in scope["lines"]}
+            payload = {"trade_participant_inn": self.config()["inn"],
+                       "declaration_number": number, "declaration_date": dt.isoformat(),
+                       "products_list": [{"atk": a["code"], "children": [
+                           {"cis": c["cis"], "tn_ved": c["tnved"], "production_country_code": country_map[(c["doc_id"], c["pn"], c["gtin"], c["quantity"], c["tnved"])]}
+                           for c in codes if c["atk_id"] == a["id"]]} for a in scope["atks"]]}
+            if not payload["trade_participant_inn"]:
+                raise ValueError("Настройте ИНН организации перед отправкой")
+            op = self.queue(db, "introduce", "introduce:" + uid(), payload, doc_id)
+            for d in scope["documents"]:
+                db.execute("INSERT INTO introduction_documents VALUES(?,?)", (d["id"], op))
+                audit(db, actor, "Подготовлен ввод в оборот. Импорт с ФТС", d["id"],
+                      {"operation": op, "declaration_number": number, "declaration_date": dt.isoformat(), "documents": scope["documents"]})
+            for a in scope["atks"]:
+                db.execute("INSERT INTO introduction_atks VALUES(?,?)", (a["id"], op))
+            return {"id": op, "state": "signing"}
+
+    def require_atk_not_introducing(self, db, atk_id):
+        if one(db, "SELECT op_id FROM introduction_atks WHERE atk_id=?", (atk_id,)):
+            raise Conflict("АТК закреплён за вводом в оборот; изменение состава запрещено")
 
     def logistics_atk(self, atk_id):
         with self.store.read() as db:

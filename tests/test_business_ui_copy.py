@@ -39,13 +39,13 @@ def test_buttons_name_actions_instead_of_promising_completed_external_effect():
         "Запросить проверку статуса",
         "Запросить обновление доступа",
         "Сменить ответственного",
-        "Завершить работу",
-        "Закрыть накладную в архив",
+        "Ввести в оборот",
+        "Подписать и ввести в оборот",
     ):
         assert copy in APP, copy
     assert 'a.documents.length === 1 ? "Завершить накладную"' not in APP
     assert ">Повторить отправку</button>" not in APP
-    assert "не подтверждает фактическую доставку" in APP
+    assert "Архивирование — после подтверждения ввода всех КМ" in APP
 
 
 def test_dangerous_admin_actions_require_explicit_confirmation():

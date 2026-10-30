@@ -170,6 +170,10 @@ class Registry:
                 self.atks[atk] = payload["products_list"]
                 for item in payload["products_list"]:
                     self.codes[item["ki"]]["parent"] = atk
+            elif body["type"] == "LP_FTS_INTRODUCE":
+                for product in payload["products_list"]:
+                    for item in product["children"]:
+                        self.codes[item["cis"]]["status"] = "INTRODUCED"
             else:
                 for item in payload["products_list"]:
                     self.codes[item["ki"]]["parent"] = (

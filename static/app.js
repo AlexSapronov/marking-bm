@@ -57,6 +57,7 @@ const kinds = {
   report: "Отчёт о нанесении",
   atk: "Создание АТК",
   transform: "Трансформация АТК",
+  introduce: "Ввод в оборот · Импорт с ФТС",
   auth_true: "Авторизация ГИС МТ",
   auth_oms: "Авторизация СУЗ",
 };
@@ -125,7 +126,7 @@ function logisticsStatusSignature(items) {
   return JSON.stringify(items.map(a => [
     a.id, a.status, a.error, a.download_ready, a.archived,
     a.files?.map(f => [f.id, f.version]),
-    a.documents?.map(d => [d.id, d.status, d.can_complete]),
+    a.documents?.map(d => [d.id, d.status, d.can_complete, d.introduction]),
   ]));
 }
 function adminStatusSignature(items) {
@@ -1314,18 +1315,23 @@ async function action(name, id, b) {
       break;
     case "logistics-complete": {
       if (isSupervisor()) throw new Error("Руководителю доступен только просмотр и скачивание файлов");
-      const item = registryRows.flatMap(a => a.documents).find(d => d.id === id);
-      if (!item) throw new Error("Обновите реестр перед завершением накладной");
-      modal(`<h2>Закрыть накладную ${e(item.number)} в системе?</h2><p>Накладная будет закрыта и перемещена в архив. Это не подтверждает фактическую доставку или приёмку груза. АТК и RESULT останутся доступны в архивном реестре.</p><div class="actions"><button class="primary" data-action="confirm-logistics-complete" data-id="${e(id)}">Закрыть накладную в архив</button><button data-action="close">Отмена</button></div>`);
+      const scope = await api("/logistics/documents/" + encodeURIComponent(id) + "/introduction");
+      modal(`<h2>Ввод в оборот · Импорт с ФТС</h2><p>Накладные: <b>${scope.documents.map(d => e(d.number)).join(", ")}</b>.</p><p>Будут отправлены все КМ в ${fmt(scope.atks.length)} АТК. Общий АТК вводится целиком по одной ДТ. Проверьте, что все указанные АТК выпущены таможней по этой ДТ.</p><label>Регистрационный номер ДТ<input id="fts-number" placeholder="XXXXXXXX/ДДММГГ/XXXXXXX" maxlength="23" required></label><label>Дата регистрации ДТ<input id="fts-date" type="date" min="2000-01-01" required></label><label>Страна производства для всех строк (код ОКСМ)<input id="fts-country" placeholder="156 — Китай" maxlength="3" inputmode="numeric"></label><p class="muted">Можно указать разные страны по строкам. Китай — 156, Тайвань — 158, Германия — 276. Данные уйдут в ГИС МТ с УКЭП организации. Архивирование — после подтверждения ввода всех КМ.</p><div class="table-wrap"><table><thead><tr><th>Накладная</th><th>PN</th><th>GTIN</th><th>ТН ВЭД</th><th>Страна (ОКСМ)</th></tr></thead><tbody>${scope.lines.map(l => `<tr><td>${e(scope.documents.find(d => d.id === l.doc_id)?.number)}</td><td>${e(l.pn)}</td><td>${e(l.gtin)}</td><td>${e(l.tnved)}</td><td><input class="fts-line-country" data-id="${e(l.id)}" maxlength="3" inputmode="numeric" placeholder="Из общего поля"></td></tr>`).join("")}</tbody></table></div><input id="fts-snapshot" type="hidden" value="${e(scope.snapshot)}"><div class="actions"><button class="primary" data-action="confirm-logistics-complete" data-id="${e(id)}">Подписать и ввести в оборот</button><button data-action="close">Отмена</button></div>`);
       break;
     }
-    case "confirm-logistics-complete":
+    case "confirm-logistics-complete": {
       if (isSupervisor()) throw new Error("Руководителю доступен только просмотр и скачивание файлов");
-      await api("/logistics/documents/" + encodeURIComponent(id) + "/complete", {});
+      const common = $("#fts-country").value.trim();
+      const countries = Object.fromEntries($$(".fts-line-country").map(input => [input.dataset.id, input.value.trim() || common]));
+      await api("/logistics/documents/" + encodeURIComponent(id) + "/introduce", {
+        declaration_number: $("#fts-number").value.trim(), declaration_date: $("#fts-date").value,
+        countries, snapshot: $("#fts-snapshot").value,
+      });
       $("#modal").close();
       await logisticsPage();
-      toast("Накладная закрыта в системе и перемещена в архив", "success");
+      toast("Документ ожидает подписи и подтверждения ГИС МТ", "success");
       break;
+    }
     case "registry-detail":
       await logisticsDetail(id);
       break;
@@ -1695,6 +1701,8 @@ async function action(name, id, b) {
   }
 }
 function logisticsNextAction(a) {
+  const operation = a.documents.find(d => d.introduction && d.introduction.state !== "done")?.introduction;
+  if (operation) return operation.error || ("Ввод в оборот: " + (states[operation.state] || operation.state));
   if (isSupervisor()) {
     if (!a.download_ready) return "Ожидание готовности файлов";
     return a.archived ? "Файлы сохранены в архиве" : "Просмотр и скачивание файлов АТК + RESULT";
@@ -1704,7 +1712,7 @@ function logisticsNextAction(a) {
   if (a.status === "transforming") return "Дождитесь завершения трансформации";
   if (a.status === "processing") return "Дождитесь формирования АТК";
   if (!a.download_ready) return "Дождитесь комплекта АТК + RESULT";
-  if (a.documents.some(d => d.can_complete)) return "Проверьте комплект и закройте накладные в системе";
+  if (a.documents.some(d => d.can_complete)) return "После выпуска таможней введите товары в оборот";
   if (a.archived) return "Документы сохранены в архиве";
   return "Скачать комплект АТК + RESULT";
 }
@@ -1817,7 +1825,7 @@ async function logisticsPage() {
         ? `<tr class="registry-supplier-row"><th colspan="9" scope="colgroup">${e(a.supplier)} · всего ${fmt(supplierCounts.get(a.supplier_id))} АТК</th></tr>` : ""}
         ${i === 0 || onPage[i - 1].supplier_id !== a.supplier_id || invoiceGroupKey(onPage[i - 1]) !== invoiceGroupKey(a)
           ? `<tr class="registry-invoice-row"><th colspan="9" scope="colgroup">${e(invoiceGroupLabel(a))} · ${fmt(invoiceCounts.get(invoiceGroupId(a)))} АТК</th></tr>` : ""}
-        <tr><td><input type="checkbox" class="atk-select" value="${e(a.id)}" ${a.download_ready ? "" : `disabled aria-describedby="atk-unavailable-${e(a.id)}"`} aria-label="Выбрать АТК ${e(a.code || a.id)}">${a.download_ready ? "" : `<span id="atk-unavailable-${e(a.id)}" class="cell-sub selection-reason">Файл АТК ещё не готов</span>`}</td><td><button class="linkbutton registry-code" data-action="registry-detail" data-id="${e(a.id)}">${a.code ? e(a.code) : "АТК формируется"}</button></td><td>${a.owners.map(e).join(", ")}</td><td>${e(a.tnved)}</td><td><b>${fmt(a.units)}</b><span class="cell-sub">${fmt(a.labels)} КМ</span></td><td><span class="badge ${e(a.status)}">${registryLabels[a.status]}</span><span class="cell-sub">${date(a.created)}</span>${a.error ? `<span class="cell-sub">${e(a.error)}</span>` : ""}</td><td><div class="download-actions">${a.files.map((f) => `<a href="/api/files/${e(f.id)}" class="button" title="${e(f.name)}">${f.kind === "atk" ? "АТК" : "RESULT"}</a>`).join("")}</div>${a.download_ready ? "" : '<span class="cell-sub">Комплект ещё не готов</span>'}<span class="cell-sub">${groupCounts.get(a.group_id) > 1 ? "Общий комплект · " + fmt(groupCounts.get(a.group_id)) + " АТК" : "Отдельный комплект"}</span></td><td class="registry-next-action">${e(logisticsNextAction(a))}</td><td>${isSupervisor() ? (a.download_ready ? '<span class="muted">Только просмотр и скачивание</span>' : '<span class="muted">Ожидание готовности</span>') : a.documents.some(d => d.can_complete) ? `<button data-action="registry-detail" data-id="${e(a.id)}">Завершить работу</button>` : a.status === "stopped" ? '<span class="badge cancelled">Остановлена</span>' : a.archived ? '<span class="badge done">В архиве</span>' : '<span class="muted">Ожидание готовности</span>'}</td></tr>`).join("");
+        <tr><td><input type="checkbox" class="atk-select" value="${e(a.id)}" ${a.download_ready ? "" : `disabled aria-describedby="atk-unavailable-${e(a.id)}"`} aria-label="Выбрать АТК ${e(a.code || a.id)}">${a.download_ready ? "" : `<span id="atk-unavailable-${e(a.id)}" class="cell-sub selection-reason">Файл АТК ещё не готов</span>`}</td><td><button class="linkbutton registry-code" data-action="registry-detail" data-id="${e(a.id)}">${a.code ? e(a.code) : "АТК формируется"}</button></td><td>${a.owners.map(e).join(", ")}</td><td>${e(a.tnved)}</td><td><b>${fmt(a.units)}</b><span class="cell-sub">${fmt(a.labels)} КМ</span></td><td><span class="badge ${e(a.status)}">${registryLabels[a.status]}</span><span class="cell-sub">${date(a.created)}</span>${a.error ? `<span class="cell-sub">${e(a.error)}</span>` : ""}</td><td><div class="download-actions">${a.files.map((f) => `<a href="/api/files/${e(f.id)}" class="button" title="${e(f.name)}">${f.kind === "atk" ? "АТК" : "RESULT"}</a>`).join("")}</div>${a.download_ready ? "" : '<span class="cell-sub">Комплект ещё не готов</span>'}<span class="cell-sub">${groupCounts.get(a.group_id) > 1 ? "Общий комплект · " + fmt(groupCounts.get(a.group_id)) + " АТК" : "Отдельный комплект"}</span></td><td class="registry-next-action">${e(logisticsNextAction(a))}</td><td>${isSupervisor() ? (a.download_ready ? '<span class="muted">Только просмотр и скачивание</span>' : '<span class="muted">Ожидание готовности</span>') : a.documents.some(d => d.can_complete) ? `<button data-action="registry-detail" data-id="${e(a.id)}">Ввести в оборот</button>` : a.documents.some(d => d.introduction && d.introduction.state !== "done") ? badge(a.documents.find(d => d.introduction).introduction.state) : a.status === "stopped" ? '<span class="badge cancelled">Остановлена</span>' : a.archived ? '<span class="badge done">В архиве</span>' : '<span class="muted">Ожидание готовности</span>'}</td></tr>`).join("");
     $("#atk-page-label").textContent = groupedItems.length
       ? `АТК ${from + 1}–${from + onPage.length} из ${groupedItems.length} · страница ${registryPage + 1} из ${pages}`
       : "АТК по выбранным фильтрам нет";
@@ -1888,7 +1896,7 @@ async function logisticsDetail(id) {
   const currentFileIds = new Set(a.files.map(file => String(file.id)));
   const oldFiles = a.history_files.filter(file => !currentFileIds.has(String(file.id)));
   modal(
-    `<div class="eyebrow">Логистика · Накладные и АТК</div><h2>${a.code ? "АТК " + e(a.code) : "АТК формируется"}</h2><p>${e(a.supplier)} · ТН ВЭД ${e(a.tnved)} · версия состава ${a.version}</p><p class="muted">Статус: ${e(states[a.status] || a.status)} · Последнее изменение операции: ${date(a.updated)}</p><p class="muted">Накладные: ${a.invoices.map(e).join(", ")}<br>Сотрудники: ${a.owners.map(e).join(", ")}</p><h3>Актуальные файлы АТК + RESULT</h3>${a.files.length ? `<div class="files">${a.files.map(f => `<a href="/api/files/${e(f.id)}">${e(f.name)}</a>`).join("")}</div>` : '<p class="muted">Актуальный комплект ещё не готов.</p>'}<h3>Накладные</h3><div class="table-wrap"><table><thead><tr><th>Номер</th><th>Сотрудник</th><th>${isSupervisor() ? "Доступ" : "Завершение"}</th></tr></thead><tbody>${a.documents.map(d => `<tr><td>${e(d.number)}</td><td>${e(d.owner)}</td><td>${isSupervisor() ? (d.status === "archive" ? '<span class="badge done">В архиве</span>' : '<span class="muted">Только просмотр</span>') : d.can_complete ? `<button class="primary" data-action="logistics-complete" data-id="${e(d.id)}">Закрыть накладную</button>` : d.stopped ? '<span class="badge cancelled">Остановлена · архив</span>' : d.status === "archive" ? '<span class="badge done">Завершена · архив</span>' : '<span class="muted">Ожидание готовности</span>'}</td></tr>`).join("")}</tbody></table></div><h3>Состав: ${fmt(a.labels)} КМ, ${fmt(a.units)} шт.</h3><div class="table-wrap"><table><thead><tr><th>КИ</th><th>PN</th><th>Штук</th></tr></thead><tbody>${a.codes.map((c) => `<tr><td class="mono">${e(c.cis)}</td><td>${e(c.pn)}</td><td>${fmt(c.quantity)}</td></tr>`).join("")}</tbody></table></div>${oldFiles.length ? `<details><summary>Предыдущие версии файлов · ${fmt(oldFiles.length)}</summary><p class="muted">Сохранены для истории. Используйте актуальные файлы выше.</p><div class="files">${oldFiles.map(f => `<a class="outdated-artifact" href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}<span class="file-warning">Устаревшая версия · не использовать для оформления</span></a>`).join("")}</div></details>` : '<p class="muted">Предыдущих версий файлов нет.</p>'}<div class="actions"><button data-action="close">Закрыть окно</button></div>`,
+    `<div class="eyebrow">Логистика · Накладные и АТК</div><h2>${a.code ? "АТК " + e(a.code) : "АТК формируется"}</h2><p>${e(a.supplier)} · ТН ВЭД ${e(a.tnved)} · версия состава ${a.version}</p><p class="muted">Статус: ${e(states[a.status] || a.status)} · Последнее изменение операции: ${date(a.updated)}</p><p class="muted">Накладные: ${a.invoices.map(e).join(", ")}<br>Сотрудники: ${a.owners.map(e).join(", ")}</p><h3>Актуальные файлы АТК + RESULT</h3>${a.files.length ? `<div class="files">${a.files.map(f => `<a href="/api/files/${e(f.id)}">${e(f.name)}</a>`).join("")}</div>` : '<p class="muted">Актуальный комплект ещё не готов.</p>'}<h3>Накладные</h3><div class="table-wrap"><table><thead><tr><th>Номер</th><th>Сотрудник</th><th>${isSupervisor() ? "Доступ" : "Завершение"}</th></tr></thead><tbody>${a.documents.map(d => `<tr><td>${e(d.number)}</td><td>${e(d.owner)}</td><td>${isSupervisor() ? (d.status === "archive" ? '<span class="badge done">В архиве</span>' : '<span class="muted">Только просмотр</span>') : d.can_complete ? `<button class="primary" data-action="logistics-complete" data-id="${e(d.id)}">Ввести в оборот</button>` : d.introduction ? `<span class="badge ${e(d.introduction.state)}">${d.introduction.state === "done" ? "В обороте · архив" : "Ввод в оборот: " + e(states[d.introduction.state] || d.introduction.state)}</span>${d.introduction.error ? `<p>${e(d.introduction.error)}</p>` : ""}${d.introduction.external_id ? `<span class="cell-sub">Документ ГИС МТ: ${e(d.introduction.external_id)}</span>` : ""}` : d.stopped ? '<span class="badge cancelled">Остановлена · архив</span>'  : d.status === "archive" ? '<span class="badge done">Завершена · архив</span>' : '<span class="muted">Ожидание готовности</span>'}</td></tr>`).join("")}</tbody></table></div><h3>Состав: ${fmt(a.labels)} КМ, ${fmt(a.units)} шт.</h3><div class="table-wrap"><table><thead><tr><th>КИ</th><th>PN</th><th>Штук</th></tr></thead><tbody>${a.codes.map((c) => `<tr><td class="mono">${e(c.cis)}</td><td>${e(c.pn)}</td><td>${fmt(c.quantity)}</td></tr>`).join("")}</tbody></table></div>${oldFiles.length ? `<details><summary>Предыдущие версии файлов · ${fmt(oldFiles.length)}</summary><p class="muted">Сохранены для истории. Используйте актуальные файлы выше.</p><div class="files">${oldFiles.map(f => `<a class="outdated-artifact" href="/api/files/${e(f.id)}">${e(f.name)} · v${f.version}<span class="file-warning">Устаревшая версия · не использовать для оформления</span></a>`).join("")}</div></details>` : '<p class="muted">Предыдущих версий файлов нет.</p>'}<div class="actions"><button data-action="close">Закрыть окно</button></div>`,
   );
 }
 async function downloadRegistry(ids) {

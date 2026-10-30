@@ -802,6 +802,23 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             raise HTTPException(403, "Руководителю доступны только просмотр и скачивание файлов")
         return service.logistics_complete(doc_id, s["username"])
 
+    @app.get("/api/logistics/documents/{doc_id}/introduction")
+    def introduction_preview(doc_id: str, s=Depends(logistics)):
+        return service.introduction_preview(doc_id)
+
+    class IntroductionBody(BaseModel):
+        declaration_number: str = Field(min_length=1, max_length=30)
+        declaration_date: str = Field(min_length=10, max_length=10)
+        countries: dict[str, str]
+        snapshot: str = Field(min_length=64, max_length=64)
+
+    @app.post("/api/logistics/documents/{doc_id}/introduce")
+    def introduce(doc_id: str, body: IntroductionBody, s=Depends(logistics)):
+        if not s["admin"] and s["role"] == "supervisor":
+            raise HTTPException(403, "Руководителю доступны только просмотр и скачивание файлов")
+        return service.introduce(doc_id, s["username"], body.declaration_number,
+                                 body.declaration_date, body.countries, body.snapshot)
+
     class LogisticsDownload(BaseModel):
         atks: list[str] = Field(min_length=1, max_length=200)
 
@@ -1274,7 +1291,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             if (
                 not op
                 or op["state"] != "unknown"
-                or op["kind"] not in ("order", "report", "atk", "transform")
+                or op["kind"] not in ("order", "report", "atk", "transform", "introduce")
             ):
                 raise Conflict("Операция не допускает привязку ID")
             service.require_operation_active(db, op)
@@ -1316,6 +1333,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                 "report",
                 "atk",
                 "transform",
+                "introduce",
             ):
                 raise Conflict("Недопустимое задание подписи")
             service.require_operation_active(db, op)
