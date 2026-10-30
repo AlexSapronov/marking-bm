@@ -10,6 +10,7 @@ from pypdf import PdfReader, PdfWriter
 from .db import now, uid, dumps, audit
 from .excel import validate_rows, xlsx
 from .codes import with_quantity, parse
+from .supplier_xls import codes_xls
 from .labels import render_label
 
 
@@ -264,7 +265,7 @@ class Service:
     def document(self, db, doc_id, actor, admin=False):
         d = one(
             db,
-            "SELECT d.*,s.name supplier FROM documents d JOIN suppliers s ON s.id=d.supplier_id WHERE d.id=?",
+            "SELECT d.*,s.name supplier,s.codes_xls supplier_codes_xls FROM documents d JOIN suppliers s ON s.id=d.supplier_id WHERE d.id=?",
             (doc_id,),
         )
         if not d or (not admin and d["owner"] != actor):
@@ -384,7 +385,48 @@ class Service:
             )
             d["required"] = sum(l["labels"] for l in d["lines"])
             d["units"] = sum(l["labels"] * l["quantity"] for l in d["lines"])
+            d["supplier_codes_xls_available"] = bool(
+                d["supplier_codes_xls"] and not d["stopped"] and not d["group_stop"]
+                and d["status"] in ("ready", "transferred", "reporting", "reported", "aggregating", "done", "archive")
+                and d["required"] > 0 and len(d["codes"]) == d["required"]
+                and any(f["kind"] == "labels" and f["version"] == d["current_version"]
+                        for f in d["artifacts"])
+            )
             return d
+
+    def supplier_codes_file(self, doc_id, actor, admin=False, expected_version=None):
+        """Export only the current label assignment, never the pool/old versions."""
+        with self.store.read() as db:
+            d = self.document(db, doc_id, actor, admin)
+            if not d["supplier_codes_xls"]:
+                raise Conflict("Выгрузка КМ в XLS отключена для поставщика")
+            if expected_version is not None and expected_version != d["current_version"]:
+                raise Conflict("Версия этикеток изменилась. Обновите накладную и скачайте актуальный файл")
+            if self.document_stopped(db, doc_id) or any(
+                self.group_stopped(db, r["batch_id"] + ":" + r["supplier_id"])
+                for r in rows(db, "SELECT batch_id,supplier_id FROM batch_docs WHERE doc_id=?", (doc_id,))
+            ):
+                raise Conflict("Обработка накладной остановлена")
+            artifact = one(db, "SELECT snapshot FROM artifacts WHERE doc_id=? AND version=? AND kind='labels'",
+                           (doc_id, d["current_version"]))
+            if not artifact or d["status"] not in ("ready", "transferred", "reporting", "reported", "aggregating", "done", "archive"):
+                raise Conflict("Дождитесь готовности актуального комплекта этикеток")
+            snapshot = json.loads(artifact["snapshot"])
+            codes = {c["id"]: c for c in rows(db, "SELECT * FROM codes WHERE doc_id=?", (doc_id,))}
+            required = one(db, "SELECT SUM(labels) n FROM lines WHERE doc_id=?", (doc_id,))["n"]
+            if (not snapshot or len(snapshot) != required or len(codes) != required
+                    or {item["id"] for item in snapshot} != set(codes)):
+                raise Conflict("Состав КМ изменился. Дождитесь формирования новой версии этикеток")
+            items = []
+            for item in snapshot:
+                c = codes[item["id"]]
+                if (any(c[k] != item[k] for k in ("cis", "pn", "gtin", "quantity", "tnved"))
+                        or with_quantity(c["raw"], c["quantity"]) != item["full"]):
+                    raise Conflict("КМ не соответствуют актуальной версии этикеток")
+                # The reference contains the original SUZ payload, without AI 30.
+                items.append({"raw": c["raw"], "gtin": c["gtin"], "pn": c["pn"]})
+            name = safe_name(d["number"] + "-" + d["supplier"], 240) + ".xls"
+        return name, codes_xls(items)
 
     def check_legacy_codes(self, parsed):
         """Read-only True API check. Every exact CIS must be confirmed EMITTED."""

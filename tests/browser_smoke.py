@@ -6,6 +6,7 @@ import socket
 import sqlite3
 import hashlib
 import json
+import zipfile
 from uuid import uuid4
 from datetime import datetime, timezone
 import subprocess
@@ -566,6 +567,51 @@ with tempfile.TemporaryDirectory() as tmp:
                 page.locator(f'.section-nav [data-id="{section}"]').click()
                 expect(page.locator(f'[data-admin-panel="{section}"]')).to_be_visible()
                 expect(page.locator('[data-admin-panel]:visible')).to_have_count(1)
+            # Supplier export setting lives in the register; long names must
+            # not shift the setting or action columns.
+            with sqlite3.connect(Path(tmp) / "marking-bm.sqlite3") as db:
+                db.executemany("INSERT INTO suppliers(id,name) VALUES(?,?)", [
+                    ("qa-supplier-short", "AA Test"),
+                    ("qa-supplier-long", "AAB GUANGZHOU CITY VERY LONG SUPPLIER ELECTRONICS INTERNATIONAL TECHNOLOGY COMPANY"),
+                ])
+            page.locator('.section-nav [data-id="suppliers"]').click()
+            page.reload()
+            short_row = page.locator(".supplier-row").filter(has=page.locator('[data-supplier="qa-supplier-short"]'))
+            checkbox = short_row.locator(".supplier-codes-xls")
+            checkbox.check()
+            expect(short_row.locator(".supplier-setting-status")).to_have_text("Сохранено")
+            page.reload()
+            expect(checkbox).to_be_checked()
+            for width, height in ((1366, 768), (1920, 1080), (2560, 1440)):
+                page.set_viewport_size({"width": width, "height": height})
+                geometry = page.locator('.supplier-row:not([hidden])').evaluate_all("""rows => rows.map(row => {
+                    const button = row.querySelector('button').getBoundingClientRect();
+                    const checkbox = row.querySelector('input').getBoundingClientRect();
+                    return {button: button.x, right: button.right, checkbox: checkbox.x};
+                })""")
+                assert len(geometry) >= 2
+                for key in ("button", "right", "checkbox"):
+                    assert max(g[key] for g in geometry) - min(g[key] for g in geometry) <= 1, geometry
+                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+            page.set_viewport_size({"width": 1440, "height": 1000})
+            page.screenshot(path=str(out / "admin-suppliers-xls.png"), full_page=True)
+            page.get_by_role("button", name="Тёмная тема", exact=True).click()
+            page.screenshot(path=str(out / "admin-suppliers-xls-dark.png"), full_page=True)
+            page.get_by_role("button", name="Светлая тема", exact=True).click()
+            page.locator('[data-section-search="suppliers"]').fill("AA Test")
+            expect(page.locator('.supplier-row:not([hidden])')).to_have_count(1)
+            page.locator('[data-section-search="suppliers"]').fill("")
+            def fail_supplier_setting(route):
+                route.fulfill(status=500, content_type="application/json", body='{"detail":"Test save failure"}')
+            page.route("**/api/admin/suppliers/qa-supplier-short/codes-xls", fail_supplier_setting)
+            checkbox.uncheck()
+            expect(short_row.locator(".supplier-setting-status")).to_have_text("Не сохранено")
+            expect(checkbox).to_be_checked()
+            page.unroute("**/api/admin/suppliers/qa-supplier-short/codes-xls")
+            checkbox.uncheck()
+            expect(short_row.locator(".supplier-setting-status")).to_have_text("Сохранено")
+            page.reload()
+            expect(checkbox).not_to_be_checked()
             # Admin can find a working invoice and transfer ownership in the UI.
             page.locator('.section-nav [data-id="documents"]').click()
             page.locator("#admin-doc-q").fill("SMOKE-001")
@@ -894,6 +940,8 @@ with tempfile.TemporaryDirectory() as tmp:
             move_target = test_service.create(
                 "smoke-user", "MOVE-EMPTY", "Поставщик move"
             )
+            with test_service.store.transaction() as db:
+                db.execute("UPDATE suppliers SET codes_xls=1 WHERE name='Поставщик move'")
             test_service.transferred(move_source, "smoke-user", 1)
             page.reload()
             page.locator(".doc-select:not(:disabled)").check()
@@ -909,6 +957,16 @@ with tempfile.TemporaryDirectory() as tmp:
             page.locator("#clear-doc-selection").click()
             expect(page.locator("#selected-count")).to_contain_text("Накладные не выбраны")
             page.get_by_role("button", name="MOVE-READY", exact=True).click()
+            export_link = page.locator('a[href*="/supplier-codes.xls"]')
+            expect(export_link).to_be_visible()
+            with page.expect_download() as exported:
+                export_link.click()
+            downloaded = exported.value
+            assert downloaded.suggested_filename == "MOVE-READY-Поставщик move.xls"
+            with zipfile.ZipFile(downloaded.path()) as workbook:
+                assert "xl/sharedStrings.xml" in workbook.namelist()
+            page.screenshot(path=str(out / "invoice-supplier-xls.png"), full_page=True)
+
             expect(page.get_by_role("button", name="Перенести строки и КМ")).to_be_visible()
             page.locator(".move-line").check()
             assert page.evaluate("gatherRows()[0]") == page.evaluate(

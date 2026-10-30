@@ -23,7 +23,7 @@ INSERT OR IGNORE INTO schema_version VALUES(1);
 CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1,role TEXT NOT NULL DEFAULT 'manager' CHECK(role IN ('manager','logistics','supervisor')));
 CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,username TEXT,admin INTEGER NOT NULL,csrf TEXT NOT NULL,expires REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS login_attempts(ip TEXT PRIMARY KEY,failures INTEGER NOT NULL,until REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS suppliers(id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,merged_into TEXT REFERENCES suppliers(id));
+CREATE TABLE IF NOT EXISTS suppliers(id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,merged_into TEXT REFERENCES suppliers(id),codes_xls INTEGER NOT NULL DEFAULT 0 CHECK(codes_xls IN (0,1)));
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS catalog(gtin TEXT PRIMARY KEY,tnved TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS pn_map(gtin TEXT NOT NULL,pn TEXT NOT NULL,PRIMARY KEY(gtin,pn));
@@ -144,6 +144,9 @@ class Store:
                     db.execute("PRAGMA foreign_keys=ON")
             db.execute("INSERT OR IGNORE INTO schema_version VALUES(5)")
             db.execute("INSERT OR IGNORE INTO schema_version VALUES(6)")
+            if "codes_xls" not in {r[1] for r in db.execute("PRAGMA table_info(suppliers)")}:
+                db.execute("ALTER TABLE suppliers ADD COLUMN codes_xls INTEGER NOT NULL DEFAULT 0 CHECK(codes_xls IN (0,1))")
+            db.execute("INSERT OR IGNORE INTO schema_version VALUES(7)")
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=30)

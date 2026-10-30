@@ -1088,3 +1088,32 @@ main > .topbar p { margin-bottom: 0; }
   [data-admin-panel="operations"] .table-wrap { max-height: 66vh; }
   .registry-table-scroll { max-height: min(66vh, 760px); }
 }
+
+/* Supplier settings share columns regardless of name length. */
+[data-admin-panel="suppliers"] .supplier-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 210px 230px;
+  align-items: center;
+  gap: 20px;
+  padding: 12px 0;
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+}
+.supplier-name { min-width: 0; overflow-wrap: anywhere; }
+.supplier-export-setting { min-width: 0; position: relative; }
+.supplier-export-setting .check-label { margin: 0; white-space: nowrap; }
+.supplier-row > button { width: 100%; }
+@media (max-width: 900px) {
+  [data-admin-panel="suppliers"] .supplier-row {
+    grid-template-columns: minmax(0, 1fr) 190px;
+  }
+  .supplier-row > button { grid-column: 2; }
+}
+.supplier-setting-status {
+  position: absolute;
+  top: calc(100% - 4px);
+  left: 26px;
+  min-height: 0;
+  font-size: 11px;
+  line-height: 14px;
+}

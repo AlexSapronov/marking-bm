@@ -258,7 +258,7 @@ def test_legacy_database_migrates_roles_without_losing_users(tmp_path):
     for _ in range(2):
         store = Store(path)
         assert store.one("SELECT * FROM users")["role"] == "manager"
-        assert store.one("SELECT MAX(version) v FROM schema_version")["v"] == 6
+        assert store.one("SELECT MAX(version) v FROM schema_version")["v"] == 7
         assert store.one("SELECT password_hash FROM users WHERE username='old-manager'")["password_hash"] is None
         assert store.one("SELECT setup_token_hash FROM users WHERE username='old-manager'")["setup_token_hash"] is None
     with store.transaction() as db:
