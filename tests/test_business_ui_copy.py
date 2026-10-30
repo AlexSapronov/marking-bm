@@ -54,3 +54,14 @@ def test_dangerous_admin_actions_require_explicit_confirmation():
     assert '"Объединить записи поставщиков?"' in APP
     assert '"Сбросить пароль сотрудника?"' in APP
     assert "attentionReasonDialog()" in APP
+
+
+def test_document_excel_and_transfer_controls_share_composition_toolbar():
+    # Transfer remains gated, but is no longer mixed with workflow actions.
+    toolbar = APP.split('const excelActions = editable ?', 1)[1].split('  shell(', 1)[0]
+    assert 'class="button" href="/api/template"' in toolbar
+    assert 'data-action="import"' in toolbar
+    assert 'canMoveLines ? \'<button data-action="move-lines"' in toolbar
+    assert '${excelActions}</div><div class="table-wrap">' in APP
+    assert '<div class="actions">${canMoveLines ?' not in APP
+    assert '!composition.querySelector(\'[data-action="move-lines"]\')' in WORKSPACE
