@@ -65,3 +65,15 @@ def test_document_excel_and_transfer_controls_share_composition_toolbar():
     assert '${excelActions}</div><div class="table-wrap">' in APP
     assert '<div class="actions">${canMoveLines ?' not in APP
     assert '!composition.querySelector(\'[data-action="move-lines"]\')' in WORKSPACE
+
+
+def test_admin_only_invoice_retry_is_in_document_workflow():
+    assert 'const canRetryInvoiceOrder = user.admin' in APP
+    assert 'data-action="retry-invoice-orders"' in APP
+    assert 'case "retry-invoice-orders":' in APP
+    assert 'await retryInvoiceOrdersModal()' in APP
+    assert '/admin/documents/' in APP and '/order-retry' in APP
+    assert 'confirmed_absent: form.elements.namedItem("confirmed_absent").checked' in APP
+    assert 'await open(invoiceId)' in APP
+    # Old per-operation button is not shown in the admin operations registry.
+    assert 'data-action="retry-verified-order" data-id=' not in APP

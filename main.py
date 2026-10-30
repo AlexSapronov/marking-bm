@@ -1189,6 +1189,104 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         return {"ok": True, "state": new_state}
 
 
+    def invoice_order_retry_candidates(db, doc_id):
+        """Return all verified retry candidates, never previously submitted orders."""
+        document = service.document(db, doc_id, "administrator", admin=True)
+        if document["status"] != "receiving":
+            raise Conflict("Накладная не ожидает получения КМ")
+        if service.document_stopped(db, doc_id):
+            raise Conflict("Обработка накладной остановлена")
+        operations = rows(
+            db, "SELECT * FROM operations WHERE doc_id=? AND kind='order' "
+                "ORDER BY created,id", (doc_id,),
+        )
+        if not operations:
+            raise Conflict("В накладной нет операций заказа КМ")
+        eligible = []
+        for op in operations:
+            service.require_operation_active(db, op)
+            if op["state"] in ("unknown", "preflight_blocked"):
+                raise Conflict(
+                    "В накладной есть заказ с непроверенным результатом. "
+                    "Сначала сверьте его с СУЗ."
+                )
+            if op["state"] != "blocked":
+                # Done/pending/sent operations must never be resent.
+                continue
+            if (op["external_id"] or not op["signature"] or not
+                    (op["error"] or "").startswith("ЧЗ: HTTP 400.")):
+                raise Conflict(
+                    "Среди заблокированных заказов есть операция без подтверждённого "
+                    "HTTP 400 или с внешним ID. Проверьте её отдельно в СУЗ."
+                )
+            eligible.append(op)
+        if not eligible:
+            raise Conflict("Нет заблокированных заказов HTTP 400 для повторения")
+        return document, eligible
+
+    @app.get("/api/admin/documents/{doc_id}/order-retry")
+    def invoice_order_retry_preview(doc_id: str, s=Depends(admin)):
+        with store.read() as db:
+            document, ops = invoice_order_retry_candidates(db, doc_id)
+            return {
+                "document": document["number"],
+                "operations": [
+                    {
+                        "id": op["id"],
+                        "products": [
+                            {"gtin": item["gtin"], "quantity": item["quantity"]}
+                            for item in json.loads(op["payload"]).get("products", [])
+                        ],
+                        "production_order_id": json.loads(op["payload"])
+                        .get("attributes", {}).get("productionOrderId", ""),
+                    }
+                    for op in ops
+                ],
+                "count": len(ops),
+            }
+
+    class VerifiedInvoiceOrderRetry(BaseModel):
+        operation_ids: list[str] = Field(min_length=1)
+        confirmed_absent: Literal[True]
+        reason: str = Field(min_length=10, max_length=500)
+
+    @app.post("/api/admin/documents/{doc_id}/order-retry")
+    def retry_invoice_orders(
+        doc_id: str, body: VerifiedInvoiceOrderRetry, s=Depends(admin)
+    ):
+        # One atomic decision for all currently rejected orders in this invoice.
+        # Never create new orders or touch successful, pending, or unknown jobs.
+        with store.transaction() as db:
+            document, ops = invoice_order_retry_candidates(db, doc_id)
+            ids = [op["id"] for op in ops]
+            if (len(body.operation_ids) != len(set(body.operation_ids))
+                    or sorted(body.operation_ids) != sorted(ids)):
+                raise Conflict("Состав проблемных заказов изменился. Откройте проверку снова.")
+            stamp = now()
+            for op in ops:
+                if db.execute(
+                    "UPDATE operations SET state='queued',error=NULL,updated=? "
+                    "WHERE id=? AND state='blocked' AND external_id IS NULL",
+                    (stamp, op["id"]),
+                ).rowcount != 1:
+                    raise Conflict("Одна из операций изменилась. Повторите проверку.")
+                db.execute(
+                    "DELETE FROM operation_attention WHERE op_id=?", (op["id"],)
+                )
+                audit(
+                    db, s["username"],
+                    "Повтор заказа КМ после подтверждения отсутствия в СУЗ",
+                    op["id"],
+                    {"document": doc_id, "reason": body.reason.strip(),
+                     "previous_error": op["error"], "confirmed_absent": True},
+                )
+            audit(
+                db, s["username"], "Проверенный повтор заказа КМ по накладной",
+                doc_id, {"number": document["number"], "operation_ids": ids,
+                         "count": len(ids), "reason": body.reason.strip()},
+            )
+        return {"ok": True, "state": "queued", "requeued": len(ids)}
+
     @app.get("/api/admin/operations/{op_id}/order-review")
     def order_retry_review(op_id: str, s=Depends(admin)):
         op = store.one("SELECT * FROM operations WHERE id=?", (op_id,))
