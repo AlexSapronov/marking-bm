@@ -60,7 +60,7 @@ with tempfile.TemporaryDirectory() as tmp:
             if os.getenv("BM_BROWSER_EXECUTABLE"):
                 kwargs["executable_path"] = os.environ["BM_BROWSER_EXECUTABLE"]
             browser = p.chromium.launch(**kwargs)
-            page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            page = browser.new_page(viewport={"width": 1440, "height": 1000}, locale="ru-RU")
             errors = []
             page.on("pageerror", lambda err: errors.append(str(err)))
             response = page.goto(url + "/admin")
