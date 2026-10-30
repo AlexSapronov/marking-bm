@@ -363,6 +363,12 @@ class Service:
                 else None
             )
             d["display_status"] = "report_error" if d["report_issue"] else d["status"]
+            d["waiting_for_oms_auth"] = (
+                d["status"] == "receiving"
+                and any(op["kind"] == "order" and op["state"] == "queued"
+                        for op in d["operations"])
+                and not self.gateway.token_ready("oms")
+            )
             d["artifacts"] = rows(
                 db,
                 "SELECT id,name,kind,version,created FROM artifacts WHERE doc_id=? ORDER BY version DESC",
