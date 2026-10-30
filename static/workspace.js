@@ -174,7 +174,7 @@ function organizeDocument(editable) {
       '<span class="file-warning">Устаревшая версия · не передавать поставщику</span>');
   });
 
-  if (["ready", "transferred"].includes(doc.status) && !flowActions.querySelector('[data-action="move-lines"]')) {
+  if (["ready", "transferred"].includes(doc.status) && !composition.querySelector('[data-action="move-lines"]')) {
     const why = doc.stopped ? "обработка накладной остановлена" :
       doc.group_stop ? "обработка общей группы остановлена" :
       doc.parent_id ? "для накладной-дополнения перенос не предусмотрен" :
