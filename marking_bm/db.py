@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS batch_docs(batch_id TEXT NOT NULL REFERENCES batches(
 CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY,kind TEXT NOT NULL,doc_id TEXT,group_id TEXT,
  op_key TEXT NOT NULL UNIQUE,payload TEXT NOT NULL,sha256 TEXT NOT NULL,state TEXT NOT NULL,
  external_id TEXT,result TEXT,signature TEXT,lease TEXT,error TEXT,created TEXT NOT NULL,updated TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS introduction_documents(doc_id TEXT PRIMARY KEY REFERENCES documents(id),op_id TEXT NOT NULL REFERENCES operations(id));
+CREATE TABLE IF NOT EXISTS introduction_atks(atk_id TEXT PRIMARY KEY REFERENCES atks(id),op_id TEXT NOT NULL REFERENCES operations(id));
 CREATE TABLE IF NOT EXISTS receipts(id INTEGER PRIMARY KEY,op_id TEXT NOT NULL REFERENCES operations(id),body TEXT NOT NULL,created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS operation_attention(op_id TEXT PRIMARY KEY REFERENCES operations(id),resolved_by TEXT NOT NULL,reason TEXT NOT NULL,resolved_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY,doc_id TEXT,group_id TEXT,version INTEGER NOT NULL,kind TEXT NOT NULL,
@@ -141,6 +143,7 @@ class Store:
                 finally:
                     db.execute("PRAGMA foreign_keys=ON")
             db.execute("INSERT OR IGNORE INTO schema_version VALUES(5)")
+            db.execute("INSERT OR IGNORE INTO schema_version VALUES(6)")
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=30)

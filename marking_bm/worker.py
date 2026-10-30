@@ -224,6 +224,25 @@ class Worker:
                     )
 
     def preflight(self, op):
+        if op["kind"] == "introduce":
+            payload = json.loads(op["payload"])
+            for product in payload["products_list"]:
+                codes = [self.db.one("SELECT * FROM codes WHERE cis=?", (c["cis"],)) for c in product["children"]]
+                if any(c is None for c in codes):
+                    raise ValueError("Неизвестный КМ в документе ввода в оборот")
+                if any(c["tnved"] != item.get("tn_ved") or not re.fullmatch(r"[0-9]{10}", item.get("tn_ved", ""))
+                       for c, item in zip(codes, product["children"])):
+                    raise ValueError("У каждого КМ должен быть явно указан ТН ВЭД строки накладной")
+                info = self.g.verify(codes, "APPLIED")
+                if any(info[c["cis"]].get("tnVedEaes") != c["tnved"] for c in codes):
+                    raise ValueError("ГИС МТ не подтвердила полный ТН ВЭД каждого КМ")
+                if any(ci.get("parent") != product["atk"] or ci.get("emissionType") != "FOREIGN" or
+                       ci.get("statusEx") not in (None, "EMPTY", "FTS_RESPOND_NOT_OK", "FTS_CONTROL") for ci in info.values()):
+                    raise ValueError("Состав или состояние КМ в ГИС МТ изменилось перед вводом в оборот")
+                aggregate = self.g.info([product["atk"]])[product["atk"]]
+                if aggregate.get("ownerInn") != self.s.config()["inn"] or aggregate.get("status") != "APPLIED":
+                    raise ValueError("ГИС МТ не подтвердила состояние АТК перед вводом в оборот")
+            return
         if op["kind"] not in ("report", "atk", "transform"):
             return
         payload = json.loads(op["payload"])
@@ -332,6 +351,16 @@ class Worker:
                 return
         if op["kind"] == "order":
             return self.order_buffers(op, r)
+        if r.get("complete") and op["kind"] == "introduce":
+            payload = json.loads(op["payload"])
+            info = self.g.info([c["cis"] for a in payload["products_list"] for c in a["children"]])
+            if any(ci.get("statusEx") == "FTS_RESPOND_NOT_OK" for ci in info.values()):
+                raise ValueError("Отрицательное решение ФТС: товар не введён в оборот. Проверьте ДТ в ЛК ЧЗ")
+            if any(ci.get("status") != "INTRODUCED" or ci.get("ownerInn") != self.s.config()["inn"] for ci in info.values()):
+                # A successful document can still await the customs response.
+                r["complete"] = False
+            else:
+                r["registry"] = info
         if r.get("complete"):
             self.complete(op, r)
         else:
@@ -463,6 +492,16 @@ class Worker:
                         ),
                     )
                 # Code block is committed independently of PDF generation below.
+            elif kind == "introduce":
+                expected = {c["cis"] for a in payload["products_list"] for c in a["children"]}
+                registry = result.get("registry", {})
+                if set(registry) != expected or any(ci.get("status") != "INTRODUCED" or ci.get("ownerInn") != self.s.config()["inn"] for ci in registry.values()):
+                    raise ValueError("Нет подтверждения ввода в оборот всех КМ")
+                for cis in expected:
+                    db.execute("UPDATE codes SET external_status='INTRODUCED',local_state='introduced',reuse_allowed=0,checked=? WHERE cis=?", (now(), cis))
+                for d in rows(db, "SELECT doc_id FROM introduction_documents WHERE op_id=?", (op["id"],)):
+                    db.execute("UPDATE documents SET status='archive',updated=? WHERE id=?", (now(), d["doc_id"]))
+                    audit(db, "system", "Ввод в оборот подтверждён ГИС МТ. Накладная завершена", d["doc_id"], {"operation": op["id"], "external_id": op["external_id"]})
             elif kind == "report":
                 db.execute(
                     "UPDATE codes SET external_status='APPLIED',local_state='applied',checked=? WHERE doc_id=?",
