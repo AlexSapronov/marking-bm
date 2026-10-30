@@ -1106,6 +1106,50 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(supervisor_page.locator('button[data-action="logistics-complete"]')).to_have_count(0)
             supervisor_page.get_by_role("button", name="Накладные", exact=True).click()
             supervisor_page.get_by_role("heading", name="Накладные", exact=True).wait_for()
+
+            # A permission error (403) must not be confused with an expired login.
+            forbidden = supervisor_page.evaluate(
+                "api('/admin/overview').then(() => 'unexpected success', e => e.message)"
+            )
+            assert forbidden != "unexpected success"
+            expect(supervisor_page.get_by_role("heading", name="Накладные", exact=True)).to_be_visible()
+
+            # Revoke an active session, simulate returning to a still-open tab.
+            # The browser URL must stay unchanged, yet the login form must appear.
+            supervisor_url = supervisor_page.url
+            with sqlite3.connect(Path(tmp) / "marking-bm.sqlite3") as db:
+                db.execute(
+                    "UPDATE sessions SET expires=0 WHERE username=? AND admin=0",
+                    ("smoke-supervisor",),
+                )
+            supervisor_page.get_by_role("button", name="Сменить пароль").click()
+            expect(supervisor_page.locator("#modal")).to_be_visible()
+            supervisor_page.evaluate("window.dispatchEvent(new Event('focus'))")
+            expect(supervisor_page.get_by_role("heading", name="Вход сотрудника")).to_be_visible()
+            expect(supervisor_page.get_by_role("alert")).to_contain_text("Сессия истекла")
+            expect(supervisor_page.locator("#modal")).not_to_be_visible()
+            assert supervisor_page.url == supervisor_url, "Login should work without manual URL navigation"
+            supervisor_page.locator("#login-value").fill("smoke-supervisor")
+            supervisor_page.locator("#login-password").fill("supervisor-pass")
+            supervisor_page.locator("#login-form button").click()
+            supervisor_page.get_by_role("heading", name="Накладные", exact=True).wait_for()
+
+            # A 401 during a normal API call must also redirect without waiting
+            # for the session heartbeat.
+            with sqlite3.connect(Path(tmp) / "marking-bm.sqlite3") as db:
+                db.execute(
+                    "UPDATE sessions SET expires=0 WHERE username=? AND admin=0",
+                    ("smoke-supervisor",),
+                )
+            supervisor_page.evaluate("api('/supervisor/documents').catch(() => null)")
+            expect(supervisor_page.get_by_role("heading", name="Вход сотрудника")).to_be_visible()
+
+            # Administrator login should remain the administrator form.
+            with sqlite3.connect(Path(tmp) / "marking-bm.sqlite3") as db:
+                db.execute("UPDATE sessions SET expires=0 WHERE admin=1")
+            page.evaluate("window.dispatchEvent(new Event('focus'))")
+            expect(page.get_by_role("heading", name="Вход администратора")).to_be_visible()
+            expect(page.get_by_role("alert")).to_contain_text("Сессия истекла")
             assert not supervisor_errors, supervisor_errors
             assert not errors, errors
             browser.close()

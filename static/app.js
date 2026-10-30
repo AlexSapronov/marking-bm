@@ -198,6 +198,8 @@ async function pollStatuses() {
   }
 }
 async function api(url, body, method) {
+  // Remember which login sent the request: an old 401 must not end a newer session.
+  const requestUser = user;
   const headers = { "X-Requested-With": "marking-bm" };
   if (user?.csrf) headers["X-CSRF-Token"] = user.csrf;
   if (body && !(body instanceof FormData))
@@ -219,9 +221,45 @@ async function api(url, body, method) {
         : JSON.stringify(data.detail),
     );
     ex.data = data;
+    if (r.status === 401 && requestUser && user === requestUser) {
+      expireSession(requestUser);
+      ex.sessionExpired = true;
+    }
     throw ex;
   }
   return data;
+}
+function expireSession(expiredUser) {
+  if (!user || user !== expiredUser) return;
+  const wasAdmin = Boolean(user.admin);
+  const hadUnsavedEdits = documentDirty;
+  // Clear protected data immediately, including any open dialog.
+  if ($("#modal")?.open) $("#modal").close();
+  user = null;
+  doc = null;
+  docs = [];
+  overview = null;
+  registryRows = [];
+  documentSelectedIds.clear();
+  registrySelectedIds.clear();
+  statusLastChecked = null;
+  login(wasAdmin, false, hadUnsavedEdits
+    ? "Сессия истекла. Войдите повторно. Несохранённые изменения состава не сохранены."
+    : "Сессия истекла. Войдите повторно.");
+}
+let sessionCheckBusy = false;
+async function checkSession() {
+  if (!user || sessionCheckBusy) return;
+  sessionCheckBusy = true;
+  try {
+    // Independent of status polling: also works while editing or in a dialog.
+    await api("/session");
+  } catch {
+    // A transient network error is not grounds for logging the user out.
+    // A real 401 has already switched to login() inside api().
+  } finally {
+    sessionCheckBusy = false;
+  }
 }
 function toast(message, kind = "error") {
   window.BmUX.notify(message, kind);
@@ -236,7 +274,7 @@ function bind() {
       b.disabled = true;
       await action(b.dataset.action, b.dataset.id, b);
     } catch (err) {
-      toast(err.message);
+      if (!err.sessionExpired) toast(err.message);
     } finally {
       b.disabled = false;
     }
@@ -274,7 +312,7 @@ function shell(content) {
     `<div class="layout"><header class="app-header"><div class="header-inner"><div><div class="eyebrow">Честный ЗНАК · Радиоэлектроника</div><div class="app-title">Маркировка импортных товаров</div><div class="header-meta">${e(roleNames[user.role] || roleNames.manager)} · ${e(user.username)}</div></div><div class="header-actions"><span class="muted user-label">${e(user.username)}</span>${!user.admin ? '<button data-action="change-password">Сменить пароль</button>' : ""}<button class="icon-btn" data-action="refresh-page" aria-label="Обновить страницу" title="Обновить">↻</button><button class="icon-btn" data-theme-toggle aria-label="Тема">☾</button><button data-action="logout">Выйти</button></div></div></header><nav class="app-nav" aria-label="Разделы приложения"><div class="nav-inner">${canManage ? `<button data-action="list" class="${!adminMode && !archive && !registryMode ? "active" : ""}">Накладные</button><button data-action="archive" class="${archive && !registryMode && !adminMode ? "active" : ""}">Архив</button>` : ""}${canReadRegistry ? `<button data-action="logistics" class="${registryMode ? "active" : ""}">Реестр АТК</button>` : ""}${user.admin ? `<button data-action="admin" class="${adminMode ? "active" : ""}">Администрирование</button>` : ""}</div></nav><main>${content}</main></div>`;
   window.GisTheme.refresh();
 }
-function login(admin = false, setup = false) {
+function login(admin = false, setup = false, reason = "") {
   documentDirty = false;
   registryMode = false;
   const userFields = setup
@@ -288,6 +326,7 @@ function login(admin = false, setup = false) {
     `<div class="login"><div class="login-heading"><span class="eyebrow">Честный ЗНАК · Радиоэлектроника</span><button class="icon-btn" data-theme-toggle aria-label="Тема">☾</button></div>
       <h1>${admin ? "Вход администратора" : setup ? "Первый вход или сброс пароля" : "Вход сотрудника"}</h1>
       <p class="muted">${admin ? "Отдельный пароль для управления системой" : setup ? "Введите одноразовый код, полученный от администратора, и придумайте свой пароль." : "Введите username и пароль."}</p>
+      ${reason ? `<div class="notice" role="alert">${e(reason)}</div>` : ""}
       <form id="login-form">${admin
         ? '<label>Пароль администратора<input id="login-value" type="password" autocomplete="current-password" required autofocus></label>'
         : userFields}
@@ -297,6 +336,7 @@ function login(admin = false, setup = false) {
         ? '<button class="linkbutton" data-action="user-login">Вход сотрудника</button>'
         : `<button class="linkbutton" data-action="${setup ? "user-login" : "setup-login"}">${setup ? "Вернуться ко входу" : "Первый вход / сброс пароля"}</button> · <button class="linkbutton" data-action="admin-login">Вход администратора</button>`}</p></div>`;
   window.GisTheme.refresh();
+  $("#login-value")?.focus();
   $("#login-form").onsubmit = async (ev) => {
     ev.preventDefault();
     try {
@@ -1891,6 +1931,12 @@ $("#modal").addEventListener("cancel", () => {
 });
 bind();
 refreshTimer = setInterval(pollStatuses, STATUS_POLL_MS);
+// Session checks must not be skipped by form editing, selection, or modal dialogs.
+setInterval(checkSession, STATUS_POLL_MS);
+window.addEventListener("focus", () => void checkSession());
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) void checkSession();
+});
 (async () => {
   try {
     user = await api("/session");
