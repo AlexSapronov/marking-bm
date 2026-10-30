@@ -622,7 +622,7 @@ async function open(id) {
 }
 // The same upstream failure can affect multiple GTIN order operations.
 // Keep each operation intact for the admin audit, but show one document alert.
-function documentOperationAlerts(operations) {
+function documentOperationAlerts(operations, waitingForOmsAuth = false) {
   const latestReport = [...operations].reverse().find(op => op.kind === "report");
   const grouped = new Map();
   for (const op of operations) {
@@ -641,9 +641,11 @@ function documentOperationAlerts(operations) {
   ).join("");
   const needsSigning = operations.some(op => op.kind === "order" && !op.stopped &&
     ["signing", "leased"].includes(op.state));
-  const waiting = needsSigning
-    ? '<div class="notice">Заказ КМ ожидает подписи. Если подписант сейчас не работает, операция автоматически продолжится после его подключения и подписи. Повторный заказ не требуется.</div>'
-    : "";
+  const waiting = errors ? "" : waitingForOmsAuth
+    ? '<div class="notice">Заказ КМ ожидает обновления доступа к СУЗ. После подключения подписанта и обновления токена обработка продолжится автоматически. Повторный заказ не требуется.</div>'
+    : needsSigning
+      ? '<div class="notice">Заказ КМ ожидает подписи. Если подписант сейчас не работает, операция автоматически продолжится после его подключения и подписи. Повторный заказ не требуется.</div>'
+      : "";
   return errors + waiting;
 }
 function renderDoc() {
@@ -670,7 +672,7 @@ function renderDoc() {
         ? "done"
         : doc.status;
   const reportIssue = doc.report_issue;
-  const operationAlerts = documentOperationAlerts(doc.operations);
+  const operationAlerts = documentOperationAlerts(doc.operations, doc.waiting_for_oms_auth);
   const currentFile = doc.artifacts.find(
     (a) => a.kind === "labels" && a.version === doc.current_version,
   );
