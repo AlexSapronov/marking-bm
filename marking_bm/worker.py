@@ -4,7 +4,6 @@ import json
 import re
 import threading
 import time
-from datetime import datetime, timezone, timedelta
 from .db import now, uid, dumps, audit
 from .service import one, rows, Conflict
 from .codes import parse
@@ -192,21 +191,9 @@ class Worker:
         config = self.s.config()
         if not all(config.get(k) for k in ("inn", "oms_id", "oms_connection")):
             return
-        tokens = self.s.settings.secrets()
         for kind in ("true", "oms"):
-            token = tokens.get(kind, {})
-            expires = token.get("expires")
-            acquired = token.get("acquired")
-            try:
-                limit = (
-                    datetime.fromisoformat(expires.replace("Z", "+00:00"))
-                    if expires
-                    else datetime.fromisoformat(acquired) + timedelta(hours=9)
-                )
-                if limit > datetime.now(timezone.utc) + timedelta(minutes=5):
-                    continue
-            except (ValueError, TypeError, AttributeError):
-                pass
+            if self.g.token_ready(kind):
+                continue
             if self.db.one(
                 "SELECT id FROM operations WHERE kind=? AND state IN ('signing','leased','queued','dispatching','unknown')",
                 ("auth_" + kind,),
@@ -282,6 +269,20 @@ class Worker:
             return
         if not self.s.settings.send_enabled:
             return  # Queue survives until the deployment administrator enables writes.
+        # An order can already be signed while the Windows signer is offline.
+        # If its OMS access token expired, preserve it as QUEUED until the
+        # separate authorization signing job refreshes the access token.
+        # Never send a mutating request known to use an expired token.
+        required_tokens = {
+            "order": ("oms",),
+            "fetch": ("oms",),
+            "report": ("true", "oms"),
+            "atk": ("true",),
+            "transform": ("true",),
+            "introduce": ("true",),
+        }.get(op["kind"], ())
+        if any(not self.g.token_ready(kind) for kind in required_tokens):
+            return
         try:
             if op["kind"] == "fetch":
                 baseline = self.g.blocks(json.loads(op["payload"]))
