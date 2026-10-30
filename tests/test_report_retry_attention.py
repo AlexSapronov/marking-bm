@@ -115,3 +115,92 @@ def test_admin_can_retry_only_known_local_failures(env):
     assert sent.json()["state"] == "queued"
     record = service.store.one("SELECT state,external_id,error FROM operations WHERE id=?", (old["id"],))
     assert record == {"state": "queued", "external_id": None, "error": None}
+
+
+def test_admin_can_retry_http400_order_only_after_verified_absence(env):
+    from conftest import add_doc, sign_all
+    app, service, registry = env
+    doc_id = add_doc(service, number="HTTP400-VERIFIED")
+    service.order(doc_id, "alice")
+    sign_all(service)
+    op = service.store.one(
+        "SELECT * FROM operations WHERE kind='order' AND doc_id=?", (doc_id,)
+    )
+    assert op["signature"], "Original signed bytes must be available"
+    # This simulates a rejected upstream request without forging an external ID.
+    with service.store.transaction() as db:
+        db.execute(
+            "UPDATE operations SET state='blocked',error=? WHERE id=?",
+            ("ЧЗ: HTTP 400. Проверьте права и состояние операции в ЛК.", op["id"]),
+        )
+    employee = client(app, "alice")
+    admin = client(app, "administrator", True)
+    base = f"/api/admin/operations/{op['id']}"
+    assert employee.get(base + "/order-review").status_code == 403
+    assert employee.post(base + "/retry-verified-order", json={
+        "confirmed_absent": True, "reason": "Заказ отсутствует в СУЗ"
+    }).status_code == 403
+    preview = admin.get(base + "/order-review")
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["document"] == "HTTP400-VERIFIED"
+    assert preview.json()["products"][0]["gtin"]
+    assert preview.json()["products"][0]["quantity"] == 3
+    assert preview.json()["production_order_id"]
+    path = base + "/retry-verified-order"
+    assert admin.post(path, json={
+        "confirmed_absent": False, "reason": "Заказ отсутствует в СУЗ"
+    }).status_code == 422
+    assert admin.post(path, json={
+        "confirmed_absent": True, "reason": "коротко"
+    }).status_code == 422
+    sent = admin.post(path, json={
+        "confirmed_absent": True, "reason": "Проверен личный кабинет СУЗ, заказа нет"
+    })
+    assert sent.status_code == 200, sent.text
+    updated = service.store.one("SELECT * FROM operations WHERE id=?", (op["id"],))
+    assert updated["state"] == "queued"
+    assert updated["error"] is None
+    assert updated["signature"] == op["signature"]
+    assert updated["payload"] == op["payload"]
+    assert updated["op_key"] == op["op_key"]
+    assert admin.post(path, json={
+        "confirmed_absent": True, "reason": "Проверен личный кабинет СУЗ, заказа нет"
+    }).status_code == 409
+    audit_items = service.store.all("SELECT detail FROM audit WHERE entity=?", (op["id"],))
+    assert any("Проверен личный кабинет СУЗ" in a["detail"] for a in audit_items)
+    app.state.worker.tick()
+    assert len(registry.orders) == 1
+
+
+def test_verified_order_retry_rejects_unknown_unrelated_and_unsigned(env):
+    from conftest import add_doc, sign_all
+    app, service, _ = env
+    doc_id = add_doc(service, number="HTTP400-REJECT-SAFETY")
+    service.order(doc_id, "alice")
+    sign_all(service)
+    op = service.store.one(
+        "SELECT * FROM operations WHERE kind='order' AND doc_id=?", (doc_id,)
+    )
+    admin = client(app, "administrator", True)
+    path = f"/api/admin/operations/{op['id']}/retry-verified-order"
+    payload = {"confirmed_absent": True, "reason": "Проверено в ЛК СУЗ: заказа нет"}
+
+    with service.store.transaction() as db:
+        db.execute("UPDATE operations SET state='unknown',error=? WHERE id=?",
+                   ("Нет подтверждения от ЧЗ", op["id"]))
+    assert admin.post(path, json=payload).status_code == 409
+    with service.store.transaction() as db:
+        db.execute("UPDATE operations SET state='blocked',error=? WHERE id=?",
+                   ("ЧЗ: HTTP 403. Проверьте права", op["id"]))
+    assert admin.post(path, json=payload).status_code == 409
+    with service.store.transaction() as db:
+        db.execute("UPDATE operations SET error=?,external_id=? WHERE id=?",
+                   ("ЧЗ: HTTP 400. Проверьте права и состояние операции в ЛК.", "external", op["id"]))
+    assert admin.post(path, json=payload).status_code == 409
+    with service.store.transaction() as db:
+        db.execute("UPDATE operations SET external_id=NULL,signature=NULL WHERE id=?", (op["id"],))
+    assert admin.post(path, json=payload).status_code == 409
+    with service.store.transaction() as db:
+        db.execute("UPDATE operations SET signature='test',state='blocked' WHERE id=?", (op["id"],))
+        db.execute("UPDATE documents SET status='archive' WHERE id=?", (doc_id,))
+    assert admin.post(path, json=payload).status_code == 409
