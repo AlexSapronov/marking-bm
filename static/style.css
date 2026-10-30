@@ -279,6 +279,13 @@ main {
   justify-content: flex-start;
   margin-top: 20px;
 }
+/* Group document Excel actions with line transfer in the composition toolbar. */
+.document-excel-actions {
+  justify-content: flex-end;
+  gap: 10px;
+  margin: 0 0 12px;
+  max-width: 100%;
+}
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
