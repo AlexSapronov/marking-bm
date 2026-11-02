@@ -573,6 +573,10 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
     def order(doc_id: str, s=Depends(manager)):
         return service.order(doc_id, s["username"], s["admin"])
 
+    @app.post("/api/documents/{doc_id}/retry-labels")
+    def retry_labels(doc_id: str, s=Depends(manager)):
+        return service.retry_labels(doc_id, s["username"], s["admin"])
+
     class Transfer(BaseModel):
         version: int
 
