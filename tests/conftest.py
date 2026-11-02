@@ -22,6 +22,7 @@ class Registry:
         self.blocks = {}
         self.reports = {}
         self.atks = {}
+        self.disaggregated_atks = set()
         self.documents = {}
         self.calls = []
         self.partial = None
@@ -55,7 +56,7 @@ class Registry:
                     ci = {
                         "cis": cis,
                         "requestedCis": cis,
-                        "status": "APPLIED",
+                        "status": "DISAGGREGATION" if cis in self.disaggregated_atks else "APPLIED",
                         "ownerInn": "7700000000",
                         "statusEx": None,
                     }
@@ -170,6 +171,13 @@ class Registry:
                 self.atks[atk] = payload["products_list"]
                 for item in payload["products_list"]:
                     self.codes[item["ki"]]["parent"] = atk
+            elif body["type"] == "ATK_DISAGGREGATION":
+                for item in payload["products_list"]:
+                    atk = item["atk"]
+                    self.disaggregated_atks.add(atk)
+                    for code in self.codes.values():
+                        if code.get("parent") == atk:
+                            code["parent"] = None
             elif body["type"] == "LP_FTS_INTRODUCE":
                 for product in payload["products_list"]:
                     for item in product["children"]:
