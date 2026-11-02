@@ -83,6 +83,8 @@ class Service:
 
     def operation_stopped(self, db, op):
         if op.get("kind") == "disaggregate":
+            if op.get("state") == "done":
+                return False
             # This operation is intentionally allowed after the stop, but only
             # while every source document for this aggregate remains stopped.
             atk_id = (op.get("op_key") or "").removeprefix("disaggregate:")

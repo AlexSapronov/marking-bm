@@ -234,8 +234,17 @@ class Worker:
                                   (atk_id, a["version"]))
             if not cs or not version or {c["id"] for c in cs} != set(json.loads(version["composition"])):
                 raise ValueError("Локальный состав АТК изменился")
-            info = self.g.verify(cs, "APPLIED", aggregate=True, parent=a["code"])
-            if any(ci.get("parent") != a["code"] for ci in info.values()):
+            info = self.g.info([c["cis"] for c in cs])
+            if any(
+                info[c["cis"]].get("status") != "APPLIED"
+                or info[c["cis"]].get("ownerInn") != self.s.config()["inn"]
+                or info[c["cis"]].get("parent") != a["code"]
+                or info[c["cis"]].get("emissionType") != "FOREIGN"
+                or info[c["cis"]].get("tnVedEaes") != c["tnved"]
+                or info[c["cis"]].get("statusEx") not in
+                   (None, "EMPTY", "FTS_RESPOND_NOT_OK", "FTS_CONTROL")
+                for c in cs
+            ):
                 raise ValueError("Фактический состав АТК в ГИС МТ отличается от локального")
             return
         if op["kind"] == "introduce":
