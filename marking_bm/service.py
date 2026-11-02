@@ -1141,6 +1141,59 @@ class Service:
         )
         return i
 
+    def retry_labels(self, doc_id, actor, admin=False):
+        """Retry only the read-only GIS MT verification and local PDF generation.
+
+        Existing KMs and their order/fetch operations are not modified or
+        resubmitted. In particular a stale ZIP is never promoted to current.
+        """
+        with self.store.read() as db:
+            d = self.document(db, doc_id, actor, admin)
+            if self.document_stopped(db, doc_id):
+                raise Conflict("Накладная остановлена")
+            if d["status"] != "label_error":
+                raise Conflict("Повторная проверка доступна только при ошибке этикеток")
+            codes = rows(db, "SELECT * FROM codes WHERE doc_id=? ORDER BY id", (doc_id,))
+            required = one(
+                db, "SELECT COALESCE(SUM(labels),0) n FROM lines WHERE doc_id=?",
+                (doc_id,),
+            )["n"]
+            if not required or len(codes) != required:
+                raise Conflict("Комплект КМ неполный. Повторите проверку после получения всех кодов")
+            if any(c["external_status"] != "EMITTED" for c in codes):
+                raise Conflict("Часть КМ уже не в состоянии EMITTED. Проверьте накладную")
+            original = [(c["id"], c["raw"], c["cis"], c["gtin"]) for c in codes]
+
+        # External call is read-only. A failed response must not create more
+        # orders, free any KMs, or replace the last confirmed label archive.
+        self.gateway.verify(codes, "EMITTED")
+        try:
+            with self.store.transaction() as db:
+                d = self.document(db, doc_id, actor, admin)
+                if self.document_stopped(db, doc_id) or d["status"] != "label_error":
+                    raise Conflict("Состояние накладной изменилось. Обновите страницу")
+                current = rows(
+                    db, "SELECT id,raw,cis,gtin FROM codes WHERE doc_id=? ORDER BY id",
+                    (doc_id,),
+                )
+                if [(c["id"], c["raw"], c["cis"], c["gtin"]) for c in current] != original:
+                    raise Conflict("Состав КМ изменился. Обновите страницу")
+                self.prepare_labels(db, doc_id)
+                if one(db, "SELECT status FROM documents WHERE id=?", (doc_id,))["status"] != "ready":
+                    raise Conflict("Комплект КМ изменился. Повторите проверку")
+                audit(db, actor, "Повторная проверка КМ и создание PDF без заказа новых кодов",
+                      doc_id, {"codes": len(codes)})
+        except ValueError as exc:
+            if not isinstance(exc, Conflict):
+                with self.store.transaction() as db:
+                    db.execute(
+                        "UPDATE documents SET last_error=?,updated=? "
+                        "WHERE id=? AND status='label_error'",
+                        (str(exc), now(), doc_id),
+                    )
+            raise
+        return self.get(doc_id, actor, admin)
+
     def prepare_labels(self, db, doc_id, *, exact_assignments=False):
         if self.document_stopped(db, doc_id):
             return
