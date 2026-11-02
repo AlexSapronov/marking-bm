@@ -111,11 +111,19 @@ def test_stop_from_every_stage_survives_ticks_and_restart(env, stage):
     Store(s.store.path)  # Additive migration is safe on an existing database.
     app.state.worker.recover()
     advance(app, 5)
-    assert len(remote.calls) == calls
+    if stage in ("done", "archive"):
+        assert len(remote.calls) > calls
+        assert s.store.one("SELECT state FROM operations WHERE kind='disaggregate'")["state"] == "done"
+        assert s.store.one("SELECT state FROM atks")["state"] == "disaggregated"
+        assert all(c["atk_id"] is None for c in s.get(doc, "alice")["codes"])
+    else:
+        assert len(remote.calls) == calls
     saved = s.get(doc, "alice")
     assert saved["status"] == "archive" and saved["stopped"]
-    assert (
-        s.store.all("SELECT id,payload,sha256 FROM operations ORDER BY id") == payloads
+    assert all(
+        s.store.one("SELECT payload,sha256 FROM operations WHERE id=?", (p["id"],))
+        == {"payload": p["payload"], "sha256": p["sha256"]}
+        for p in payloads
     )
     assert s.store.all("SELECT id,sha256 FROM artifacts ORDER BY id") == artifacts
     assert not s.store.one(
@@ -125,13 +133,16 @@ def test_stop_from_every_stage_survives_ticks_and_restart(env, stage):
     assert c.post("/api/documents/" + doc + "/order", json={}).status_code == 409
     admin = client(app, "administrator", True)
     for op in saved["operations"]:
-        assert (
-            admin.post(
-                "/api/admin/operations/" + op["id"] + "/check", json={}
-            ).status_code
-            == 409
+        result = admin.post(
+            "/api/admin/operations/" + op["id"] + "/check", json={}
         )
-    assert len(remote.calls) == calls
+        if op["kind"] == "disaggregate":
+            # The completed breakup is not paused like normal invoice jobs.
+            assert op["state"] == "done" and result.status_code == 200
+        else:
+            assert result.status_code == 409
+    if stage not in ("done", "archive"):
+        assert len(remote.calls) == calls
 
 
 def test_stop_is_owner_scoped_csrf_protected_and_restore_is_admin_only(env):
@@ -303,12 +314,14 @@ def test_shared_group_waits_for_all_stopped_docs_and_other_supplier_continues(en
     assert len(remote.reports) == 3
     # Pause the existing shared aggregate twice; restoring one invoice must not
     # remove the other invoice's independent hold.
-    s.stop_document(ids[0], "GROUP-A", "alice")
-    s.stop_document(ids[1], "GROUP-B", "alice")
-    s.restore_document(ids[0], "administrator", "first")
-    assert s.get(ids[0], "alice")["group_stop"]
-    s.restore_document(ids[1], "administrator", "second")
-    assert not s.get(ids[0], "alice")["group_stop"]
+    first = s.stop_document(ids[0], "GROUP-A", "alice")
+    assert not first["disaggregation_jobs"]
+    second = s.stop_document(ids[1], "GROUP-B", "alice")
+    assert second["disaggregation_jobs"]
+    with pytest.raises(ValueError, match="расформирование АТК"):
+        s.restore_document(ids[0], "administrator", "Cannot undo pending breakup")
+    advance(app)
+    assert s.store.one("SELECT state FROM atks WHERE supplier_id=(SELECT id FROM suppliers WHERE name='Supplier A')")["state"] == "disaggregated"
 
 
 def test_normal_archive_restore_does_not_immediately_auto_archive_again(env):
@@ -456,3 +469,56 @@ def test_stop_during_excel_inspection_prevents_late_source_save(env, monkeypatch
         "SELECT id FROM artifacts WHERE doc_id=? AND kind='source'", (doc,)
     )
     assert s.get(doc, "alice")["status"] == "archive"
+
+
+def test_disaggregation_detaches_only_after_confirmed_true_api(env):
+    app, s, remote = env
+    doc = make_stage(env, "done")
+    atk = s.get(doc, "alice")["atks"][0]
+    code_ids = {c["id"] for c in s.get(doc, "alice")["codes"]}
+    result = s.stop_document(doc, "STOP-001", "alice")
+    assert len(result["disaggregation_jobs"]) == 1
+    assert all(c["atk_id"] == atk["id"] for c in s.get(doc, "alice")["codes"])
+    assert s.store.one("SELECT state FROM atks WHERE id=?", (atk["id"],))["state"] == "done"
+    with pytest.raises(ValueError, match="расформирование АТК"):
+        s.restore_document(doc, "administrator", "Cannot restore while breakup queued")
+    advance(app)
+    assert remote.disaggregated_atks == {atk["code"]}
+    assert s.store.one("SELECT state FROM atks WHERE id=?", (atk["id"],))["state"] == "disaggregated"
+    codes = s.get(doc, "alice")["codes"]
+    assert {c["id"] for c in codes} == code_ids
+    assert all(c["atk_id"] is None and c["local_state"] == "applied"
+               and c["external_status"] == "APPLIED" for c in codes)
+
+
+def test_disaggregated_codes_can_be_added_to_new_atk_after_stop(env):
+    app, s, _ = env
+    old_doc = make_stage(env, "done")
+    old_atk = s.get(old_doc, "alice")["atks"][0]
+    donor_ids = {c["id"] for c in s.get(old_doc, "alice")["codes"]}
+
+    # Independently create a valid recipient aggregate of the same supplier/TN VED.
+    recipient = add_doc(s, number="REAGGREGATION-TARGET")
+    s.order(recipient, "alice")
+    advance(app)
+    s.transferred(recipient, "alice", 1)
+    s.batch("alice", [recipient], "2026-01-01")
+    advance(app)
+    new_atk = s.get(recipient, "alice")["atks"][0]
+
+    s.stop_document(old_doc, "STOP-001", "alice")
+    assert not donor_ids.intersection(
+        {c["id"] for c in s.candidate_codes(new_atk["id"], "alice")}
+    )
+    advance(app)
+    assert s.store.one(
+        "SELECT state FROM atks WHERE id=?", (old_atk["id"],)
+    )["state"] == "disaggregated"
+    available = {c["id"] for c in s.candidate_codes(new_atk["id"], "alice")}
+    assert donor_ids.issubset(available)
+    request_id = s.transform(new_atk["id"], "ADDING", sorted(donor_ids), "alice")
+    s.review(request_id, True, "Проверено: АТК расформирован", "administrator")
+    advance(app)
+    assert all(s.store.one(
+        "SELECT atk_id FROM codes WHERE id=?", (code_id,)
+    )["atk_id"] == new_atk["id"] for code_id in donor_ids)

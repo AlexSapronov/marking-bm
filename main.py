@@ -1478,7 +1478,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             if (
                 not op
                 or op["state"] != "unknown"
-                or op["kind"] not in ("order", "report", "atk", "transform", "introduce")
+                or op["kind"] not in ("order", "report", "atk", "transform", "disaggregate", "introduce")
             ):
                 raise Conflict("Операция не допускает привязку ID")
             service.require_operation_active(db, op)
@@ -1520,6 +1520,7 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                 "report",
                 "atk",
                 "transform",
+                "disaggregate",
                 "introduce",
             ):
                 raise Conflict("Недопустимое задание подписи")
