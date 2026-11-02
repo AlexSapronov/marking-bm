@@ -97,7 +97,7 @@ if ($Diagnose) {
     return
 }
 
-$allowed = @('auth_true','auth_oms','order','report','atk','transform')
+$allowed = @('auth_true','auth_oms','order','report','atk','transform','disaggregate','introduce')
 $connectionToken = $null
 $headers = $null
 function Send-Json($Path, $Body) {
@@ -122,7 +122,7 @@ try {
             } | Out-Null
             $job = Send-Json '/api/signer/next' @{}
             if ($job -and $job.id) {
-                if ($allowed -cnotcontains $job.kind) { throw 'Unsupported signing job' }
+                if ($allowed -cnotcontains $job.kind) { throw 'Unsupported signing job. Update Start-Signer.ps1 to match the server version.' }
                 if (($job.thumbprint -replace '\s','').ToUpperInvariant() -ne $Thumbprint) { throw 'Certificate mismatch' }
                 if ([bool]$job.detached -ne (-not $job.kind.StartsWith('auth_'))) { throw 'Invalid signature format for job type' }
                 $bytes = [Convert]::FromBase64String($job.payload_base64)
