@@ -211,6 +211,33 @@ class Worker:
                     )
 
     def preflight(self, op):
+        if op["kind"] == "disaggregate":
+            atk_id = op["op_key"].removeprefix("disaggregate:")
+            a = self.db.one("SELECT * FROM atks WHERE id=?", (atk_id,))
+            payload = json.loads(op["payload"])
+            if not a or a["state"] != "done" or payload != {
+                "trade_participant_inn": self.s.config()["inn"],
+                "products_list": [{"atk": a["code"]}],
+            }:
+                raise ValueError("Локальный АТК или состав операции изменились")
+            with self.db.read() as db:
+                if self.s.operation_stopped(db, op):
+                    raise Conflict("Не все накладные этого АТК остановлены")
+                self.s.require_atk_not_introducing(db, atk_id)
+            atki = self.g.info([a["code"]])[a["code"]]
+            if (atki.get("status") != "APPLIED"
+                or atki.get("ownerInn") != self.s.config()["inn"]
+                or atki.get("statusEx") not in (None, "EMPTY", "FTS_RESPOND_NOT_OK", "FTS_CONTROL")):
+                raise ValueError("ГИС МТ не допускает расформирование текущего АТК")
+            cs = self.db.all("SELECT * FROM codes WHERE atk_id=?", (atk_id,))
+            version = self.db.one("SELECT composition FROM atk_versions WHERE atk_id=? AND version=?",
+                                  (atk_id, a["version"]))
+            if not cs or not version or {c["id"] for c in cs} != set(json.loads(version["composition"])):
+                raise ValueError("Локальный состав АТК изменился")
+            info = self.g.verify(cs, "APPLIED", aggregate=True, parent=a["code"])
+            if any(ci.get("parent") != a["code"] for ci in info.values()):
+                raise ValueError("Фактический состав АТК в ГИС МТ отличается от локального")
+            return
         if op["kind"] == "introduce":
             payload = json.loads(op["payload"])
             for product in payload["products_list"]:
@@ -279,6 +306,7 @@ class Worker:
             "report": ("true", "oms"),
             "atk": ("true",),
             "transform": ("true",),
+            "disaggregate": ("true",),
             "introduce": ("true",),
         }.get(op["kind"], ())
         if any(not self.g.token_ready(kind) for kind in required_tokens):
@@ -352,6 +380,26 @@ class Worker:
                 return
         if op["kind"] == "order":
             return self.order_buffers(op, r)
+        if r.get("complete") and op["kind"] == "disaggregate":
+            atk_id = op["op_key"].removeprefix("disaggregate:")
+            a = self.db.one("SELECT * FROM atks WHERE id=?", (atk_id,))
+            if not a:
+                raise ValueError("Не найден расформировываемый АТК")
+            cs = self.db.all("SELECT * FROM codes WHERE atk_id=?", (atk_id,))
+            if not cs:
+                raise ValueError("Локальный состав АТК пуст")
+            info = self.g.info([a["code"]] + [c["cis"] for c in cs])
+            atki = info[a["code"]]
+            if (atki.get("status") != "DISAGGREGATION"
+                or atki.get("ownerInn") != self.s.config()["inn"]
+                or any(info[c["cis"]].get("status") != "APPLIED"
+                       or info[c["cis"]].get("ownerInn") != self.s.config()["inn"]
+                       or info[c["cis"]].get("parent") not in (None, "")
+                       for c in cs)):
+                # CHECKED_OK can precede propagation into the registry.
+                r["complete"] = False
+            else:
+                r["verified_cises"] = [c["cis"] for c in cs]
         if r.get("complete") and op["kind"] == "introduce":
             payload = json.loads(op["payload"])
             info = self.g.info([c["cis"] for a in payload["products_list"] for c in a["children"]])
@@ -529,6 +577,26 @@ class Worker:
                         (a["id"], cis),
                     )
                 self.s.exports(db, a["batch_id"], a["supplier_id"])
+            elif kind == "disaggregate":
+                atk_id = op["op_key"].removeprefix("disaggregate:")
+                a = one(db, "SELECT * FROM atks WHERE id=?", (atk_id,))
+                cs = rows(db, "SELECT * FROM codes WHERE atk_id=?", (atk_id,))
+                version = one(db,
+                    "SELECT composition FROM atk_versions WHERE atk_id=? AND version=?",
+                    (atk_id, a["version"])) if a else None
+                if not a or a["state"] != "done" or not cs or not version or (
+                    {c["id"] for c in cs} != set(json.loads(version["composition"]))
+                    or {c["cis"] for c in cs} != set(result.get("verified_cises", []))
+                ):
+                    raise Conflict("Нет подтверждения расформирования полного состава АТК")
+                db.execute("UPDATE atks SET state='disaggregated' WHERE id=?", (atk_id,))
+                db.execute(
+                    "UPDATE codes SET atk_id=NULL,local_state='applied',checked=? "
+                    "WHERE atk_id=? AND external_status='APPLIED'",
+                    (now(), atk_id))
+                audit(db, "system", "АТК расформирован в ЧЗ после остановки накладных",
+                      atk_id, {"operation": op["id"], "atk_code": a["code"],
+                               "codes": len(cs)})
             elif kind == "transform":
                 adding = payload["transformation_type"] == "ADDING"
                 if any(

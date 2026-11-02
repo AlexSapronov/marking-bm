@@ -259,11 +259,12 @@ class Gateway:
             ):
                 raise RemoteError("Не подтверждено получение блока КМ", True)
             return {"id": r["blockId"], "complete": True, "receipt": r}
-        elif kind in ("atk", "transform", "introduce"):
+        elif kind in ("atk", "transform", "disaggregate", "introduce"):
             body = {
                 "document_format": "MANUAL",
                 "product_document": base64.b64encode(payload).decode(),
-                "type": {"atk": "ATK_AGGREGATION", "transform": "ATK_TRANSFORMATION", "introduce": "LP_FTS_INTRODUCE"}[kind],
+                "type": {"atk": "ATK_AGGREGATION", "transform": "ATK_TRANSFORMATION",
+                         "disaggregate": "ATK_DISAGGREGATION", "introduce": "LP_FTS_INTRODUCE"}[kind],
                 "signature": sig,
             }
             r = self.request(
@@ -325,7 +326,7 @@ class Gateway:
             ):
                 raise ValueError("Нет окончательной успешной квитанции отчёта")
             return {"complete": True, "receipt": rec}
-        if kind in ("atk", "transform", "introduce"):
+        if kind in ("atk", "transform", "disaggregate", "introduce"):
             r = self.request(
                 "GET",
                 self.settings.true_url + f"/api/v4/true-api/doc/{ext}/info",

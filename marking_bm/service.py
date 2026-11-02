@@ -82,6 +82,15 @@ class Service:
         )
 
     def operation_stopped(self, db, op):
+        if op.get("kind") == "disaggregate":
+            # This operation is intentionally allowed after the stop, but only
+            # while every source document for this aggregate remains stopped.
+            atk_id = (op.get("op_key") or "").removeprefix("disaggregate:")
+            a = one(db, "SELECT id FROM atks WHERE id=?", (atk_id,))
+            owners = rows(db, "SELECT DISTINCT doc_id FROM codes WHERE atk_id=?", (atk_id,))
+            return not a or not owners or any(
+                not self.document_stopped(db, x["doc_id"]) for x in owners
+            )
         return bool(
             (op.get("kind") == "introduce" and one(db, "SELECT i.doc_id FROM introduction_documents i JOIN document_stops s ON s.doc_id=i.doc_id WHERE i.op_id=? AND s.resumed_at IS NULL LIMIT 1", (op.get("id"),)))
             or self.document_stopped(db, op.get("doc_id"))
@@ -182,6 +191,43 @@ class Service:
                 "UPDATE documents SET status='archive',updated=? WHERE id=?",
                 (stamp, doc_id),
             )
+            # For shared aggregates, only the LAST stopped invoice can queue a
+            # disaggregation. Existing files and code assignments remain intact
+            # until True API confirms the signed operation and detached children.
+            breakup_jobs = []
+            affected_atks = rows(db,
+                "SELECT DISTINCT a.* FROM atks a JOIN atk_versions v "
+                "ON v.atk_id=a.id AND v.version=a.version "
+                "JOIN json_each(v.composition) j JOIN codes c ON c.id=j.value "
+                "WHERE c.doc_id=?", (doc_id,))
+            for a in affected_atks:
+                if a["state"] != "done" or not a["code"]:
+                    continue
+                composition = rows(db,
+                    "SELECT c.id,c.doc_id,c.atk_id,c.external_status "
+                    "FROM atk_versions v JOIN json_each(v.composition) j "
+                    "JOIN codes c ON c.id=j.value "
+                    "WHERE v.atk_id=? AND v.version=?", (a["id"], a["version"]))
+                if not composition or any(
+                    not self.document_stopped(db, c["doc_id"])
+                    or c["atk_id"] != a["id"] or c["external_status"] != "APPLIED"
+                    for c in composition
+                ):
+                    continue
+                if one(db, "SELECT atk_id FROM introduction_atks WHERE atk_id=?", (a["id"],)):
+                    continue
+                if one(db, "SELECT id FROM transformations WHERE atk_id=? "
+                           "AND state IN ('approval','approved','processing')", (a["id"],)):
+                    continue
+                group = a["batch_id"] + ":" + a["supplier_id"]
+                if one(db, "SELECT id FROM operations WHERE group_id=? "
+                           "AND kind IN ('atk','transform','introduce') "
+                           "AND state NOT IN ('done','rejected','cancelled')", (group,)):
+                    continue
+                job = self.queue(db, "disaggregate", "disaggregate:" + a["id"],
+                    {"trade_participant_inn": self.config()["inn"],
+                     "products_list": [{"atk": a["code"]}]}, doc_id=doc_id)
+                breakup_jobs.append({"atk": a["code"], "operation": job})
             audit(
                 db,
                 actor,
@@ -192,9 +238,11 @@ class Service:
                     "previous_status": d["status"],
                     "groups": sorted(groups),
                     "operations": affected,
+                    "disaggregation_jobs": breakup_jobs,
                 },
             )
-            return {"id": doc_id, "status": "archive", "stopped": True}
+            return {"id": doc_id, "status": "archive", "stopped": True,
+                    "disaggregation_jobs": breakup_jobs}
 
     def restore_document(self, doc_id, actor, reason):
         if not reason.strip():
@@ -203,6 +251,14 @@ class Service:
             d = self.document(db, doc_id, actor, admin=True)
             if d["status"] != "archive":
                 raise Conflict("Накладная уже находится вне архива")
+            if one(db,
+                "SELECT o.id FROM operations o JOIN atks a "
+                "ON o.op_key='disaggregate:'||a.id "
+                "JOIN atk_versions v ON v.atk_id=a.id "
+                "JOIN json_each(v.composition) j JOIN codes c ON c.id=j.value "
+                "WHERE o.kind='disaggregate' AND c.doc_id=? LIMIT 1", (doc_id,)):
+                raise Conflict("По накладной запущено расформирование АТК. "
+                               "Возврат требует отдельной сверки КМ в ГИС МТ")
             if one(
                 db, "SELECT id FROM audit WHERE entity=? "
                     "AND action='КМ перенесены из архивной накладной' LIMIT 1", (doc_id,)
@@ -384,6 +440,10 @@ class Service:
                 "SELECT a.* FROM atks a JOIN batch_docs b ON b.batch_id=a.batch_id AND b.supplier_id=a.supplier_id WHERE b.doc_id IN (?,?)",
                 (doc_id, d["parent_id"] or doc_id),
             )
+            for atk in d["atks"]:
+                atk["disaggregation"] = one(db,
+                    "SELECT state,error,external_id FROM operations WHERE op_key=?",
+                    ("disaggregate:" + atk["id"],))
             d["exports"] = rows(
                 db,
                 'SELECT f.id,f.name,f.kind,f.version,f.created FROM artifacts f JOIN batch_docs b ON b.batch_id||":"||b.supplier_id=f.group_id WHERE b.doc_id IN (?,?) ORDER BY f.created DESC',
@@ -920,9 +980,13 @@ class Service:
         )
 
     def queue(self, db, kind, key, payload, doc_id=None, group_id=None):
-        self.require_operation_active(
-            db, {"kind": kind, "doc_id": doc_id, "group_id": group_id}
-        )
+        if kind == "disaggregate":
+            if not doc_id or not self.document_stopped(db, doc_id):
+                raise Conflict("Расформирование АТК допускается только при остановке накладной")
+        else:
+            self.require_operation_active(
+                db, {"kind": kind, "doc_id": doc_id, "group_id": group_id}
+            )
         existing = one(db, "SELECT * FROM operations WHERE op_key=?", (key,))
         if existing:
             return existing["id"]
