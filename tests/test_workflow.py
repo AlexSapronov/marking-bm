@@ -470,6 +470,12 @@ def test_pdf_failure_preserves_received_codes(env):
         s.store.one("SELECT state FROM operations WHERE kind='fetch'")["state"]
         == "done"
     )
+    before_orders = len(r.orders)
+    failed_retry = client(app).post("/api/documents/" + a + "/retry-labels", json={})
+    assert failed_retry.status_code == 422
+    assert "PN" in failed_retry.json()["detail"]
+    assert len(r.orders) == before_orders
+    assert s.get(a, "alice")["status"] == "label_error"
     raw = [["SHORT", GTIN, 5, 3, TN]]
     p = s.preview(a, "alice", raw)
     s.save_lines(a, "alice", raw, d["revision"], p["fingerprint"])
@@ -639,3 +645,86 @@ def test_report_date_only_request_allows_optional_fias_to_be_empty(env):
     assert response.status_code == 200, response.text
     payload = json.loads(s.store.one("SELECT payload FROM operations WHERE kind='report'")["payload"])
     assert payload["attributes"] == {"productionDate": "2026-01-01", "kpp": "123456789"}
+
+
+def test_label_recheck_recovers_all_pdfs_without_ordering_or_renaming_pn(env):
+    app, s, remote = env
+    a = add_doc(s, number="MULTI-PN-RETRY", labels=1, pn="PN-A")
+    s.order(a, "alice")
+    advance(app)
+    first = s.get(a, "alice")
+    assert first["status"] == "ready" and first["current_version"] == 1
+    original_archive = s.store.one(
+        "SELECT content FROM artifacts WHERE doc_id=? AND kind='labels' AND version=1",
+        (a,),
+    )
+    with zipfile.ZipFile(BytesIO(original_archive["content"])) as z:
+        assert len(z.namelist()) == 1
+
+    # The previously generated v1 archive contains one PDF, but the new
+    # document composition requires three. Existing KMs remain conserved.
+    updated_rows = [
+        ["PN-A", GTIN, 5, 1, TN],
+        ["PN-B", GTIN, 5, 1, TN],
+        ["PN-C", GTIN, 5, 1, TN],
+    ]
+    revision = first["revision"]
+    p = s.preview(a, "alice", updated_rows)
+    s.save_lines(a, "alice", updated_rows, revision, p["fingerprint"])
+
+    original_info = s.gateway.info
+    def temporarily_missing_in_registry(cises):
+        if len(cises) == 3:
+            raise ValueError("ЧЗ не подтвердил сведения обо всех КМ")
+        return original_info(cises)
+    s.gateway.info = temporarily_missing_in_registry
+    advance(app)
+
+    broken = s.get(a, "alice")
+    assert broken["status"] == "label_error"
+    assert broken["current_version"] == 1
+    assert len(broken["codes"]) == broken["required"] == 3
+    assert "ЧЗ не подтвердил" in broken["last_error"]
+    assert s.store.one(
+        "SELECT COUNT(*) n FROM artifacts WHERE doc_id=? AND kind='labels'", (a,)
+    )["n"] == 1
+
+    # A retry during an actual registry failure must not emit new KMs or
+    # change the already confirmed v1 PDF.
+    orders_before = len(remote.orders)
+    codes_before = {item["id"] for item in broken["codes"]}
+    c = client(app)
+    assert c.post("/api/documents/" + a + "/retry-labels", json={}).status_code == 422
+    assert len(remote.orders) == orders_before
+
+    s.gateway.info = original_info
+    response = c.post("/api/documents/" + a + "/retry-labels", json={})
+    assert response.status_code == 200, response.text
+    fixed = s.get(a, "alice")
+    assert fixed["status"] == "ready"
+    assert fixed["current_version"] == 2
+    assert fixed["last_error"] is None
+    assert {item["id"] for item in fixed["codes"]} == codes_before
+    assert len(remote.orders) == orders_before
+    current_archive = s.store.one(
+        "SELECT content,snapshot FROM artifacts "
+        "WHERE doc_id=? AND kind='labels' AND version=2", (a,),
+    )
+    with zipfile.ZipFile(BytesIO(current_archive["content"])) as z:
+        assert len(z.namelist()) == 3
+        assert all(name.endswith(".pdf") for name in z.namelist())
+    assert {item["pn"] for item in json.loads(current_archive["snapshot"])} == {
+        "PN-A", "PN-B", "PN-C"
+    }
+    # The historical archive remains available, not silently overwritten.
+    assert s.store.one(
+        "SELECT content FROM artifacts WHERE doc_id=? AND kind='labels' AND version=1", (a,)
+    )["content"] == original_archive["content"]
+    assert c.post("/api/documents/" + a + "/retry-labels", json={}).status_code == 409
+
+
+def test_trailing_spaces_are_not_distinct_part_numbers():
+    plain = validate_rows([["PN-A", GTIN, 5, 1, TN]])
+    padded = validate_rows([["PN-A ", GTIN, 5, 1, TN]])
+    assert not plain["errors"] and not padded["errors"]
+    assert plain["lines"] == padded["lines"]
