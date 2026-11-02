@@ -1878,15 +1878,48 @@ class Service:
         s = one(db, "SELECT * FROM suppliers WHERE id=?", (supplier_id,))
         return s["merged_into"] or s["id"]
 
+    def can_reaggregate_after_stop(self, db, code):
+        """Allow archived donor codes only after verified external disaggregation.
+
+        Archived invoices stay stopped and cannot resume ordering/reporting;
+        their APPLIED children may, however, be added to another valid ATK.
+        A normal removal or a merely queued disaggregation never qualifies.
+        """
+        if not self.document_stopped(db, code["doc_id"]):
+            return True
+        if (code["atk_id"] is not None or code["local_state"] != "applied"
+                or code["external_status"] != "APPLIED"
+                or not code["reuse_allowed"]):
+            return False
+        return bool(one(
+            db,
+            "SELECT a.id FROM atks a "
+            "JOIN operations o ON o.kind='disaggregate' "
+            "AND o.op_key='disaggregate:'||a.id AND o.state='done' "
+            "JOIN atk_versions v ON v.atk_id=a.id "
+            "JOIN json_each(v.composition) j ON j.value=? "
+            "WHERE a.state='disaggregated' LIMIT 1",
+            (code["id"],),
+        ))
+
     def candidate_codes(self, atk_id, actor, admin=False):
         with self.store.transaction() as db:
             a = self.atk_access(db, atk_id, actor, admin)
             canonical = self.canonical_supplier(db, a["supplier_id"])
-            return rows(
+            candidates = rows(
                 db,
-                "SELECT c.id,c.cis,c.pn,c.quantity,c.tnved FROM codes c JOIN documents d ON d.id=c.doc_id WHERE d.supplier_id=? AND c.tnved=? AND c.external_status='APPLIED' AND c.atk_id IS NULL AND c.reuse_allowed=1 AND d.status IN ('reported','done','archive') AND (? OR d.owner=?) AND NOT EXISTS (SELECT 1 FROM document_stops h WHERE h.doc_id=d.id AND h.resumed_at IS NULL)",
+                "SELECT c.id,c.cis,c.pn,c.quantity,c.tnved,c.doc_id,c.local_state,"
+                "c.atk_id,c.external_status,c.reuse_allowed FROM codes c "
+                "JOIN documents d ON d.id=c.doc_id "
+                "WHERE d.supplier_id=? AND c.tnved=? AND c.external_status='APPLIED' "
+                "AND c.atk_id IS NULL AND c.reuse_allowed=1 "
+                "AND d.status IN ('reported','done','archive') AND (? OR d.owner=?)",
                 (canonical, a["tnved"], admin, actor),
             )
+            return [
+                {key: c[key] for key in ("id", "cis", "pn", "quantity", "tnved")}
+                for c in candidates if self.can_reaggregate_after_stop(db, c)
+            ]
 
     def atk_access(self, db, atk_id, actor, admin=False):
         a = one(db, "SELECT * FROM atks WHERE id=?", (atk_id,))
@@ -1929,8 +1962,8 @@ class Service:
                     "SELECT c.*,d.supplier_id,d.owner FROM codes c JOIN documents d ON d.id=c.doc_id WHERE c.id=?",
                     (i,),
                 )
-                if c and self.document_stopped(db, c["doc_id"]):
-                    raise Conflict("КМ относится к остановленной накладной")
+                if c and not self.can_reaggregate_after_stop(db, c):
+                    raise Conflict("КМ остановленной накладной доступен только после подтверждённого расформирования АТК")
                 if c and not admin and c["owner"] != actor:
                     raise PermissionError(
                         "Нельзя включать КМ другого сотрудника в заявку"
@@ -1997,8 +2030,8 @@ class Service:
                     one(db, "SELECT * FROM codes WHERE id=?", (i,))
                     for i in json.loads(t["code_ids"])
                 ]
-                if any(self.document_stopped(db, c["doc_id"]) for c in items):
-                    raise Conflict("Заявка содержит КМ остановленной накладной")
+                if any(not self.can_reaggregate_after_stop(db, c) for c in items):
+                    raise Conflict("Заявка содержит КМ без подтверждённого расформирования АТК")
                 if any(
                     c["external_status"] != "APPLIED"
                     or (
