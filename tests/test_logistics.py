@@ -391,7 +391,10 @@ def test_introduction_retries_status_after_404_without_resubmitting(env):
     assert completed["state"] == "done" and completed["error"] is None
     assert completed["external_id"] == submitted["external_id"]
     assert s.get(ids[0], "alice")["status"] == "archive"
-    assert sum(path.endswith("/lk/documents/create") for _, path, _, _ in remote.calls) == 1
+    assert sum(
+        path.endswith("/lk/documents/create") and request_body["type"] == "LP_FTS_INTRODUCE"
+        for _, path, request_body, _ in remote.calls
+    ) == 1
 
 def test_only_logist_or_admin_can_introduce_and_csrf_is_required(env):
     app, s, _ = env
