@@ -348,6 +348,54 @@ def test_introduction_archives_only_after_gis_confirmation(env):
     assert logist.post("/api/logistics/documents/" + ids[1] + "/complete", json={}).status_code == 409
 
 
+
+def test_introduction_retries_status_after_404_without_resubmitting(env):
+    import httpx
+    from conftest import sign_all
+
+    app, s, remote = env
+    ids, logist, _ = prepare_atks(env)
+    body = introduction_body(logist, ids[0])
+    result = logist.post("/api/logistics/documents/" + ids[0] + "/introduce", json=body)
+    assert result.status_code == 200, result.text
+    op_id = result.json()["id"]
+    sign_all(s)
+    app.state.worker.dispatch(s.store.one("SELECT * FROM operations WHERE id=?", (op_id,)))
+    submitted = s.store.one("SELECT * FROM operations WHERE id=?", (op_id,))
+    assert submitted["state"] == "submitted" and submitted["external_id"]
+
+    original_handle = remote.handle
+    missing_once = {"value": True}
+
+    def status_temporarily_missing(request):
+        if (
+            missing_once["value"]
+            and request.method == "GET"
+            and "/doc/" in request.url.path
+            and request.url.path.endswith("/info")
+        ):
+            missing_once["value"] = False
+            return httpx.Response(404, json={"error": "not found yet"})
+        return original_handle(request)
+
+    s.gateway.transport = httpx.MockTransport(status_temporarily_missing)
+    app.state.worker.tick()
+    pending = s.store.one("SELECT * FROM operations WHERE id=?", (op_id,))
+    assert pending["state"] == "submitted"
+    assert pending["external_id"] == submitted["external_id"]
+    assert "проверка повторится автоматически" in pending["error"]
+    assert s.get(ids[0], "alice")["status"] == "done"
+
+    app.state.worker.tick()
+    completed = s.store.one("SELECT * FROM operations WHERE id=?", (op_id,))
+    assert completed["state"] == "done" and completed["error"] is None
+    assert completed["external_id"] == submitted["external_id"]
+    assert s.get(ids[0], "alice")["status"] == "archive"
+    assert sum(
+        path.endswith("/lk/documents/create") and request_body["type"] == "LP_FTS_INTRODUCE"
+        for _, path, request_body, _ in remote.calls
+    ) == 1
+
 def test_only_logist_or_admin_can_introduce_and_csrf_is_required(env):
     app, s, _ = env
     ids, logist, admin = prepare_atks(env)
