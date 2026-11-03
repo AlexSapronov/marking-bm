@@ -10,9 +10,10 @@ from .db import dumps
 
 
 class RemoteError(Exception):
-    def __init__(self, message, uncertain=False):
+    def __init__(self, message, uncertain=False, status_code=None):
         super().__init__(message)
         self.uncertain = uncertain
+        self.status_code = status_code
 
 
 class ReportRejected(ValueError):
@@ -134,6 +135,7 @@ class Gateway:
             raise RemoteError(
                 f"ЧЗ: HTTP {r.status_code}. Проверьте права и состояние операции в ЛК.",
                 mutating and (r.status_code >= 500 or r.status_code in (408, 409, 429)),
+                status_code=r.status_code,
             )
         try:
             return r.json()
