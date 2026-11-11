@@ -45,6 +45,7 @@ CREATE INDEX IF NOT EXISTS pool ON codes(gtin,local_state,doc_id);
 CREATE TABLE IF NOT EXISTS assignments(id INTEGER PRIMARY KEY,code_id TEXT NOT NULL REFERENCES codes(id),doc_id TEXT NOT NULL,
  pn TEXT NOT NULL,quantity INTEGER NOT NULL,tnved TEXT NOT NULL,active INTEGER NOT NULL,created TEXT NOT NULL,ended TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_assignment ON assignments(code_id) WHERE active=1;
+CREATE TABLE IF NOT EXISTS document_corrections(doc_id TEXT PRIMARY KEY REFERENCES documents(id),snapshot TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS batches(id TEXT PRIMARY KEY,created TEXT NOT NULL,actor TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS batch_docs(batch_id TEXT NOT NULL REFERENCES batches(id),doc_id TEXT NOT NULL UNIQUE REFERENCES documents(id),supplier_id TEXT NOT NULL,PRIMARY KEY(batch_id,doc_id));
 CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY,kind TEXT NOT NULL,doc_id TEXT,group_id TEXT,
@@ -197,3 +198,4 @@ def audit(db, actor, action, entity, detail=None):
         "INSERT INTO audit(actor,action,entity,detail,created) VALUES(?,?,?,?,?)",
         (actor, action, entity, dumps(detail or {}), now()),
     )
+

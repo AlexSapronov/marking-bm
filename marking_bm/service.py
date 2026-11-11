@@ -451,6 +451,9 @@ class Service:
                 'SELECT f.id,f.name,f.kind,f.version,f.created FROM artifacts f JOIN batch_docs b ON b.batch_id||":"||b.supplier_id=f.group_id WHERE b.doc_id IN (?,?) ORDER BY f.created DESC',
                 (doc_id, d["parent_id"] or doc_id),
             )
+            correction = one(db, "SELECT snapshot FROM document_corrections WHERE doc_id=?", (doc_id,))
+            d["has_correction"] = bool(correction)
+            d["correction_lines"] = json.loads(correction["snapshot"])["lines"] if correction and admin and d["status"] == "correction" else []
             d["required"] = sum(l["labels"] for l in d["lines"])
             d["units"] = sum(l["labels"] * l["quantity"] for l in d["lines"])
             d["supplier_codes_xls_available"] = bool(
@@ -899,7 +902,7 @@ class Service:
             d = self.document(db, doc_id, actor, admin)
             if d["revision"] != revision or preview["revision"] != revision:
                 raise Conflict("Документ изменился. Обновите страницу")
-            if d["status"] not in ("draft", "ready", "transferred", "label_error"):
+            if d["status"] not in ("draft", "ready", "transferred", "label_error") or one(db, "SELECT doc_id FROM document_corrections WHERE doc_id=?", (doc_id,)):
                 raise Conflict("Изменение состава на этой стадии запрещено")
             if any(x["external_status"] != "EMITTED" for x in codes):
                 raise Conflict("Нанесённые КМ изменять нельзя")
@@ -1053,6 +1056,7 @@ class Service:
             for l in ls:
                 need[l["gtin"]] += l["labels"]
             for gtin, n in need.items():
+                n -= one(db, "SELECT COUNT(*) n FROM codes WHERE doc_id=? AND gtin=?", (doc_id, gtin))["n"]
                 available = rows(
                     db,
                     "SELECT * FROM codes WHERE gtin=? AND doc_id IS NULL AND local_state='free' AND external_status='EMITTED' ORDER BY id",
@@ -1160,13 +1164,17 @@ class Service:
             )["n"]
             if not required or len(codes) != required:
                 raise Conflict("Комплект КМ неполный. Повторите проверку после получения всех кодов")
-            if any(c["external_status"] != "EMITTED" for c in codes):
-                raise Conflict("Часть КМ уже не в состоянии EMITTED. Проверьте накладную")
+            correction = one(db, "SELECT doc_id FROM document_corrections WHERE doc_id=?", (doc_id,))
+            if any(c["external_status"] not in (("EMITTED", "APPLIED") if correction else ("EMITTED",)) for c in codes):
+                raise Conflict("Недопустимый статус КМ. Проверьте накладную")
             original = [(c["id"], c["raw"], c["cis"], c["gtin"]) for c in codes]
 
         # External call is read-only. A failed response must not create more
         # orders, free any KMs, or replace the last confirmed label archive.
-        self.gateway.verify(codes, "EMITTED")
+        for status in (("EMITTED", "APPLIED") if correction else ("EMITTED",)):
+            subset = [c for c in codes if c["external_status"] == status]
+            if subset:
+                self.gateway.verify(subset, status)
         try:
             with self.store.transaction() as db:
                 d = self.document(db, doc_id, actor, admin)
@@ -1202,14 +1210,19 @@ class Service:
         cs = rows(db, "SELECT * FROM codes WHERE doc_id=? ORDER BY gtin,id", (doc_id,))
         if len(cs) != sum(l["labels"] for l in ls):
             return
-        if any(c["external_status"] != "EMITTED" for c in cs):
-            raise Conflict("Статус КМ не EMITTED")
+        correction = one(db, "SELECT doc_id FROM document_corrections WHERE doc_id=?", (doc_id,))
+        if any(c["external_status"] not in (("EMITTED", "APPLIED") if correction else ("EMITTED",)) for c in cs):
+            raise Conflict("Недопустимый статус КМ")
+        if correction:
+            exact_assignments = True
         buckets = defaultdict(list)
         for c in cs:
             key = (
                 (c["pn"], c["gtin"], c["quantity"], c["tnved"])
                 if exact_assignments else c["gtin"]
             )
+            if correction and c["pn"] is None:
+                key = (None, c["gtin"], None, None)
             buckets[key].append(c)
         snapshot = []
         files = {}
@@ -1221,6 +1234,10 @@ class Service:
                     (l["pn"], l["gtin"], l["quantity"], l["tnved"])
                     if exact_assignments else l["gtin"]
                 )
+                if not buckets[key] and correction:
+                    fresh_key = (None, l["gtin"], None, None)
+                    if buckets[fresh_key]:
+                        buckets[key].append(buckets[fresh_key].pop(0))
                 if not buckets[key]:
                     raise Conflict("КМ не соответствуют строкам накладной. Формирование этикеток отменено")
                 c = buckets[key].pop(0)
@@ -1240,6 +1257,10 @@ class Service:
                     "gtin": l["gtin"],
                 }
                 snapshot.append(item)
+                if c["external_status"] == "APPLIED":
+                    continue
+                db.execute(
+                    "UPDATE assignments SET active=0,ended=? WHERE code_id=? AND active=1", (now(), c["id"]))
                 db.execute(
                     "UPDATE codes SET pn=?,quantity=?,tnved=? WHERE id=?",
                     (l["pn"], l["quantity"], l["tnved"], c["id"]),
@@ -1583,7 +1604,23 @@ class Service:
             if existing:
                 ids = {x["batch_id"] for x in existing}
                 if len(existing) == len(doc_ids) and len(ids) == 1:
-                    return next(iter(ids))
+                    batch_id = next(iter(ids))
+                    for d in docs:
+                        if d["status"] != "transferred" or d["transferred_version"] != d["current_version"]:
+                            continue
+                        if not one(db, "SELECT doc_id FROM document_corrections WHERE doc_id=?", (d["id"],)):
+                            continue
+                        self.require_operation_active(db, {"kind": "report", "doc_id": d["id"], "group_id": batch_id + ":" + d["supplier_id"]})
+                        cs = rows(db, "SELECT * FROM codes WHERE doc_id=? AND external_status='EMITTED'", (d["id"],))
+                        attrs = {"productionDate": production_date, "kpp": d["kpp"]}
+                        if d["fias_id"]:
+                            attrs["fiasId"] = d["fias_id"]
+                        self.queue(db, "report", f"report:correction:{d['id']}:{d['revision']}",
+                                   {"productGroup": "radio", "sntins": [with_quantity(c["raw"], c["quantity"]) for c in cs], "attributes": attrs},
+                                   d["id"], batch_id + ":" + d["supplier_id"])
+                        db.execute("UPDATE documents SET status='reporting',updated=? WHERE id=?", (now(), d["id"]))
+                        audit(db, actor, "Создан отчёт после исправления GTIN", d["id"], {"codes": len(cs)})
+                    return batch_id
                 raise Conflict("Часть документов уже обрабатывается в другой партии")
             if any(
                 d["status"] != "transferred"
@@ -1683,6 +1720,125 @@ class Service:
                     {"batch": batch, "version": d["current_version"]},
                 )
             return batch
+
+    def correction_guard(self, db, doc_id):
+        batch = one(db, "SELECT * FROM batch_docs WHERE doc_id=?", (doc_id,))
+        if (not batch or self.document_stopped(db, doc_id)
+            or self.group_stopped(db, batch["batch_id"] + ":" + batch["supplier_id"])
+            or one(db, "SELECT id FROM atks WHERE batch_id=? AND supplier_id=?", (batch["batch_id"], batch["supplier_id"]))
+            or one(db, "SELECT id FROM operations WHERE doc_id=? AND kind IN ('report','order','fetch') AND state NOT IN ('done','rejected','partial','cancelled')", (doc_id,))):
+            raise Conflict("Возврат запрещён: есть незавершённые операции, остановка или АТК")
+
+    def correction_plan(self, doc_id, actor, admin=False):
+        if not admin:
+            raise PermissionError("Возврат доступен только администратору")
+        with self.store.read() as db:
+            d = self.document(db, doc_id, actor, True)
+            op = one(db, "SELECT * FROM operations WHERE doc_id=? AND kind='report' ORDER BY rowid DESC LIMIT 1", (doc_id,))
+            if d["status"] != "reporting" or not op or op["state"] not in ("rejected", "partial") or not op["external_id"]:
+                raise Conflict("Сначала получите подтверждённый отказ или частичный результат отчёта")
+            self.require_operation_active(db, op)
+            self.correction_guard(db, doc_id)
+            cs = rows(db, "SELECT * FROM codes WHERE doc_id=? ORDER BY id", (doc_id,))
+            ls = rows(db, "SELECT * FROM lines WHERE doc_id=? ORDER BY id", (doc_id,))
+        remote = self.gateway.info([c["cis"] for c in cs])
+        if not cs or set(remote) != {c["cis"] for c in cs} or any(
+            remote[c["cis"]].get("status") not in ("EMITTED", "APPLIED")
+            or remote[c["cis"]].get("ownerInn") != self.config()["inn"]
+            or remote[c["cis"]].get("parent") or c["atk_id"]
+            or (c["external_status"] == "APPLIED" and remote[c["cis"]]["status"] != "APPLIED")
+            for c in cs
+        ):
+            raise Conflict("Статусы, владелец или отсутствие АТК не подтверждены ЧЗ")
+        for c in cs:
+            c["verified_status"] = remote[c["cis"]]["status"]
+        for line in ls:
+            items = [c for c in cs if self._line_key(c) == self._line_key(line)]
+            if len(items) != line["labels"]:
+                raise Conflict("Состав КМ не совпадает со строками")
+            line["applied"] = sum(c["verified_status"] == "APPLIED" for c in items)
+            line["emitted"] = len(items) - line["applied"]
+            line["editable"] = line["applied"] == 0
+        plan = {"doc_id": doc_id, "revision": d["revision"], "operation": op["id"],
+                "state": op["state"], "lines": ls, "codes": cs}
+        plan["fingerprint"] = sha256(dumps(plan).encode()).hexdigest()
+        return plan
+
+    def return_for_correction(self, doc_id, actor, fingerprint, admin=False):
+        plan = self.correction_plan(doc_id, actor, admin)
+        if plan["fingerprint"] != fingerprint:
+            raise Conflict("Состояние изменилось. Повторите сверку")
+        if not any(l["editable"] for l in plan["lines"]):
+            raise Conflict("Нет целиком ненанесённых позиций для замены GTIN")
+        with self.store.transaction() as db:
+            d = self.document(db, doc_id, actor, True)
+            latest = one(db, "SELECT id,state FROM operations WHERE doc_id=? AND kind='report' ORDER BY rowid DESC LIMIT 1", (doc_id,))
+            if d["status"] != "reporting" or d["revision"] != plan["revision"] or latest != {"id": plan["operation"], "state": plan["state"]}:
+                raise Conflict("Накладная изменилась. Повторите сверку")
+            self.correction_guard(db, doc_id)
+            current_codes = rows(db, "SELECT * FROM codes WHERE doc_id=? ORDER BY id", (doc_id,))
+            if current_codes != [{k: v for k, v in c.items() if k != "verified_status"} for c in plan["codes"]]:
+                raise Conflict("Состав КМ изменился. Повторите сверку")
+            for c in plan["codes"]:
+                db.execute("UPDATE codes SET external_status=?,local_state=?,checked=? WHERE id=?",
+                           (c["verified_status"], "applied" if c["verified_status"] == "APPLIED" else "reserved", now(), c["id"]))
+            db.execute("INSERT OR REPLACE INTO document_corrections VALUES(?,?)", (doc_id, dumps(plan)))
+            db.execute("UPDATE documents SET status='correction',revision=revision+1,transferred_version=NULL,updated=? WHERE id=?", (now(), doc_id))
+            audit(db, actor, "Возвращено на исправление GTIN после сверки ЧЗ", doc_id, plan)
+        return self.get(doc_id, actor, True)
+
+    def save_correction(self, doc_id, actor, replacements, admin=False):
+        if not admin:
+            raise PermissionError("Исправление доступно только администратору")
+        if not replacements:
+            raise Conflict("Укажите новый GTIN хотя бы одной позиции")
+        # Confirm retained codes again before replacing any reservations.
+        cs = self.store.all("SELECT * FROM codes WHERE doc_id=?", (doc_id,))
+        remote = self.gateway.info([c["cis"] for c in cs])
+        if any(remote.get(c["cis"], {}).get("status") != c["external_status"]
+               or remote[c["cis"]].get("ownerInn") != self.config()["inn"]
+               or remote[c["cis"]].get("parent") for c in cs):
+            raise Conflict("Статусы КМ изменились. Нужна повторная сверка")
+        with self.store.transaction() as db:
+            d = self.document(db, doc_id, actor, True)
+            if d["status"] != "correction" or self.document_stopped(db, doc_id):
+                raise Conflict("Накладная не находится на этапе исправления")
+            self.correction_guard(db, doc_id)
+            current_codes = rows(db, "SELECT * FROM codes WHERE doc_id=?", (doc_id,))
+            if current_codes != cs:
+                raise Conflict("Состав КМ изменился. Повторите сверку")
+            correction = one(db, "SELECT snapshot FROM document_corrections WHERE doc_id=?", (doc_id,))
+            plan = json.loads(correction["snapshot"])
+            allowed = {str(l["id"]): l for l in plan["lines"] if l["editable"]}
+            if not set(replacements).issubset(allowed):
+                raise Conflict("Нанесённые или частично нанесённые позиции менять нельзя")
+            changes = []
+            for line_id, gtin in replacements.items():
+                line = allowed[line_id]
+                validated = validate_rows([[line["pn"], gtin, line["quantity"], line["labels"], line["tnved"]]])
+                if validated["errors"] or not re.fullmatch(r"[0-9]{14}", gtin) or gtin == line["gtin"]:
+                    raise Conflict("Укажите корректный новый GTIN")
+                cat = one(db, "SELECT tnved FROM catalog WHERE gtin=?", (gtin,))
+                if cat and cat["tnved"] != line["tnved"]:
+                    raise Conflict("У нового GTIN другой ТН ВЭД")
+                for c in cs:
+                    if self._line_key(c) != self._line_key(line):
+                        continue
+                    if c["external_status"] != "EMITTED" or c["atk_id"]:
+                        raise Conflict("КМ уже нанесён")
+                    db.execute("UPDATE assignments SET active=0,ended=? WHERE code_id=? AND active=1", (now(), c["id"]))
+                    db.execute("UPDATE codes SET doc_id=NULL,pn=NULL,quantity=NULL,local_state='retired',reuse_allowed=0 WHERE id=?", (c["id"],))
+                db.execute("UPDATE lines SET gtin=? WHERE id=? AND doc_id=?", (gtin, int(line_id), doc_id))
+                db.execute("INSERT OR IGNORE INTO catalog VALUES(?,?)", (gtin, line["tnved"]))
+                db.execute("INSERT OR IGNORE INTO pn_map VALUES(?,?)", (gtin, line["pn"]))
+                changes.append({"pn": line["pn"], "before": line["gtin"], "after": gtin})
+            current_lines = rows(db, "SELECT * FROM lines WHERE doc_id=?", (doc_id,))
+            checked = validate_rows([[l["pn"], l["gtin"], l["quantity"], l["labels"], l["tnved"]] for l in current_lines])
+            if checked["errors"]:
+                raise Conflict("Исправьте соответствия PN и GTIN", checked)
+            db.execute("UPDATE documents SET status='repack',revision=revision+1,updated=? WHERE id=?", (now(), doc_id))
+            audit(db, actor, "Исправлен GTIN; прежние КМ исключены из использования", doc_id, changes)
+        return self.order(doc_id, actor, True, repack=True)
 
     def retry_rejected_report(self, op_id, actor, admin=False):
         # A new signed report is allowed only after an explicit terminal result.
@@ -2455,3 +2611,4 @@ class Service:
                     filenames.add(unique_name)
                     archive.writestr(unique_name, content)
         return (buf.getvalue(), filename) if with_filename else buf.getvalue()
+

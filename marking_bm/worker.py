@@ -174,7 +174,13 @@ class Worker:
                 if not needed or len(codes) != needed:
                     continue
                 try:
-                    self.g.verify(codes, "EMITTED")
+                    if self.db.one("SELECT doc_id FROM document_corrections WHERE doc_id=?", (d["id"],)):
+                        for status in ("EMITTED", "APPLIED"):
+                            subset = [c for c in codes if c["external_status"] == status]
+                            if subset:
+                                self.g.verify(subset, status)
+                    else:
+                        self.g.verify(codes, "EMITTED")
                     with self.db.transaction() as db:
                         self.s.prepare_labels(db, d["id"])
                 except RemoteError as e:
@@ -576,10 +582,16 @@ class Worker:
                     db.execute("UPDATE documents SET status='archive',updated=? WHERE id=?", (now(), d["doc_id"]))
                     audit(db, "system", "Ввод в оборот подтверждён ГИС МТ. Накладная завершена", d["doc_id"], {"operation": op["id"], "external_id": op["external_id"]})
             elif kind == "report":
-                db.execute(
-                    "UPDATE codes SET external_status='APPLIED',local_state='applied',checked=? WHERE doc_id=?",
-                    (now(), op["doc_id"]),
-                )
+                current_codes = rows(db, "SELECT cis FROM codes WHERE doc_id=?", (op["doc_id"],))
+                if not set(registry).issubset({c["cis"] for c in current_codes}):
+                    raise Conflict("Состав накладной изменился после отправки отчёта")
+                for cis in registry:
+                    db.execute(
+                        "UPDATE codes SET external_status='APPLIED',local_state='applied',checked=? WHERE doc_id=? AND cis=?",
+                        (now(), op["doc_id"], cis),
+                    )
+                if one(db, "SELECT id FROM codes WHERE doc_id=? AND external_status!='APPLIED' LIMIT 1", (op["doc_id"],)):
+                    raise Conflict("Не все текущие КМ подтверждены как нанесённые")
                 db.execute(
                     "UPDATE documents SET status='reported',updated=? WHERE id=?",
                     (now(), op["doc_id"]),
@@ -687,3 +699,4 @@ class Worker:
                 op["doc_id"] or op["group_id"] or op["id"],
                 {"operation": op["id"], "kind": kind, "external_id": op["external_id"]},
             )
+

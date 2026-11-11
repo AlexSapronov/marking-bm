@@ -434,6 +434,25 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         revision: int = 0
         confirmation: str | None = None
 
+    class CorrectionReturn(BaseModel):
+        fingerprint: str
+
+    class CorrectionSave(BaseModel):
+        replacements: dict[str, str]
+
+    @app.get("/api/admin/documents/{doc_id}/correction-preview")
+    def correction_preview(doc_id: str, s=Depends(admin)):
+        plan = service.correction_plan(doc_id, s["username"], True)
+        return {k: v for k, v in plan.items() if k != "codes"}
+
+    @app.post("/api/admin/documents/{doc_id}/return-for-correction")
+    def return_for_correction(doc_id: str, body: CorrectionReturn, s=Depends(admin)):
+        return service.return_for_correction(doc_id, s["username"], body.fingerprint, True)
+
+    @app.post("/api/admin/documents/{doc_id}/correct-gtin")
+    def correct_gtin(doc_id: str, body: CorrectionSave, s=Depends(admin)):
+        return service.save_correction(doc_id, s["username"], body.replacements, True)
+
     @app.post("/api/documents/{doc_id}/preview")
     def preview(doc_id: str, body: Lines, s=Depends(manager)):
         return service.preview(doc_id, s["username"], body.rows, s["admin"])
@@ -1617,3 +1636,4 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
 
 
 app = create_app()
+
