@@ -96,10 +96,12 @@ class Worker:
                     self.ensure_tokens()
                 except (ValueError, RemoteError):
                     pass
-            # Reserve capacity for both new dispatches and status checks. A full
-            # page of waiting orders must not starve authorization or later polls.
+            # Keep status polls independent of new dispatches. Authorization
+            # jobs must precede orders waiting on expired tokens; otherwise 25
+            # old queued orders can permanently hide the signed auth job.
             scheduled = self.db.all(
-                "SELECT o.* FROM operations o WHERE o.state='queued' AND NOT EXISTS (SELECT 1 FROM operation_stops h JOIN document_stops d ON d.doc_id=h.doc_id WHERE h.op_id=o.id AND d.resumed_at IS NULL) ORDER BY o.created,o.id LIMIT 25"
+                "SELECT o.* FROM operations o WHERE o.state='queued' AND NOT EXISTS (SELECT 1 FROM operation_stops h JOIN document_stops d ON d.doc_id=h.doc_id WHERE h.op_id=o.id AND d.resumed_at IS NULL) "
+                "ORDER BY CASE WHEN o.kind IN ('auth_true','auth_oms') THEN 0 ELSE 1 END, o.created,o.id LIMIT 25"
             ) + self.db.all(
                 "SELECT o.* FROM operations o WHERE o.state IN ('submitted','checking') AND NOT EXISTS (SELECT 1 FROM operation_stops h JOIN document_stops d ON d.doc_id=h.doc_id WHERE h.op_id=o.id AND d.resumed_at IS NULL) ORDER BY o.updated,o.created,o.id LIMIT 25"
             )
