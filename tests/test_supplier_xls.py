@@ -64,6 +64,7 @@ def test_working_reference_contract_with_gs_crypto_and_text():
             if name not in ('xl/sharedStrings.xml', 'xl/worksheets/sheet1.xml'):
                 assert output.read(name) == template.read(name)
         assert b'_x001D_91EE12_x001D_92' in output.read('xl/sharedStrings.xml')
+        assert b'xml:space="preserve"' not in output.read('xl/sharedStrings.xml')
         assert b'<f>' not in output.read('xl/worksheets/sheet1.xml')
     with pytest.raises(ValueError, match='без AI 30'):
         codes_xls([{**items[0], 'raw': raw + '\x1d305'}])
