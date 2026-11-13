@@ -2469,7 +2469,7 @@ class Service:
         with self.store.read() as db:
             atks = rows(
                 db,
-                "SELECT a.*,b.created created,o.state operation_state,o.error operation_error,o.updated updated FROM atks a JOIN batches b ON b.id=a.batch_id JOIN operations o ON o.id=a.op_id ORDER BY b.created DESC,a.id",
+                "SELECT a.*,b.created created,o.state operation_state,o.error operation_error,o.updated updated FROM atks a JOIN batches b ON b.id=a.batch_id JOIN operations o ON o.id=a.op_id WHERE a.state!='disaggregated' ORDER BY b.created DESC,a.id",
             )
             for a in atks:
                 item = self._logistics_summary(db, a)
