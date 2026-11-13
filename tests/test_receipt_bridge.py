@@ -201,3 +201,167 @@ def test_warehouse_conflict_and_wrong_ack_are_visible_and_not_success(env):
 def test_connection_rejects_unsafe_urls(tmp_path, url):
     with pytest.raises(ValueError):
         Settings(data_dir=tmp_path, receipt_bridge_url=url, receipt_bridge_key="k" * 48)
+
+
+def test_migration_preserves_previous_delivery_rows(tmp_path):
+    import sqlite3
+
+    from marking_bm.receipt_bridge import init_schema
+
+    path = tmp_path / "migration.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE receipt_deliveries(doc_id TEXT PRIMARY KEY, state TEXT)"
+        )
+        db.execute("INSERT INTO receipt_deliveries VALUES ('existing','delivered')")
+        init_schema(db)
+        init_schema(db)
+        assert db.execute(
+            "SELECT doc_id,state,historical FROM receipt_deliveries"
+        ).fetchone() == ("existing", "delivered", 0)
+
+
+def old_invoices(env):
+    ids = prepare(env)
+    s = env[1]
+    with s.store.transaction() as db:
+        db.execute("DELETE FROM receipt_deliveries")
+    s.settings.receipt_bridge_url = "http://127.0.0.1:8000"
+    s.settings.receipt_bridge_key = "k" * 48
+    return ids
+
+
+def test_historical_scan_queues_once_without_rebuilding_exports_or_writes(env):
+    from marking_bm.receipt_bridge import backfill
+
+    _, s, registry = env
+    ids = old_invoices(env)
+    before_artifacts = s.store.one("SELECT COUNT(*) n FROM artifacts")["n"]
+    calls = len(registry.calls)
+    backfill(s, limit=50)
+    backfill(s, limit=50)
+    jobs = s.store.all("SELECT * FROM receipt_deliveries")
+    assert {j["doc_id"] for j in jobs} == set(ids)
+    assert all(j["historical"] == 1 for j in jobs)
+    assert len(registry.calls) == calls
+    assert s.store.one("SELECT COUNT(*) n FROM artifacts")["n"] == before_artifacts
+    received = []
+
+    def handle(request):
+        body = json.loads(request.content)
+        received.append(body)
+        return httpx.Response(
+            200,
+            json={
+                "document_id": body["source_document"],
+                "revision": 1,
+                "status": "matched",
+            },
+        )
+
+    deliver(s, httpx.MockTransport(handle))
+    assert len(received) == 2
+    assert all(
+        j["state"] == "matched" for j in s.store.all("SELECT * FROM receipt_deliveries")
+    )
+    assert all(call[1].endswith("/cises/info") for call in registry.calls[calls:])
+    deliver(
+        s,
+        httpx.MockTransport(
+            lambda r: pytest.fail("Matched receipt must not be sent again")
+        ),
+    )
+
+
+def test_historical_remote_introduced_is_skipped_without_creating_receipt(env):
+    from marking_bm.receipt_bridge import backfill
+
+    _, s, registry = env
+    ids = old_invoices(env)
+    backfill(s, limit=50)
+    for c in registry.codes.values():
+        c["status"] = "INTRODUCED"
+    deliver(
+        s,
+        httpx.MockTransport(
+            lambda r: pytest.fail("Introduced codes must not reach warehouse")
+        ),
+    )
+    assert all(
+        j["state"] == "skipped" and "ввод в оборот" in j["error"]
+        for j in s.store.all("SELECT * FROM receipt_deliveries")
+    )
+    assert {
+        j["doc_id"] for j in s.store.all("SELECT * FROM receipt_deliveries")
+    } == set(ids)
+
+
+def test_historical_registry_failure_preserves_queue_for_retry(env, monkeypatch):
+    from marking_bm.receipt_bridge import backfill
+
+    _, s, _ = env
+    old_invoices(env)
+    backfill(s, limit=50)
+    monkeypatch.setattr(
+        s.gateway,
+        "info",
+        lambda _: (_ for _ in ()).throw(ValueError("registry unavailable")),
+    )
+    deliver(
+        s,
+        httpx.MockTransport(
+            lambda r: pytest.fail("Unverified codes must not reach warehouse")
+        ),
+    )
+    jobs = s.store.all("SELECT * FROM receipt_deliveries")
+    assert all(j["state"] == "error" and j["next_attempt"] > time.time() for j in jobs)
+
+
+@pytest.mark.parametrize(
+    "reason", ["introduced", "pending_atk", "stopped", "introducing"]
+)
+def test_historical_candidates_exclude_unsafe_or_incomplete_invoices(env, reason):
+    from marking_bm.db import now
+    from marking_bm.receipt_bridge import backfill
+
+    _, s, _ = env
+    ids = old_invoices(env)
+    with s.store.transaction() as db:
+        if reason == "introduced":
+            db.execute("UPDATE codes SET external_status='INTRODUCED'")
+        elif reason == "pending_atk":
+            db.execute("UPDATE atks SET state='processing'")
+        elif reason == "stopped":
+            for doc in ids:
+                db.execute(
+                    "INSERT INTO document_stops VALUES (?,?,?,?,NULL,NULL)",
+                    (doc, "admin", now(), "done"),
+                )
+        else:
+            op = db.execute(
+                "SELECT id FROM operations WHERE kind='atk' LIMIT 1"
+            ).fetchone()["id"]
+            for doc in ids:
+                db.execute("INSERT INTO introduction_documents VALUES (?,?)", (doc, op))
+    backfill(s, limit=50)
+    assert s.store.all("SELECT * FROM receipt_deliveries") == []
+
+
+def test_historical_introduction_started_after_discovery_is_skipped(env):
+    from marking_bm.receipt_bridge import backfill
+
+    _, s, _ = env
+    ids = old_invoices(env)
+    backfill(s, limit=50)
+    with s.store.transaction() as db:
+        op = db.execute(
+            "SELECT id FROM operations WHERE kind='atk' LIMIT 1"
+        ).fetchone()["id"]
+        for doc in ids:
+            db.execute("INSERT INTO introduction_documents VALUES (?,?)", (doc, op))
+    deliver(
+        s, httpx.MockTransport(lambda r: pytest.fail("Introduction already started"))
+    )
+    assert all(
+        j["state"] == "skipped" for j in s.store.all("SELECT * FROM receipt_deliveries")
+    )

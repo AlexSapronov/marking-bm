@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS codes(id TEXT PRIMARY KEY,raw TEXT NOT NULL,cis TEXT 
  source_op TEXT NOT NULL,external_status TEXT NOT NULL,checked TEXT,local_state TEXT NOT NULL,
  doc_id TEXT REFERENCES documents(id),pn TEXT,quantity INTEGER,tnved TEXT,atk_id TEXT,reuse_allowed INTEGER NOT NULL DEFAULT 1);
 CREATE INDEX IF NOT EXISTS pool ON codes(gtin,local_state,doc_id);
+CREATE INDEX IF NOT EXISTS receipt_backfill_codes_doc ON codes(doc_id);
 CREATE TABLE IF NOT EXISTS assignments(id INTEGER PRIMARY KEY,code_id TEXT NOT NULL REFERENCES codes(id),doc_id TEXT NOT NULL,
  pn TEXT NOT NULL,quantity INTEGER NOT NULL,tnved TEXT NOT NULL,active INTEGER NOT NULL,created TEXT NOT NULL,ended TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_assignment ON assignments(code_id) WHERE active=1;
@@ -84,8 +85,8 @@ class Store:
         with self.connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(SCHEMA)
-            from .receipt_bridge import SCHEMA as RECEIPT_SCHEMA
-            db.execute(RECEIPT_SCHEMA)
+            from .receipt_bridge import init_schema
+            init_schema(db)
             if "last_error" not in {
                 r[1] for r in db.execute("PRAGMA table_info(documents)")
             }:

@@ -90,7 +90,8 @@ class Worker:
         if not self.lock.acquire(blocking=False):
             return
         try:
-            from .receipt_bridge import deliver
+            from .receipt_bridge import backfill, deliver
+            backfill(self.s)
             deliver(self.s, limit=1)
             if time.time() - self.last_token_check > 60:
                 self.last_token_check = time.time()

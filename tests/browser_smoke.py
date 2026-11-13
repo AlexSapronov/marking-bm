@@ -683,9 +683,15 @@ with tempfile.TemporaryDirectory() as tmp:
             expect(page.locator(".registry-invoice-row").filter(has_text="Накладная LOGISTICS-READY-2 · 1 АТК")).to_be_visible()
             expect(page.get_by_role("columnheader", name="Следующее действие")).to_be_visible()
             expect(page.locator("#registry-selection-summary")).to_contain_text("Выберите готовые АТК")
-            base_invoice_group = page.locator(".registry-invoice-row").filter(has_text="Накладная LOGISTICS-READY · 1 АТК")
-            base_atk_row = base_invoice_group.locator("xpath=following-sibling::tr[1]")
-            expect(base_invoice_group).to_be_visible()
+            # Locate the ATK by its permanent identity; headings are presentation
+            # and can move when asynchronous registry refreshes rebuild the table.
+            base_atk_id = test_service.store.one(
+                "SELECT atk_id FROM codes WHERE doc_id=? LIMIT 1", (logistics_doc,)
+            )["atk_id"]
+            base_atk_row = page.locator("#atk-table tbody tr").filter(
+                has=page.locator(f'.registry-code[data-id="{base_atk_id}"]')
+            )
+            expect(base_atk_row).to_be_visible()
             expect(base_atk_row.locator(".download-actions .button")).to_have_text(["АТК", "RESULT"])
             base_atk_row.locator(".atk-select").check()
             expect(page.locator("#registry-selection-summary")).to_contain_text("Уникальных комплектов: 1")
@@ -743,15 +749,22 @@ with tempfile.TemporaryDirectory() as tmp:
             page.set_viewport_size({"width": 1440, "height": 1000})
             page.locator("#atk-search").fill("UNAVAILABLE")
             page.get_by_role("button", name="Применить фильтры", exact=True).click()
-            page.get_by_role("heading", name="Реестр АТК", exact=True).wait_for()
-            assert page.locator("#atk-search").input_value() == "UNAVAILABLE"
+            # The heading and input already existed before the request. Wait for
+            # its rendered result before resetting filters or reloading the page.
+            expect(page.locator("#atk-rows > tr")).to_have_count(0)
+            expect(page.get_by_text("АТК не найдены", exact=True)).to_be_visible()
+            expect(page.locator("#atk-search")).to_have_value("UNAVAILABLE")
             page.get_by_role("button", name="Сбросить", exact=True).click()
             expect(page.locator("#atk-search")).to_have_value("")
+            expect(page.locator(".registry-invoice-row")).to_have_count(2)
+            expect(base_atk_row.get_by_role("button", name="Ввести в оборот", exact=True)).to_be_visible()
             page.screenshot(path=str(out / "logistics.png"), full_page=True)
             page.get_by_role("button", name="Тёмная тема", exact=True).click()
             page.screenshot(path=str(out / "logistics-dark.png"), full_page=True)
             page.reload()
             page.get_by_role("heading", name="Реестр АТК", exact=True).wait_for()
+            expect(page.locator(".registry-invoice-row")).to_have_count(2)
+            expect(base_atk_row.get_by_role("button", name="Ввести в оборот", exact=True)).to_be_visible()
             assert page.locator("html").get_attribute("data-theme") == "dark"
             page.set_viewport_size({"width": 390, "height": 844})
             page.screenshot(path=str(out / "logistics-mobile.png"), full_page=True)
@@ -796,8 +809,12 @@ with tempfile.TemporaryDirectory() as tmp:
             # Archive choice is an in-session filter; the completed invoice stays out of work.
             expect(page.locator('#atk-table tbody tr:not(.registry-supplier-row):not(.registry-invoice-row)')).to_have_count(1)
             expect(page.locator("#atk-table")).to_contain_text("LOGISTICS-READY-2")
-            second_invoice_group = page.locator(".registry-invoice-row").filter(has_text="Накладная LOGISTICS-READY-2 · 1 АТК")
-            second_atk_row = second_invoice_group.locator("xpath=following-sibling::tr[1]")
+            second_atk_id = test_service.store.one(
+                "SELECT atk_id FROM codes WHERE doc_id=? LIMIT 1", (logistics_doc_2,)
+            )["atk_id"]
+            second_atk_row = page.locator("#atk-table tbody tr").filter(
+                has=page.locator(f'.registry-code[data-id="{second_atk_id}"]')
+            )
             second_atk_row.get_by_role("button", name="Ввести в оборот", exact=True).click()
             expect(page.locator("#modal")).to_contain_text("Ввести в оборот")
             page.locator('#modal [data-action="logistics-complete"]').click()
@@ -1267,3 +1284,4 @@ with tempfile.TemporaryDirectory() as tmp:
     finally:
         process.terminate()
         process.wait(timeout=20)
+
