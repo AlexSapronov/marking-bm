@@ -316,6 +316,10 @@ class Worker:
             "EMITTED" if op["kind"] == "report" else "APPLIED",
             aggregate=op["kind"] != "report",
             parent=parent,
+            allow_tnved_mismatch=op["kind"] == "atk" and bool(self.db.one(
+                "SELECT op_id FROM atk_force_authorizations WHERE op_id=? AND payload_sha=?",
+                (op["id"], op["sha256"]),
+            )),
         )
         if op["kind"] == "transform":
             ci = self.g.info([payload["atk"]])[payload["atk"]]

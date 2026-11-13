@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY,kind TEXT NOT NULL,doc
 CREATE TABLE IF NOT EXISTS introduction_documents(doc_id TEXT PRIMARY KEY REFERENCES documents(id),op_id TEXT NOT NULL REFERENCES operations(id));
 CREATE TABLE IF NOT EXISTS introduction_atks(atk_id TEXT PRIMARY KEY REFERENCES atks(id),op_id TEXT NOT NULL REFERENCES operations(id));
 CREATE TABLE IF NOT EXISTS receipts(id INTEGER PRIMARY KEY,op_id TEXT NOT NULL REFERENCES operations(id),body TEXT NOT NULL,created TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS atk_force_authorizations(op_id TEXT PRIMARY KEY REFERENCES operations(id),payload_sha TEXT NOT NULL,actor TEXT NOT NULL,reason TEXT NOT NULL,created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS operation_attention(op_id TEXT PRIMARY KEY REFERENCES operations(id),resolved_by TEXT NOT NULL,reason TEXT NOT NULL,resolved_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY,doc_id TEXT,group_id TEXT,version INTEGER NOT NULL,kind TEXT NOT NULL,
  name TEXT NOT NULL,content BLOB NOT NULL,sha256 TEXT NOT NULL,snapshot TEXT NOT NULL,created TEXT NOT NULL);

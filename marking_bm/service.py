@@ -121,6 +121,22 @@ class Service:
     def stop_document(self, doc_id, number, actor, admin=False):
         with self.store.transaction() as db:
             d = self.document(db, doc_id, actor, admin)
+            if d["status"] == "cargo_edit" and admin:
+                if number != d["number"]:
+                    raise Conflict("Номер не совпадает. Введите точный номер накладной")
+                if (one(db, "SELECT id FROM lines WHERE doc_id=?", (doc_id,))
+                    or one(db, "SELECT id FROM codes WHERE doc_id=?", (doc_id,))
+                    or one(db, "SELECT doc_id FROM batch_docs WHERE doc_id=?", (doc_id,))
+                    or one(db, "SELECT id FROM operations WHERE doc_id=? AND state NOT IN ('done','rejected','cancelled')", (doc_id,))):
+                    raise Conflict("Архивировать можно только пустую накладную без активных операций")
+                stamp = now()
+                db.execute(
+                    "INSERT INTO document_stops VALUES(?,?,?,?,NULL,NULL) ON CONFLICT(doc_id) DO UPDATE SET actor=excluded.actor,created=excluded.created,previous_status=excluded.previous_status,resumed_at=NULL,resumed_by=NULL",
+                    (doc_id, actor, stamp, d["status"]),
+                )
+                db.execute("UPDATE documents SET status='archive',revision=revision+1,updated=? WHERE id=?", (stamp, doc_id))
+                audit(db, actor, "Пустая накладная после исправления груза убрана в архив", doc_id)
+                return {"id": doc_id, "status": "archive", "stopped": True}
             if d["status"] in ("cargo_breakup", "cargo_edit"):
                 raise Conflict("Завершите исправление состава груза перед архивированием")
             if number != d["number"]:

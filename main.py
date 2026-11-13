@@ -1441,6 +1441,28 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                   op_id, {"reason": body.reason.strip(), "state": op["state"]})
         return {"ok": True, "resolved": body.resolved}
 
+    class ForceAtk(BaseModel):
+        confirm: Literal[True]
+        reason: str = Field(min_length=1, max_length=1000)
+
+    @app.post("/api/admin/operations/{op_id}/force-atk")
+    def force_atk(op_id: str, body: ForceAtk, s=Depends(admin)):
+        if not body.reason.strip():
+            raise Conflict("Укажите причину принудительного формирования АТК")
+        with store.transaction() as db:
+            op = one(db, "SELECT * FROM operations WHERE id=?", (op_id,))
+            if not op or op["kind"] != "atk" or op["state"] != "preflight_blocked" or op["external_id"]:
+                raise Conflict("Режим доступен только для АТК, остановленного до первой отправки")
+            service.require_operation_active(db, op)
+            db.execute(
+                "INSERT OR REPLACE INTO atk_force_authorizations VALUES(?,?,?,?,?)",
+                (op_id, op["sha256"], s["username"], body.reason.strip(), now()),
+            )
+            db.execute("UPDATE operations SET state='queued',error=NULL,updated=? WHERE id=?", (now(), op_id))
+            audit(db, s["username"], "Принудительное формирование АТК: разрешено расхождение ТН ВЭД",
+                  op_id, {"reason": body.reason.strip(), "payload_sha": op["sha256"]})
+        return {"ok": True}
+
     @app.post("/api/admin/operations/{op_id}/check")
     def check(op_id: str, s=Depends(admin)):
         op = store.one("SELECT * FROM operations WHERE id=?", (op_id,))

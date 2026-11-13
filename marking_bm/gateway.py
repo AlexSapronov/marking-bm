@@ -180,7 +180,7 @@ class Gateway:
                 raise ValueError("ЧЗ не вернул все запрошенные КМ")
         return result
 
-    def verify(self, codes, status, *, aggregate=False, parent=None):
+    def verify(self, codes, status, *, aggregate=False, parent=None, allow_tnved_mismatch=False):
         info = self.info([c["cis"] for c in codes])
         for code in codes:
             ci = info[code["cis"]]
@@ -197,7 +197,7 @@ class Gateway:
                     raise ValueError("ЧЗ не разрешает включение КМ в АТК")
                 if ci.get("parent") not in (None, "", parent):
                     raise ValueError("КМ уже входит в другой агрегат")
-                if ci.get("tnVedEaes") != code["tnved"]:
+                if not allow_tnved_mismatch and ci.get("tnVedEaes") != code["tnved"]:
                     actual = ci.get("tnVedEaes")
                     if actual is None or actual == "":
                         received = "не заполнен (ЧЗ не вернул полный код)"
