@@ -43,7 +43,18 @@ class Settings:
         ).rstrip("/")
     )
 
+    receipt_bridge_url: str = field(default_factory=lambda: os.getenv("BM_RECEIPT_BRIDGE_URL", "").rstrip("/"))
+    receipt_bridge_key: str = field(default_factory=lambda: os.getenv("BM_RECEIPT_BRIDGE_KEY", ""))
+
     def __post_init__(self):
+        if self.receipt_bridge_url:
+            p = urlparse(self.receipt_bridge_url)
+            if (p.username or p.password or p.query or p.fragment or p.path not in ("", "/")
+                    or not p.hostname or not (p.scheme == "https" or
+                    p.scheme == "http" and p.hostname in ("127.0.0.1", "::1", "localhost"))):
+                raise ValueError("Приёмка: используйте HTTPS или HTTP на loopback без пути")
+            if len(self.receipt_bridge_key) < 32:
+                raise ValueError("Для приёмки нужен отдельный ключ длиной не менее 32 символов")
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         for url in [self.true_url, self.oms_url]:
             p = urlparse(url)
@@ -84,3 +95,4 @@ class Settings:
         finally:
             if os.path.exists(name):
                 os.unlink(name)
+

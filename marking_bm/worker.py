@@ -90,6 +90,8 @@ class Worker:
         if not self.lock.acquire(blocking=False):
             return
         try:
+            from .receipt_bridge import deliver
+            deliver(self.s, limit=1)
             if time.time() - self.last_token_check > 60:
                 self.last_token_check = time.time()
                 try:
@@ -701,4 +703,5 @@ class Worker:
                 op["doc_id"] or op["group_id"] or op["id"],
                 {"operation": op["id"], "kind": kind, "external_id": op["external_id"]},
             )
+
 
