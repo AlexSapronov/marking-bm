@@ -46,6 +46,8 @@ CREATE INDEX IF NOT EXISTS receipt_backfill_codes_doc ON codes(doc_id);
 CREATE TABLE IF NOT EXISTS assignments(id INTEGER PRIMARY KEY,code_id TEXT NOT NULL REFERENCES codes(id),doc_id TEXT NOT NULL,
  pn TEXT NOT NULL,quantity INTEGER NOT NULL,tnved TEXT NOT NULL,active INTEGER NOT NULL,created TEXT NOT NULL,ended TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_assignment ON assignments(code_id) WHERE active=1;
+CREATE TABLE IF NOT EXISTS cargo_reworks(doc_id TEXT PRIMARY KEY REFERENCES documents(id),group_id TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS cargo_move_permits(code_id TEXT PRIMARY KEY,target_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS document_corrections(doc_id TEXT PRIMARY KEY REFERENCES documents(id),snapshot TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS batches(id TEXT PRIMARY KEY,created TEXT NOT NULL,actor TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS batch_docs(batch_id TEXT NOT NULL REFERENCES batches(id),doc_id TEXT NOT NULL UNIQUE REFERENCES documents(id),supplier_id TEXT NOT NULL,PRIMARY KEY(batch_id,doc_id));
@@ -66,7 +68,13 @@ CREATE TABLE IF NOT EXISTS transformations(id TEXT PRIMARY KEY,atk_id TEXT NOT N
  actor TEXT NOT NULL,state TEXT NOT NULL,reason TEXT,reviewer TEXT,op_id TEXT,created TEXT NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS one_pending_transform ON transformations(atk_id) WHERE state IN ('approval','approved','processing');
 CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,actor TEXT NOT NULL,action TEXT NOT NULL,entity TEXT NOT NULL,detail TEXT NOT NULL,created TEXT NOT NULL);
-CREATE TRIGGER IF NOT EXISTS immutable_applied BEFORE UPDATE OF raw,cis,gtin,serial,source_op,doc_id,pn,quantity,tnved ON codes WHEN OLD.external_status='APPLIED' BEGIN SELECT RAISE(ABORT,'applied code immutable'); END;
+CREATE TRIGGER IF NOT EXISTS immutable_applied BEFORE UPDATE OF raw,cis,gtin,serial,source_op,pn,quantity,tnved ON codes WHEN OLD.external_status='APPLIED' BEGIN SELECT RAISE(ABORT,'applied code immutable'); END;
+CREATE TRIGGER IF NOT EXISTS immutable_applied_document BEFORE UPDATE OF doc_id ON codes
+WHEN OLD.external_status='APPLIED' AND NOT EXISTS (
+ SELECT 1 FROM cargo_move_permits p JOIN documents src ON src.id=OLD.doc_id
+ JOIN documents dst ON dst.id=NEW.doc_id WHERE p.code_id=OLD.id AND p.target_id=NEW.doc_id
+ AND src.status='cargo_edit' AND dst.status='cargo_edit' AND OLD.atk_id IS NULL
+ AND OLD.local_state='applied') BEGIN SELECT RAISE(ABORT,'applied code invoice immutable'); END;
 CREATE TRIGGER IF NOT EXISTS no_delete_codes BEFORE DELETE ON codes BEGIN SELECT RAISE(ABORT,'code history immutable'); END;
 CREATE TRIGGER IF NOT EXISTS no_delete_assignments BEFORE DELETE ON assignments BEGIN SELECT RAISE(ABORT,'assignment history immutable'); END;
 CREATE TRIGGER IF NOT EXISTS immutable_audit_update BEFORE UPDATE ON audit BEGIN SELECT RAISE(ABORT,'immutable audit'); END;
@@ -84,6 +92,8 @@ class Store:
         self.path = str(path)
         with self.connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
+            # Split invoice ownership from immutable applied-code attributes on upgrades.
+            db.execute("DROP TRIGGER IF EXISTS immutable_applied")
             db.executescript(SCHEMA)
             from .receipt_bridge import init_schema
             init_schema(db)

@@ -90,6 +90,8 @@ class Service:
             atk_id = (op.get("op_key") or "").removeprefix("disaggregate:")
             a = one(db, "SELECT id FROM atks WHERE id=?", (atk_id,))
             owners = rows(db, "SELECT DISTINCT doc_id FROM codes WHERE atk_id=?", (atk_id,))
+            if one(db, "SELECT doc_id FROM cargo_reworks WHERE group_id IN (SELECT batch_id||':'||supplier_id FROM atks WHERE id=?)", (atk_id,)):
+                return bool(one(db, "SELECT r.doc_id FROM receipt_deliveries r JOIN cargo_reworks c ON c.doc_id=r.doc_id WHERE c.group_id IN (SELECT batch_id||':'||supplier_id FROM atks WHERE id=?) AND r.state!='revoked' AND (? OR r.warehouse_id IS NOT NULL)", (atk_id, bool(self.settings.receipt_bridge_url))))
             return not a or not owners or any(
                 not self.document_stopped(db, x["doc_id"]) for x in owners
             )
@@ -109,6 +111,8 @@ class Service:
         )
 
     def require_operation_active(self, db, op):
+        if op.get("kind") != "disaggregate" and op.get("group_id") and one(db, "SELECT doc_id FROM cargo_reworks WHERE group_id=?", (op["group_id"],)):
+            raise Conflict("Идёт исправление состава груза")
         if self.operation_stopped(db, op):
             raise Conflict(
                 "Обработка остановлена. Вернуть накладную из архива может только администратор"
@@ -117,6 +121,8 @@ class Service:
     def stop_document(self, doc_id, number, actor, admin=False):
         with self.store.transaction() as db:
             d = self.document(db, doc_id, actor, admin)
+            if d["status"] in ("cargo_breakup", "cargo_edit"):
+                raise Conflict("Завершите исправление состава груза перед архивированием")
             if number != d["number"]:
                 raise Conflict("Номер не совпадает. Введите точный номер накладной")
             if self.document_stopped(db, doc_id):
@@ -986,7 +992,7 @@ class Service:
 
     def queue(self, db, kind, key, payload, doc_id=None, group_id=None):
         if kind == "disaggregate":
-            if not doc_id or not self.document_stopped(db, doc_id):
+            if not doc_id or not (self.document_stopped(db, doc_id) or one(db, "SELECT doc_id FROM cargo_reworks WHERE doc_id=?", (doc_id,))):
                 raise Conflict("Расформирование АТК допускается только при остановке накладной")
         else:
             self.require_operation_active(
@@ -1202,7 +1208,7 @@ class Service:
             raise
         return self.get(doc_id, actor, admin)
 
-    def prepare_labels(self, db, doc_id, *, exact_assignments=False):
+    def prepare_labels(self, db, doc_id, *, exact_assignments=False, applied=False):
         if self.document_stopped(db, doc_id):
             return
         d = one(db, "SELECT * FROM documents WHERE id=?", (doc_id,))
@@ -1211,9 +1217,9 @@ class Service:
         if len(cs) != sum(l["labels"] for l in ls):
             return
         correction = one(db, "SELECT doc_id FROM document_corrections WHERE doc_id=?", (doc_id,))
-        if any(c["external_status"] not in (("EMITTED", "APPLIED") if correction else ("EMITTED",)) for c in cs):
+        if any(c["external_status"] not in (("EMITTED", "APPLIED") if correction or applied else ("EMITTED",)) for c in cs):
             raise Conflict("Недопустимый статус КМ")
-        if correction:
+        if correction or applied:
             exact_assignments = True
         buckets = defaultdict(list)
         for c in cs:
@@ -1310,15 +1316,124 @@ class Service:
     def _line_key(item):
         return (item["pn"], item["gtin"], item["quantity"], item["tnved"])
 
+    def rename_document(self, doc_id, number, revision, actor):
+        number = number.strip()
+        if not number or len(number) > 120:
+            raise ValueError("Укажите номер накладной до 120 символов")
+        with self.store.transaction() as db:
+            d = self.document(db, doc_id, actor, True)
+            if d["revision"] != revision:
+                raise Conflict("Накладная изменилась. Обновите страницу")
+            if d["status"] not in ("draft", "ready", "transferred", "cargo_edit", "done"):
+                raise Conflict("Дождитесь завершения текущей операции")
+            if self.document_stopped(db, doc_id):
+                raise Conflict("Накладная остановлена")
+            batch = one(db, "SELECT * FROM batch_docs WHERE doc_id=?", (doc_id,))
+            if d["status"] == "done":
+                if not batch:
+                    raise Conflict("Не найдена партия накладной")
+                group = batch["batch_id"] + ":" + batch["supplier_id"]
+                self.require_operation_active(db, {"group_id": group})
+                for a in rows(db, "SELECT id FROM atks WHERE batch_id=? AND supplier_id=?", (batch["batch_id"], batch["supplier_id"])):
+                    self.require_atk_not_introducing(db, a["id"])
+                if one(db, "SELECT id FROM operations WHERE group_id=? AND state NOT IN ('done','rejected','cancelled')", (group,)):
+                    raise Conflict("Дождитесь завершения операций группы")
+            db.execute("UPDATE documents SET number=?,revision=revision+1,updated=? WHERE id=?", (number, now(), doc_id))
+            if d["status"] == "done":
+                self.exports(db, batch["batch_id"], batch["supplier_id"])
+            audit(db, actor, "Изменён номер накладной", doc_id, {"before": d["number"], "after": number})
+        return {"ok": True}
+
+    def cargo_rework(self, doc_id, number, actor):
+        """Disaggregate the entire batch/supplier group; never undo application."""
+        with self.store.transaction() as db:
+            d = self.document(db, doc_id, actor, True)
+            if d["number"] != number or d["status"] != "done":
+                raise Conflict("Проверьте номер и готовность накладной")
+            b = one(db, "SELECT * FROM batch_docs WHERE doc_id=?", (doc_id,))
+            if not b:
+                raise Conflict("Партия накладной не найдена")
+            group = b["batch_id"] + ":" + b["supplier_id"]
+            docs = rows(db, "SELECT d.* FROM documents d JOIN batch_docs b ON b.doc_id=d.id WHERE b.batch_id=? AND b.supplier_id=?", (b["batch_id"], b["supplier_id"]))
+            atks = rows(db, "SELECT * FROM atks WHERE batch_id=? AND supplier_id=?", (b["batch_id"], b["supplier_id"]))
+            ids = {x["id"] for x in docs}
+            if not atks or any(x["status"] != "done" or x["parent_id"] or self.document_stopped(db, x["id"]) for x in docs):
+                raise Conflict("Все накладные общей группы должны быть готовы и активны, без дополнений")
+            if one(db, "SELECT id FROM operations WHERE group_id=? AND state NOT IN ('done','rejected','cancelled')", (group,)):
+                raise Conflict("Есть незавершённые операции группы")
+            for a in atks:
+                self.require_atk_not_introducing(db, a["id"])
+                if a["state"] != "done" or one(db, "SELECT id FROM transformations WHERE atk_id=?", (a["id"],)):
+                    raise Conflict("АТК не готов или имеет трансформации; требуется отдельная сверка")
+                cs = rows(db, "SELECT * FROM codes WHERE atk_id=?", (a["id"],))
+                if not cs or any(c["doc_id"] not in ids or c["external_status"] != "APPLIED" for c in cs):
+                    raise Conflict("Состав АТК выходит за пределы группы")
+            if any(c["atk_id"] not in {a["id"] for a in atks} for x in docs for c in rows(db, "SELECT atk_id FROM codes WHERE doc_id=?", (x["id"],))):
+                raise Conflict("Есть КМ вне АТК группы")
+            for x in docs:
+                db.execute("INSERT INTO cargo_reworks VALUES(?,?)", (x["id"], group))
+                db.execute("UPDATE documents SET status='cargo_breakup',revision=revision+1,updated=? WHERE id=?", (now(), x["id"]))
+                from .receipt_bridge import enqueue, enqueue_revoke
+                if not one(db, "SELECT doc_id FROM receipt_deliveries WHERE doc_id=?", (x["id"],)):
+                    enqueue(db, self.config(), [x], rows(db, "SELECT * FROM codes WHERE doc_id=?", (x["id"],)))
+                enqueue_revoke(db, x["id"])
+                audit(db, actor, "Запрошено исправление состава груза", x["id"], {"group": group, "documents": sorted(ids)})
+            jobs = [self.queue(db, "disaggregate", "disaggregate:" + a["id"], {"trade_participant_inn": self.config()["inn"], "products_list": [{"atk": a["code"]}]}, doc_id=doc_id) for a in atks]
+            return {"documents": [{"id": x["id"], "number": x["number"]} for x in docs], "operations": jobs}
+
+    def finish_cargo_breakup(self, db, a):
+        group = a["batch_id"] + ":" + a["supplier_id"]
+        if not one(db, "SELECT doc_id FROM cargo_reworks WHERE group_id=?", (group,)):
+            return
+        if one(db, "SELECT id FROM atks WHERE batch_id=? AND supplier_id=? AND state!='disaggregated'", (a["batch_id"], a["supplier_id"])):
+            return
+        if self.settings.receipt_bridge_url and one(db, "SELECT r.doc_id FROM receipt_deliveries r JOIN cargo_reworks c ON c.doc_id=r.doc_id WHERE c.group_id=? AND r.state!='revoked'", (group,)):
+            return
+        for x in rows(db, "SELECT doc_id FROM cargo_reworks WHERE group_id=?", (group,)):
+            db.execute("DELETE FROM batch_docs WHERE doc_id=?", (x["doc_id"],))
+            db.execute("UPDATE documents SET status='cargo_edit',completed=NULL,updated=? WHERE id=?", (now(), x["doc_id"]))
+            audit(db, "system", "АТК расформированы; разрешён перенос целых строк", x["doc_id"], {"group": group})
+
+    def rebuild_cargo(self, doc_id, actor):
+        with self.store.read() as db:
+            d = self.document(db, doc_id, actor, True)
+            cs = rows(db, "SELECT * FROM codes WHERE doc_id=?", (doc_id,))
+        if d["status"] != "cargo_edit" or not cs:
+            raise Conflict("Выберите исправленную накладную с КМ")
+        self.gateway.verify(cs, "APPLIED", aggregate=True)
+        with self.store.transaction() as db:
+            current = self.document(db, doc_id, actor, True)
+            if current["status"] != "cargo_edit" or current["revision"] != d["revision"]:
+                raise Conflict("Состав изменился. Повторите действие")
+            current_codes = rows(db, "SELECT * FROM codes WHERE doc_id=?", (doc_id,))
+            expected = Counter()
+            for line in rows(db, "SELECT * FROM lines WHERE doc_id=?", (doc_id,)):
+                expected[self._line_key(line)] += line["labels"]
+            if (Counter(self._line_key(c) for c in current_codes) != expected
+                or {c["id"] for c in cs} != {c["id"] for c in current_codes}
+                or any(c["external_status"] != "APPLIED" or c["local_state"] != "applied"
+                       or c["atk_id"] is not None or not c["reuse_allowed"] for c in current_codes)):
+                raise Conflict("КМ не совпадают со строками или недоступны для агрегации")
+            batch = uid()
+            db.execute("INSERT INTO batches VALUES(?,?,?)", (batch, now(), actor))
+            db.execute("INSERT INTO batch_docs VALUES(?,?,?)", (batch, doc_id, d["supplier_id"]))
+            db.execute("DELETE FROM cargo_reworks WHERE doc_id=?", (doc_id,))
+            db.execute("UPDATE documents SET status='reported',updated=? WHERE id=?", (now(), doc_id))
+            self.create_atks(db)
+            audit(db, actor, "Повторное формирование АТК без отчёта о нанесении", doc_id, {"batch": batch, "codes": len(cs)})
+        return {"ok": True}
+
     def move_line_targets(self, source_id, actor, admin=False):
         with self.store.read() as db:
             src = self.document(db, source_id, actor, admin)
             query = (
                 "SELECT d.id,d.number,d.status,d.owner,d.revision FROM documents d "
                 "WHERE d.supplier_id=? AND d.id!=? AND d.status IN "
-                "('draft','ready','transferred') ORDER BY d.number,d.id"
+                "('draft','ready','transferred','cargo_edit') ORDER BY d.number,d.id"
             )
             candidates = rows(db, query, (src["supplier_id"], source_id))
+            allowed = ("draft", "cargo_edit") if admin and src["status"] == "cargo_edit" else ("draft", "ready", "transferred")
+            candidates = [d for d in candidates if d["status"] in allowed]
             if not admin:
                 candidates = [d for d in candidates if d["owner"] == actor]
             return candidates
@@ -1334,9 +1449,12 @@ class Service:
             raise Conflict("Перенос допускается только между накладными одного поставщика")
         if src["parent_id"] or dst["parent_id"]:
             raise Conflict("Дополнения к накладным требуют отдельного процесса")
-        if src["status"] not in ("ready", "transferred"):
+        cargo = src["status"] == "cargo_edit"
+        if cargo and not admin:
+            raise PermissionError("Исправление состава груза доступно только администратору")
+        if src["status"] not in ("ready", "transferred", "cargo_edit"):
             raise Conflict("Накладная-источник должна быть на этапе этикеток или нанесения")
-        if dst["status"] not in ("draft", "ready", "transferred"):
+        if dst["status"] not in (("draft", "cargo_edit") if cargo else ("draft", "ready", "transferred")):
             raise Conflict("Получатель уже находится в обработке")
         for document in (src, dst):
             if self.document_stopped(db, document["id"]):
@@ -1345,7 +1463,7 @@ class Service:
                 raise Conflict("По накладной уже создана партия для отчёта/АТК")
             ops = rows(db, "SELECT kind,state,external_id FROM operations WHERE doc_id=?", (document["id"],))
             if any(
-                o["kind"] in ("report", "atk", "transform")
+                (not cargo and o["kind"] in ("report", "atk", "transform"))
                 or o["state"] not in ("done", "cancelled")
                 or (o["state"] == "cancelled" and o["external_id"])
                 for o in ops
@@ -1378,8 +1496,8 @@ class Service:
             if by_tuple != lines_by_tuple:
                 raise Conflict("Назначения КМ не соответствуют PN, GTIN, количеству и ТН ВЭД")
             if any(
-                c["external_status"] != "EMITTED"
-                or c["local_state"] != "reserved"
+                c["external_status"] != ("APPLIED" if cargo else "EMITTED")
+                or c["local_state"] != ("applied" if cargo else "reserved")
                 or c["atk_id"] is not None
                 or c["reuse_allowed"] != 1
                 for c in codes
@@ -1433,6 +1551,7 @@ class Service:
         if check["errors"]:
             raise Conflict("Итоговый состав получателя не прошёл проверку", check)
         plan = {
+            "cargo": cargo,
             "source": {"id": src["id"], "number": src["number"],
                        "revision": src["revision"]},
             "target": {"id": dst["id"], "number": dst["number"],
@@ -1492,9 +1611,9 @@ class Service:
             },
             "remaining_lines": len(plan["remaining"]),
             "fingerprint": plan["fingerprint"],
-            "warning": "Пересоздаются версии этикеток обеих накладных. "
+            "warning": ("Переносятся целые строки с нанесёнными КМ. Количество и фасовка КМ не меняются. После переноса сформируйте АТК для каждой накладной." if plan["cargo"] else "Пересоздаются версии этикеток обеих накладных. "
                        "Ранее переданные поставщику PDF становятся неактуальными. "
-                       "После переноса подтвердите передачу новых этикеток.",
+                       "После переноса подтвердите передачу новых этикеток."),
         }
 
     def move_lines(self, source_id, target_id, line_ids, fingerprint, actor, admin=False):
@@ -1504,11 +1623,13 @@ class Service:
             raise Conflict("Состав накладных изменился. Повторите предпросмотр")
         # Read-only external verification before write lock, no new emissions.
         if initial["codes_for_verification"]:
-            self.gateway.verify(initial["codes_for_verification"], "EMITTED")
+            self.gateway.verify(initial["codes_for_verification"], "APPLIED" if initial["cargo"] else "EMITTED", aggregate=initial["cargo"])
         with self.store.transaction() as db:
             plan = self._line_move_plan(db, source_id, target_id, line_ids, actor, admin)
             if plan["fingerprint"] != fingerprint:
                 raise Conflict("КМ или строки изменились во время проверки ЧЗ. Повторите перенос")
+            if plan["cargo"]:
+                return self._move_applied_lines(db, plan, source_id, target_id, line_ids, actor)
             selected_ids = set(line_ids)
             stamp = now()
             moved_codes = set(plan["code_ids"])
@@ -1565,6 +1686,27 @@ class Service:
             audit(db, actor, "Получены строки и КМ из другой накладной", target_id, summary)
         return {"ok": True, "source_id": source_id, "target_id": target_id,
                 "codes": len(moved_codes), "lines": len(line_ids)}
+
+    def _move_applied_lines(self, db, plan, source_id, target_id, line_ids, actor):
+        # A short-lived permit narrows the DB exception to these exact codes.
+        db.execute("UPDATE documents SET status='cargo_edit' WHERE id=?", (target_id,))
+        for code_id in plan["code_ids"]:
+            db.execute("INSERT INTO cargo_move_permits VALUES(?,?)", (code_id, target_id))
+            db.execute("UPDATE codes SET doc_id=? WHERE id=?", (target_id, code_id))
+            db.execute("DELETE FROM cargo_move_permits WHERE code_id=?", (code_id,))
+            c = one(db, "SELECT * FROM codes WHERE id=?", (code_id,))
+            db.execute("UPDATE assignments SET active=0,ended=? WHERE code_id=? AND active=1", (now(), code_id))
+            db.execute("INSERT INTO assignments(code_id,doc_id,pn,quantity,tnved,active,created) VALUES(?,?,?,?,?,1,?)", (code_id, target_id, c["pn"], c["quantity"], c["tnved"], now()))
+        for line_id in line_ids:
+            db.execute("UPDATE lines SET doc_id=? WHERE id=? AND doc_id=?", (target_id, line_id, source_id))
+        for i in (source_id, target_id):
+            if one(db, "SELECT id FROM codes WHERE doc_id=? LIMIT 1", (i,)):
+                self.prepare_labels(db, i, exact_assignments=True, applied=True)
+            else:
+                db.execute("UPDATE documents SET current_version=current_version+1 WHERE id=?", (i,))
+            db.execute("UPDATE documents SET status='cargo_edit',revision=revision+1,updated=? WHERE id=?", (now(), i))
+            audit(db, actor, "Перенесены целые строки с нанесёнными КМ", i, {"from": source_id, "to": target_id, "code_ids": plan["code_ids"], "lines": line_ids})
+        return {"ok": True, "source_id": source_id, "target_id": target_id, "codes": len(plan["code_ids"]), "lines": len(line_ids)}
 
     def transferred(self, doc_id, actor, version, admin=False):
         with self.store.transaction() as db:
@@ -2096,6 +2238,8 @@ class Service:
         their APPLIED children may, however, be added to another valid ATK.
         A normal removal or a merely queued disaggregation never qualifies.
         """
+        if one(db, "SELECT id FROM documents WHERE id=? AND status IN ('cargo_breakup','cargo_edit')", (code["doc_id"],)):
+            return False
         if not self.document_stopped(db, code["doc_id"]):
             return True
         if (code["atk_id"] is not None or code["local_state"] != "applied"
@@ -2381,6 +2525,7 @@ class Service:
             (a["id"],),
         )
         held = self.group_stopped(db, group)
+        rework = one(db, "SELECT doc_id FROM cargo_reworks WHERE group_id=?", (group,))
         error = (
             ("Обработка остановлена: накладная " + held["number"])
             if held
@@ -2397,6 +2542,9 @@ class Service:
                 else ("done" if a["state"] == "done" else "processing")
             )
         )
+        if rework or a["state"] == "disaggregated":
+            state = "stopped"
+            current = []
         group_pending = one(
             db,
             "SELECT x.id FROM atks x JOIN operations o ON o.id=x.op_id "
@@ -2458,7 +2606,7 @@ class Service:
         # Whole ATKs must be sent as declared to FTS. Include all connected
         # invoices and sibling ATKs, including supplements from other batches.
         doc_ids, selected = {doc_id}, {}
-        summaries = [(a, self._logistics_summary(db, a)) for a in rows(db, "SELECT * FROM atks")]
+        summaries = [(a, self._logistics_summary(db, a)) for a in rows(db, "SELECT * FROM atks WHERE state!='disaggregated'")]
         while True:
             previous = (len(doc_ids), len(selected))
             for a, summary in summaries:

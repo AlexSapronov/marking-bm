@@ -429,6 +429,25 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
     def get(doc_id: str, s=Depends(manager)):
         return service.get(doc_id, s["username"], s["admin"])
 
+    class RenameDocument(BaseModel):
+        number: str = Field(min_length=1, max_length=120)
+        revision: int
+
+    class CargoRework(BaseModel):
+        number: str = Field(min_length=1, max_length=120)
+
+    @app.post("/api/admin/documents/{doc_id}/rename")
+    def rename_document(doc_id: str, body: RenameDocument, s=Depends(admin)):
+        return service.rename_document(doc_id, body.number, body.revision, s["username"])
+
+    @app.post("/api/admin/documents/{doc_id}/cargo-rework")
+    def cargo_rework(doc_id: str, body: CargoRework, s=Depends(admin)):
+        return service.cargo_rework(doc_id, body.number, s["username"])
+
+    @app.post("/api/admin/documents/{doc_id}/rebuild-cargo")
+    def rebuild_cargo(doc_id: str, s=Depends(admin)):
+        return service.rebuild_cargo(doc_id, s["username"])
+
     class Lines(BaseModel):
         rows: list
         revision: int = 0
