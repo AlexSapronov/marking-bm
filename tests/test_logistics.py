@@ -542,3 +542,31 @@ def test_fts_requires_explicit_matching_tnved_for_every_code(env, problem):
         assert op["state"] == "preflight_blocked"
         assert "ТН ВЭД" in op["error"] and not op["external_id"]
         assert s.get(ids[0], "alice")["status"] == "done"
+
+
+def test_disaggregated_atks_hidden_after_confirmation_but_history_retained(env):
+    app, service, _ = env
+    docs, logist, _ = prepare_atks(env)
+    source = docs[0]
+    original = logist.get("/api/logistics/atks").json()
+    old = next(a for a in original if source in {d["id"] for d in a["documents"]})
+    other = next(a for a in original if a["id"] != old["id"])
+    service.cargo_rework(source, "AL-100", "administrator")
+    # Pending and failed disaggregation must remain visible for recovery.
+    assert old["id"] in {a["id"] for a in logist.get("/api/logistics/atks").json()}
+    with service.store.transaction() as db:
+        db.execute("UPDATE operations SET error='temporary failure' WHERE op_key=?", ("disaggregate:" + old["id"],))
+    assert old["id"] in {a["id"] for a in logist.get("/api/logistics/atks").json()}
+    advance(app)
+    assert service.store.one("SELECT state FROM atks WHERE id=?", (old["id"],))["state"] == "disaggregated"
+    assert [a["id"] for a in logist.get("/api/logistics/atks").json()] == [other["id"]]
+    for query in ["q=" + old["code"], "status=stopped", "archive=true"]:
+        assert old["id"] not in {a["id"] for a in logist.get("/api/logistics/atks?" + query).json()}
+    assert logist.get("/api/logistics/atks/" + old["id"]).status_code == 200
+    assert service.store.one("SELECT atk_id FROM atk_versions WHERE atk_id=?", (old["id"],))
+    # The replacement aggregate is visible; the previous version stays hidden.
+    service.rebuild_cargo(source, "administrator")
+    advance(app)
+    current = logist.get("/api/logistics/atks").json()
+    assert len(current) == 2
+    assert old["id"] not in {a["id"] for a in current}
