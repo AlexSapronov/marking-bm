@@ -48,7 +48,7 @@ def codes_xls(items):
     strings = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
                '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
                f'count="{len(items) * 3}" uniqueCount="{len(values)}">'
-               + ''.join(f'<si><t xml:space="preserve">{_excel_text(v)}</t></si>' for v in values)
+               + ''.join(f'<si><t>{_excel_text(v)}</t></si>' for v in values)
                + '</sst>')
     sheet_data = '<sheetData>' + ''.join(
         f'<row r="{n}" spans="1:3" x14ac:dyDescent="0.25">'
