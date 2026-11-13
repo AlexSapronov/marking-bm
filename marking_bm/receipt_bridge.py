@@ -170,12 +170,24 @@ def enqueue(db, config, documents, codes, historical=False):
         )
 
 
+def enqueue_revoke(db, doc_id):
+    job = db.execute("SELECT * FROM receipt_deliveries WHERE doc_id=?", (doc_id,)).fetchone()
+    if not job:
+        return
+    previous = json.loads(job["payload"])
+    body = {"source_instance": previous["source_instance"], "source_document": doc_id,
+            "revision": job["revision"] + 1, "reason": "Расформирование АТК администратором",
+            "action": "revoke", "receipt": previous.get("receipt", previous)}
+    db.execute("UPDATE receipt_deliveries SET revision=?,payload=?,state='pending',historical=0,attempts=0,next_attempt=0,error=NULL,updated=? WHERE doc_id=?",
+               (body["revision"], dumps(body), now(), doc_id))
+
+
 def deliver(service, transport=None, limit=10):
     settings, store = service.settings, service.store
     if not settings.receipt_bridge_url:
         return
     jobs = store.all(
-        "SELECT r.* FROM receipt_deliveries r WHERE r.state NOT IN ('delivered','matched','skipped') AND r.next_attempt<=? "
+        "SELECT r.* FROM receipt_deliveries r WHERE r.state NOT IN ('delivered','matched','skipped','revoked') AND r.next_attempt<=? "
         "AND NOT EXISTS (SELECT 1 FROM document_stops s WHERE s.doc_id=r.doc_id AND s.resumed_at IS NULL) "
         "AND NOT EXISTS (SELECT 1 FROM codes c JOIN atks a ON a.id=c.atk_id "
         "JOIN group_stops h ON h.group_id=a.batch_id||':'||a.supplier_id "
@@ -187,6 +199,7 @@ def deliver(service, transport=None, limit=10):
         timeout=15, transport=transport, trust_env=False, follow_redirects=False
     ) as client:
         for job in jobs:
+            revoking = json.loads(job["payload"]).get("action") == "revoke"
             with store.read() as db:
                 if service.document_stopped(db, job["doc_id"]):
                     continue
@@ -220,7 +233,7 @@ def deliver(service, transport=None, limit=10):
                         continue
                 response = client.post(
                     settings.receipt_bridge_url
-                    + "/api/integrations/marking-bm/receipts",
+                    + ("/api/integrations/marking-bm/receipts/revoke" if revoking else "/api/integrations/marking-bm/receipts"),
                     headers={
                         "X-Receipt-Bridge-Key": settings.receipt_bridge_key,
                         "Content-Type": "application/json",
@@ -255,12 +268,14 @@ def deliver(service, transport=None, limit=10):
                     or not isinstance(result.get("document_id"), str)
                     or not result["document_id"]
                     or result.get("status")
-                    not in ("created", "updated", "unchanged", "matched")
+                    not in (("revoked",) if revoking else ("created", "updated", "unchanged", "matched"))
                 ):
                     raise ValueError(
                         "gis-trueapi не подтвердил сохранение нужной версии"
                     )
                 warehouse_id = result["document_id"]
+                if revoking:
+                    delivery_state = "revoked"
                 if result["status"] == "matched":
                     delivery_state = "matched"
             except httpx.HTTPError:
@@ -286,3 +301,11 @@ def deliver(service, transport=None, limit=10):
                         job["revision"],
                     ),
                 )
+
+            if not error and revoking:
+                with store.transaction() as db:
+                    group = db.execute("SELECT group_id FROM cargo_reworks WHERE doc_id=?", (job["doc_id"],)).fetchone()
+                    if group:
+                        a = db.execute("SELECT * FROM atks WHERE batch_id||':'||supplier_id=? LIMIT 1", (group["group_id"],)).fetchone()
+                        if a:
+                            service.finish_cargo_breakup(db, dict(a))

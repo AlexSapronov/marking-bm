@@ -638,6 +638,7 @@ class Worker:
                 audit(db, "system", "АТК расформирован в ЧЗ после остановки накладных",
                       atk_id, {"operation": op["id"], "atk_code": a["code"],
                                "codes": len(cs)})
+                self.s.finish_cargo_breakup(db, a)
             elif kind == "transform":
                 adding = payload["transformation_type"] == "ADDING"
                 if any(
