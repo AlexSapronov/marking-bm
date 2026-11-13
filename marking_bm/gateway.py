@@ -198,7 +198,20 @@ class Gateway:
                 if ci.get("parent") not in (None, "", parent):
                     raise ValueError("КМ уже входит в другой агрегат")
                 if ci.get("tnVedEaes") != code["tnved"]:
-                    raise ValueError("ЧЗ не подтвердил полный ТН ВЭД для КМ")
+                    actual = ci.get("tnVedEaes")
+                    if actual is None or actual == "":
+                        received = "не заполнен (ЧЗ не вернул полный код)"
+                    elif isinstance(actual, str):
+                        received = repr(actual[:80])
+                    else:
+                        received = f"{str(actual)[:80]} (тип {type(actual).__name__})"
+                    raise ValueError(
+                        "ЧЗ не подтвердил полный ТН ВЭД для КМ. "
+                        f"PN: {code.get('pn') or 'не указан'}; GTIN: {code['gtin']}; "
+                        f"в накладной: {code['tnved']}; в ЧЗ: {received}. "
+                        "Сверьте ТН ВЭД карточки товара и конкретного КМ в ЧЗ. "
+                        "После исправления повторите предпроверку; новый заказ КМ не требуется."
+                    )
         return info
 
     @staticmethod
