@@ -910,6 +910,8 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             ),
             "suppliers": store.all("SELECT * FROM suppliers ORDER BY name"),
             "config": service.config(),
+            "receipt_bridge_enabled": bool(settings.receipt_bridge_url),
+            "receipt_deliveries": store.all("SELECT r.doc_id,d.number,r.revision,r.state,r.warehouse_id,r.error,r.updated FROM receipt_deliveries r JOIN documents d ON d.id=r.doc_id ORDER BY r.updated DESC"),
             "writes_enabled": settings.send_enabled,
             "signer_configured": bool(
                 settings.signer_token and settings.signer_thumbprint
@@ -1636,4 +1638,5 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
 
 
 app = create_app()
+
 

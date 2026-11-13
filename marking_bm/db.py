@@ -84,6 +84,8 @@ class Store:
         with self.connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(SCHEMA)
+            from .receipt_bridge import SCHEMA as RECEIPT_SCHEMA
+            db.execute(RECEIPT_SCHEMA)
             if "last_error" not in {
                 r[1] for r in db.execute("PRAGMA table_info(documents)")
             }:
@@ -198,4 +200,5 @@ def audit(db, actor, action, entity, detail=None):
         "INSERT INTO audit(actor,action,entity,detail,created) VALUES(?,?,?,?,?)",
         (actor, action, entity, dumps(detail or {}), now()),
     )
+
 

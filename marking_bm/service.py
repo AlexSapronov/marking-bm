@@ -2070,6 +2070,8 @@ class Service:
                 version=ver,
                 snapshot={"documents": [d["id"] for d in docs], "codes": ids},
             )
+        from .receipt_bridge import enqueue
+        enqueue(db, self.config(), docs, codes)
         for d in docs:
             db.execute(
                 "UPDATE documents SET status=CASE WHEN status='archive' THEN status ELSE 'done' END,completed=COALESCE(completed,?),updated=? WHERE id=?",
@@ -2611,4 +2613,5 @@ class Service:
                     filenames.add(unique_name)
                     archive.writestr(unique_name, content)
         return (buf.getvalue(), filename) if with_filename else buf.getvalue()
+
 
