@@ -244,7 +244,7 @@ def deliver(service, transport=None, limit=10):
                     # Only local controlled messages; never persist an HTML proxy page or request data.
                     messages = {
                         403: "Проверьте ключ подключения",
-                        409: "Связанная приёмка уже запущена, изменена, удалена или в архиве; требуется разбор в gis-trueapi",
+                        409: "Конфликт идентификатора или версии приёмки; проверьте обновление gis-trueapi и журнал интеграции",
                         422: "Проверьте ИНН организации, PN и состав КМ",
                         413: "Состав превышает допустимый размер",
                     }
