@@ -883,6 +883,18 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             )
         return download(data, filename, "application/zip")
 
+    @app.post("/api/admin/receipt-deliveries/{doc_id}/retry")
+    def retry_receipt_delivery(doc_id: str, s=Depends(admin)):
+        with store.transaction() as db:
+            job = one(db, "SELECT revision,state FROM receipt_deliveries WHERE doc_id=?", (doc_id,))
+            if not job:
+                raise ValueError("Задание передачи не найдено")
+            if job["state"] not in ("pending", "error"):
+                raise Conflict("Передача уже завершена. Обновите страницу")
+            db.execute("UPDATE receipt_deliveries SET state='pending',next_attempt=0,error=NULL,updated=? WHERE doc_id=?", (now(), doc_id))
+            audit(db, s["username"], "Запрошен повтор передачи на склад", doc_id, {"revision": job["revision"]})
+        return {"ok": True}
+
     @app.get("/api/admin/overview")
     def overview(s=Depends(admin)):
         usage = shutil.disk_usage(settings.data_dir)

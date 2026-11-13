@@ -365,3 +365,19 @@ def test_historical_introduction_started_after_discovery_is_skipped(env):
     assert all(
         j["state"] == "skipped" for j in s.store.all("SELECT * FROM receipt_deliveries")
     )
+
+
+def test_admin_retry_preserves_payload_and_revision(env):
+    from conftest import client
+    app, s, _ = env
+    ids = prepare(env)
+    doc = ids[0]
+    with s.store.transaction() as db:
+        db.execute("UPDATE receipt_deliveries SET state='error',next_attempt=9999999999,error='HTTP 409' WHERE doc_id=?", (doc,))
+    before = s.store.one('SELECT * FROM receipt_deliveries WHERE doc_id=?', (doc,))
+    url = f'/api/admin/receipt-deliveries/{doc}/retry'
+    assert client(app).post(url, json={}).status_code == 403
+    assert client(app, admin=True).post(url, json={}).status_code == 200
+    after = s.store.one('SELECT * FROM receipt_deliveries WHERE doc_id=?', (doc,))
+    assert after['revision'] == before['revision'] and after['payload'] == before['payload']
+    assert after['state'] == 'pending' and after['next_attempt'] == 0 and after['error'] is None
