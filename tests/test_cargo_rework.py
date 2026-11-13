@@ -34,6 +34,12 @@ def test_rework_move_applied_and_rebuild_without_new_codes(env):
     with pytest.raises(sqlite3.IntegrityError):
         with s.store.transaction() as db:
             db.execute('UPDATE codes SET doc_id=? WHERE doc_id=?', (source, target))
+    assert manager.post(f'/api/documents/{source}/stop', json={'number':'STOP-001'}).status_code == 409
+    assert admin.post(f'/api/documents/{source}/stop', json={'number':'wrong'}).status_code == 409
+    assert admin.post(f'/api/documents/{target}/stop', json={'number':'TARGET'}).status_code == 409
+    assert admin.post(f'/api/documents/{source}/stop', json={'number':'STOP-001'}).status_code == 200
+    assert s.get(source, 'alice')['status'] == 'archive'
+    assert s.store.all('SELECT * FROM codes ORDER BY id') == after
     current = s.get(target, 'alice')
     assert admin.post(f'/api/admin/documents/{target}/rename', json={'number':'CORRECT','revision':current['revision']}).status_code == 200
     assert manager.post(f'/api/documents/{target}/lines', json={'rows':[], 'revision':0}).status_code == 409
