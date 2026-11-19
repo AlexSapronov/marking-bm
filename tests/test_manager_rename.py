@@ -385,40 +385,53 @@ def test_manager_cannot_rename_when_group_stopped(env):
 
 
 def test_manager_cannot_rename_when_intermediate_ancestor_group_stopped(env):
-    # A grandchild supplement must inherit the stop state of its immediate
-    # parent group, not only the oldest/root invoice group.
+    # A grandchild supplement must inherit a group stop caused by a sibling
+    # supplement in its immediate parent's batch, not only the root invoice.
     app, s, _ = env
     root = reported_no_atk(env, number="ROOT-REPORTED")
     middle = s.create("alice", "MIDDLE-SUPPLEMENT", "ignored", parent_id=root)
-    s.save_lines(
-        middle, "alice", [["PN-A", GTIN, 7, 2, TN]], current_revision(s, middle)
-    )
+    sibling = s.create("alice", "SIBLING-SUPPLEMENT", "ignored", parent_id=root)
+    for doc in (middle, sibling):
+        s.save_lines(
+            doc, "alice", [["PN-A", GTIN, 7, 2, TN]], current_revision(s, doc)
+        )
 
     # Keep the root invoice at reported without an ATK while the intermediate
-    # supplement is processed, so only the intermediate group is stopped.
+    # supplement group is processed, so only the intermediate group is stopped.
     real_create_atks = s.create_atks
     s.create_atks = lambda db: None
     try:
-        s.order(middle, "alice")
+        for doc in (middle, sibling):
+            s.order(doc, "alice")
         advance(app)
-        s.transferred(middle, "alice", 1)
-        s.batch("alice", [middle], "2026-01-01")
+        for doc in (middle, sibling):
+            s.transferred(doc, "alice", 1)
+        s.batch("alice", [middle, sibling], "2026-01-01")
         advance(app)
     finally:
         s.create_atks = real_create_atks
 
     assert s.get(middle, "alice")["status"] == "reported"
+    assert s.get(sibling, "alice")["status"] == "reported"
     middle_batch = s.store.one(
         "SELECT batch_id FROM batch_docs WHERE doc_id=?", (middle,)
     )["batch_id"]
+    sibling_batch = s.store.one(
+        "SELECT batch_id FROM batch_docs WHERE doc_id=?", (sibling,)
+    )["batch_id"]
+    assert middle_batch == sibling_batch
     assert not s.store.one("SELECT id FROM atks WHERE batch_id=?", (middle_batch,))
 
     child = s.create("alice", "CHILD-SUPPLEMENT", "ignored", parent_id=middle)
-    s.stop_document(middle, "MIDDLE-SUPPLEMENT", "alice")
+    s.stop_document(sibling, "SIBLING-SUPPLEMENT", "alice")
+    assert not s.store.one(
+        "SELECT doc_id FROM document_stops WHERE doc_id=? AND resumed_at IS NULL",
+        (middle,),
+    )
 
     detail = s.get(child, "alice")
     assert detail["group_stop"]
-    assert detail["group_stop"]["number"] == "MIDDLE-SUPPLEMENT"
+    assert detail["group_stop"]["number"] == "SIBLING-SUPPLEMENT"
 
     c = client(app)
     revision = current_revision(s, child)
@@ -428,7 +441,6 @@ def test_manager_cannot_rename_when_intermediate_ancestor_group_stopped(env):
     )
     assert r.status_code == 409, r.text
     assert s.get(child, "alice")["number"] == "CHILD-SUPPLEMENT"
-
 
 def test_nested_supplement_shows_root_atk_and_exports(env):
     # Detail views for a grandchild supplement must include the root invoice's
