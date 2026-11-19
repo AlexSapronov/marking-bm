@@ -288,8 +288,20 @@ def test_cannot_rename_into_existing_number(env):
         ).status_code
         == 409
     )
-    # Keeping the invoice's own current number is a harmless no-op.
-    assert c.post(manager_route(second), json={"number": "FREE-1", "revision": rev}).status_code == 200
+    # Keeping the invoice's own current number is a true no-op: no revision
+    # bump and no misleading audit entry.
+    audit_count = s.store.one(
+        "SELECT COUNT(*) n FROM audit WHERE action='Изменён номер накладной'"
+    )["n"]
+    no_op = c.post(
+        manager_route(second), json={"number": "FREE-1", "revision": rev}
+    )
+    assert no_op.status_code == 200, no_op.text
+    assert no_op.json()["revision"] == rev
+    assert s.get(second, "alice")["revision"] == rev
+    assert s.store.one(
+        "SELECT COUNT(*) n FROM audit WHERE action='Изменён номер накладной'"
+    )["n"] == audit_count
 
 
 def test_rename_records_audit_and_preserves_history(env):
