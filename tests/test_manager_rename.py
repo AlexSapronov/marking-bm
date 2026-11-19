@@ -256,7 +256,7 @@ def test_admin_keeps_full_power_after_atk(env):
     assert s.get(doc, "alice")["revision"] == after_rename_revision
     assert s.store.one(
         "SELECT COUNT(*) n FROM audit WHERE action='Изменён номер накладной'"
-    )["n"] == audit_count["name"]
+    )["n"] == audit_count
 
 
 def test_stale_revision_is_refused(env):
