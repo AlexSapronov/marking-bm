@@ -10,7 +10,7 @@ can never interleave with the number write.
 
 from concurrent.futures import ThreadPoolExecutor
 
-from conftest import add_doc, advance, client
+from conftest import GTIN, TN, add_doc, advance, client
 from test_stop_archive import make_stage
 from marking_bm.db import uid
 from marking_bm.service import Conflict
@@ -42,6 +42,10 @@ def reported_no_atk(env, number="REN-REPORTED"):
 
 def manager_route(doc):
     return "/api/documents/" + doc + "/rename"
+
+
+def current_revision(s, doc):
+    return s.get(doc, "alice")["revision"]
 
 
 def test_manager_renames_own_draft(env):
@@ -101,24 +105,76 @@ def test_manager_cannot_rename_after_atk_started(env):
     assert r.status_code == 409, r.text
 
 
-def test_manager_cannot_rename_reported_when_atk_exists_for_group(env):
+def test_manager_cannot_rename_supplement_when_parent_atk_exists(env):
+    # A supplement never gets its own ATK (create_atks skips all-parent groups);
+    # its codes join the ORIGINAL invoice's ATK via ADDING. Once that parent ATK
+    # exists (or formation has begun), renaming the supplement must be refused
+    # even though the supplement's own batch carries no ATK row.
+    app, s, _ = env
+    parent = add_doc(s, number="PARENT-INV")
+    s.order(parent, "alice")
+    advance(app)
+    s.transferred(parent, "alice", 1)
+    s.batch("alice", [parent], "2026-01-01")
+    advance(app)
+    assert s.get(parent, "alice")["status"] == "done"
+    assert s.store.one("SELECT id FROM atks")  # the original ATK exists
+
+    # Real supplement through the shipment mechanism (own batch, own report).
+    supp = s.create("alice", "SUPPLEMENT-B", "ignored", parent_id=parent)
+    s.save_lines(supp, "alice", [["PN-A", GTIN, 7, 2, TN]], current_revision(s, supp))
+    # The parent's ATK already exists, so the supplement number is frozen even
+    # before its report: the rename guard looks at the parent's group.
+    c = client(app)
+    r = c.post(manager_route(supp), json={"number": "RENAMED-EARLY", "revision": current_revision(s, supp)})
+    assert r.status_code == 409, r.text
+    assert s.get(supp, "alice")["number"] == "SUPPLEMENT-B"
+
+    s.order(supp, "alice")
+    advance(app)
+    s.transferred(supp, "alice", 1)
+    s.batch("alice", [supp], "2026-01-01")
+    advance(app)
+    sup = s.get(supp, "alice")
+    assert sup["status"] == "reported"
+
+    # The supplement lives in its own batch; only the parent batch has the ATK.
+    supp_batch = s.store.one("SELECT batch_id FROM batch_docs WHERE doc_id=?", (supp,))["batch_id"]
+    parent_batch = s.store.one("SELECT batch_id FROM batch_docs WHERE doc_id=?", (parent,))["batch_id"]
+    assert supp_batch != parent_batch
+    assert not s.store.one("SELECT id FROM atks WHERE batch_id=?", (supp_batch,))
+    assert s.store.one("SELECT id FROM atks WHERE batch_id=?", (parent_batch,))
+
+    # Renaming the reported supplement by its owner is refused (409) and the
+    # number stays untouched, even though its own batch has no ATK row.
+    r = c.post(manager_route(supp), json={"number": "RENAMED-SUPP", "revision": sup["revision"]})
+    assert r.status_code == 409, r.text
+    assert "АТК" in r.json()["detail"]
+    assert s.get(supp, "alice")["number"] == "SUPPLEMENT-B"
+
+
+def test_manager_cannot_rename_when_atk_operation_exists_without_atks_row(env):
+    # Defence-in-depth: in the normal flow create_atks creates the ATK row and
+    # its operation atomically, but the operation probe must hold even if an
+    # ATK operation exists while no atks row for the group has been written.
     app, s, _ = env
     doc = reported_no_atk(env)
-    # Simulate the supplement edge case: invoice remains 'reported' while its
-    # supplier group already carries an ATK (e.g. an unfinished ADDING step).
-    # The status name is not enough - the operation/atk probe must refuse.
     with s.store.transaction() as db:
         batch = db.execute(
             "SELECT * FROM batch_docs WHERE doc_id=?", (doc,)
         ).fetchone()
+        group = batch["batch_id"] + ":" + batch["supplier_id"]
         db.execute(
-            "INSERT INTO atks(id,supplier_id,tnved,batch_id,op_id,state) "
-            "VALUES(?,?,?,?,?,?)",
-            (uid(), batch["supplier_id"], "8536699008", batch["batch_id"], uid(), "processing"),
+            "INSERT INTO operations(id,kind,doc_id,group_id,op_key,payload,sha256,"
+            "state,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (uid(), "atk", None, group, "atk:" + group + ":8536699008",
+             '{"products_list":[]}', "x" * 64, "queued", "2026-01-01T00:00:00+00:00",
+             "2026-01-01T00:00:00+00:00"),
         )
+    assert not s.store.one("SELECT id FROM atks")
     c = client(app)
     rev = s.get(doc, "alice")["revision"]
-    r = c.post(manager_route(doc), json={"number": "FORSED", "revision": rev})
+    r = c.post(manager_route(doc), json={"number": "OP-ONLY", "revision": rev})
     assert r.status_code == 409, r.text
     assert "АТК" in r.json()["detail"]
     assert s.get(doc, "alice")["number"] == "REN-REPORTED"
@@ -303,3 +359,40 @@ def test_rename_and_atk_start_race_is_consistent(env):
     if outcome["rename"] == "ok":
         # Rename committed before ATK: a later ATK build keeps the new number.
         assert final["status"] == "aggregating"
+
+
+def test_manager_cannot_rename_when_group_stopped(env):
+    # The interface may still show the field, but the server must refuse a
+    # rename once the invoice's own supplier group is paused by another member.
+    app, s, _ = env
+    first = add_doc(s, number="G1")
+    second = add_doc(s, number="G2")
+    for doc in (first, second):
+        s.order(doc, "alice")
+    advance(app)
+    for doc in (first, second):
+        s.transferred(doc, "alice", 1)
+    s.batch("alice", [first, second], "2026-01-01")  # shared group
+    s.stop_document(first, "G1", "alice")
+    assert s.store.one("SELECT * FROM document_stops WHERE doc_id=? AND resumed_at IS NULL", (first,))
+    c = client(app)
+    rev = current_revision(s, second)
+    assert s.get(second, "alice")["status"] in ("reporting", "reported")
+    r = c.post(manager_route(second), json={"number": "G2-NEW", "revision": rev})
+    assert r.status_code == 409, r.text
+    assert "остановлен" in r.json()["detail"].lower()
+    assert s.get(second, "alice")["number"] == "G2"
+
+
+def test_manager_rename_returns_persisted_revision(env):
+    # The API must return the revision that was persisted by the rename, not
+    # the value supplied in the request.
+    app, s, _ = env
+    doc = add_doc(s, number="REV-OK")
+    c = client(app)
+    before = current_revision(s, doc)
+    r = c.post(manager_route(doc), json={"number": "REV-NEW", "revision": before})
+    assert r.status_code == 200, r.text
+    persisted = s.get(doc, "alice")["revision"]
+    assert persisted == before + 1
+    assert r.json()["revision"] == persisted

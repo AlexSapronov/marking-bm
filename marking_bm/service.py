@@ -1347,6 +1347,42 @@ class Service:
         ):
             raise Conflict("Накладная с таким номером уже существует")
 
+    def _rename_guard_groups(self, db, doc_id):
+        """Supplier groups whose ATK work must block renaming this invoice.
+
+        For an ordinary invoice this is just its own batch group (if any). A
+        supplement (parent_id) never gets its own ATK; its codes are added to
+        the original invoice's ATK via an ADDING transformation, so the parent
+        chain is walked to the most-ancient invoice and that group is checked
+        as well. The chain is read without the ownership check because a
+        supplement may legally belong to a different brand-manager's invoice.
+        """
+        groups = {
+            r["batch_id"] + ":" + r["supplier_id"]
+            for r in rows(
+                db, "SELECT batch_id,supplier_id FROM batch_docs WHERE doc_id=?",
+                (doc_id,),
+            )
+        }
+        seen = {doc_id}
+        current = doc_id
+        while True:
+            src = one(db, "SELECT id,parent_id FROM documents WHERE id=?", (current,))
+            if not src or not src["parent_id"] or src["parent_id"] in seen:
+                break
+            seen.add(src["parent_id"])
+            current = src["parent_id"]
+        if current != doc_id:
+            groups.update(
+                r["batch_id"] + ":" + r["supplier_id"]
+                for r in rows(
+                    db,
+                    "SELECT batch_id,supplier_id FROM batch_docs WHERE doc_id=?",
+                    (current,),
+                )
+            )
+        return groups
+
     def rename_document(self, doc_id, number, revision, actor):
         number = self._check_number(number)
         with self.store.transaction() as db:
@@ -1399,13 +1435,23 @@ class Service:
                 raise Conflict("Номер можно изменить только до начала формирования АТК")
             if self.document_stopped(db, doc_id):
                 raise Conflict("Накладная остановлена")
-            batch = one(db, "SELECT * FROM batch_docs WHERE doc_id=?", (doc_id,))
-            if batch:
-                group = batch["batch_id"] + ":" + batch["supplier_id"]
+            # ATK formation (and a stopped group) are enforced across every
+            # supplier group the invoice participates in: its own batch and,
+            # for supplements, the group of the original invoice whose ATK the
+            # supplement's codes join through an ADDING transformation. Both
+            # the status check and these probes run in this same BEGIN IMMEDIATE
+            # transaction as the number write, so a worker tick that starts ATK
+            # formation can never interleave with the rename.
+            for group in self._rename_guard_groups(db, doc_id):
+                if self.group_stopped(db, group):
+                    raise Conflict(
+                        "Обработка общей группы остановлена. Изменить номер нельзя"
+                    )
+                batch_id, supplier_id = group.split(":")
                 if one(
                     db,
                     "SELECT id FROM atks WHERE batch_id=? AND supplier_id=?",
-                    (batch["batch_id"], batch["supplier_id"]),
+                    (batch_id, supplier_id),
                 ) or one(
                     db,
                     "SELECT id FROM operations WHERE group_id=? AND kind='atk' "
@@ -1415,8 +1461,10 @@ class Service:
                     raise Conflict("Формирование АТК уже начато. Изменить номер нельзя")
             self._ensure_unique_number(db, doc_id, number)
             db.execute("UPDATE documents SET number=?,revision=revision+1,updated=? WHERE id=?", (number, now(), doc_id))
+            stored = one(db, "SELECT revision FROM documents WHERE id=?", (doc_id,))
+            new_revision = (stored or {}).get("revision") or d["revision"] + 1
             audit(db, actor, "Изменён номер накладной", doc_id, {"before": d["number"], "after": number})
-        return {"ok": True, "revision": revision}
+        return {"ok": True, "revision": new_revision}
 
     def cargo_rework(self, doc_id, number, actor):
         """Disaggregate the entire batch/supplier group; never undo application."""
