@@ -16,25 +16,25 @@ from marking_bm.db import uid
 from marking_bm.service import Conflict
 
 
-def reported_no_atk(env, number="REN-REPORTED"):
+def reported_no_atk(env, number="REN-REPORTED", owner="alice"):
     """Drive an invoice to 'reported' with no ATK row/operation yet.
 
     create_atks is temporarily no-op'd so the report is confirmed and the
     invoice stays at 'reported' while the group has no ATK work at all.
     """
     app, s, _ = env
-    doc = add_doc(s, number=number)
+    doc = add_doc(s, owner=owner, number=number)
     real = s.create_atks
     s.create_atks = lambda db: None
     try:
-        s.order(doc, "alice")
+        s.order(doc, owner)
         advance(app)
-        s.transferred(doc, "alice", 1)
-        s.batch("alice", [doc], "2026-01-01")
+        s.transferred(doc, owner, 1)
+        s.batch(owner, [doc], "2026-01-01")
         advance(app)
     finally:
         s.create_atks = real
-    assert s.get(doc, "alice")["status"] == "reported"
+    assert s.get(doc, owner)["status"] == "reported"
     batch = s.store.one(
         "SELECT batch_id,supplier_id FROM batch_docs WHERE doc_id=?", (doc,)
     )
@@ -581,6 +581,59 @@ def test_manager_cannot_rename_when_codes_have_pending_external_atk_transform(en
         (host_group,),
     )
     assert "SOURCE-ADMIN-RENAMED" in latest_host_export["name"]
+
+
+def test_mixed_owner_external_atk_is_hidden_but_still_blocks_rename(env):
+    # Admin-created mixed-owner transformations must still freeze the invoice,
+    # but must not expose another owner's ATK details or export links to a manager.
+    app, s, _ = env
+    host = add_doc(s, owner="alice", number="ALICE-HOST")
+    s.order(host, "alice")
+    advance(app)
+    s.transferred(host, "alice", 1)
+    s.batch("alice", [host], "2026-01-01")
+    advance(app)
+
+    host_batch = s.store.one(
+        "SELECT batch_id,supplier_id FROM batch_docs WHERE doc_id=?", (host,)
+    )
+    host_atk = s.store.one(
+        "SELECT * FROM atks WHERE batch_id=? AND supplier_id=?",
+        (host_batch["batch_id"], host_batch["supplier_id"]),
+    )
+    assert host_atk and host_atk["state"] == "done"
+
+    source = reported_no_atk(env, number="BOB-REPORTED", owner="bob")
+    source_code = s.store.one("SELECT id FROM codes WHERE doc_id=?", (source,))
+    # Model an administrator-approved cross-owner ADDING result. The worker
+    # normally updates atk_id and the ATK version atomically after ЧЗ confirms.
+    with s.store.transaction() as db:
+        db.execute(
+            "UPDATE codes SET atk_id=?,local_state='aggregated' WHERE id=?",
+            (host_atk["id"], source_code["id"]),
+        )
+
+    detail = s.get(source, "bob")
+    assert not any(a["id"] == host_atk["id"] for a in detail["atks"])
+    host_group = host_batch["batch_id"] + ":" + host_batch["supplier_id"]
+    assert not any(
+        f["id"] in {
+            row["id"]
+            for row in s.store.all(
+                "SELECT id FROM artifacts WHERE group_id=?", (host_group,)
+            )
+        }
+        for f in detail["exports"]
+    )
+
+    bob = client(app, "bob")
+    revision = s.get(source, "bob")["revision"]
+    response = bob.post(
+        manager_route(source),
+        json={"number": "BOB-RENAMED", "revision": revision},
+    )
+    assert response.status_code == 409, response.text
+    assert s.get(source, "bob")["number"] == "BOB-REPORTED"
 
 
 def test_manager_rename_returns_persisted_revision(env):
