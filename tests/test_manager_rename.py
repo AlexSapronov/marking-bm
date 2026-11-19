@@ -595,6 +595,17 @@ def test_manager_cannot_rename_when_codes_have_pending_external_atk_transform(en
     # exports for the external ATK group that now contains its codes as well.
     admin = client(app, "administrator", True)
     admin_revision = current_revision(s, source)
+    with s.store.transaction() as db:
+        db.execute("UPDATE atks SET state='processing' WHERE id=?", (host_atk["id"],))
+    blocked = admin.post(
+        "/api/admin/documents/" + source + "/rename",
+        json={"number": "SHOULD-BLOCK", "revision": admin_revision},
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert s.get(source, "alice")["number"] == "SOURCE-REPORTED"
+    with s.store.transaction() as db:
+        db.execute("UPDATE atks SET state='done' WHERE id=?", (host_atk["id"],))
+
     response = admin.post(
         "/api/admin/documents/" + source + "/rename",
         json={"number": "SOURCE-ADMIN-RENAMED", "revision": admin_revision},
