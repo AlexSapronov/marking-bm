@@ -392,22 +392,27 @@ class Service:
             d = self.document(db, doc_id, actor, admin)
             d["stop"] = self.document_stopped(db, doc_id)
             d["stopped"] = bool(d["stop"])
+            lineage_ids = self._document_lineage_ids(db, doc_id)
+            related_groups = sorted(self._document_related_groups(db, doc_id))
             d["group_stop"] = next(
                 (
                     held
-                    for r in rows(
-                        db,
-                        "SELECT batch_id,supplier_id FROM batch_docs WHERE doc_id=?",
-                        (doc_id,),
-                    )
-                    if (
-                        held := self.group_stopped(
-                            db, r["batch_id"] + ":" + r["supplier_id"]
-                        )
-                    )
+                    for group in related_groups
+                    if (held := self.group_stopped(db, group))
                 ),
                 None,
             )
+            if not d["group_stop"]:
+                for ancestor_id in lineage_ids[1:]:
+                    if self.document_stopped(db, ancestor_id):
+                        ancestor = one(
+                            db, "SELECT number FROM documents WHERE id=?", (ancestor_id,)
+                        )
+                        d["group_stop"] = {
+                            "doc_id": ancestor_id,
+                            "number": ancestor["number"] if ancestor else ancestor_id,
+                        }
+                        break
             d["lines"] = rows(
                 db, "SELECT * FROM lines WHERE doc_id=? ORDER BY id", (doc_id,)
             )
@@ -459,20 +464,32 @@ class Service:
                 "SELECT actor,action,detail,created FROM audit WHERE entity=? ORDER BY id DESC LIMIT 100",
                 (doc_id,),
             )
-            d["atks"] = rows(
-                db,
-                "SELECT a.* FROM atks a JOIN batch_docs b ON b.batch_id=a.batch_id AND b.supplier_id=a.supplier_id WHERE b.doc_id IN (?,?)",
-                (doc_id, d["parent_id"] or doc_id),
-            )
-            for atk in d["atks"]:
-                atk["disaggregation"] = one(db,
-                    "SELECT state,error,external_id FROM operations WHERE op_key=?",
-                    ("disaggregate:" + atk["id"],))
-            d["exports"] = rows(
-                db,
-                'SELECT f.id,f.name,f.kind,f.version,f.created FROM artifacts f JOIN batch_docs b ON b.batch_id||":"||b.supplier_id=f.group_id WHERE b.doc_id IN (?,?) ORDER BY f.created DESC',
-                (doc_id, d["parent_id"] or doc_id),
-            )
+            if related_groups:
+                group_placeholders = ",".join("?" for _ in related_groups)
+                group_args = tuple(related_groups)
+                d["atks"] = rows(
+                    db,
+                    "SELECT DISTINCT a.* FROM atks a "
+                    f"WHERE a.batch_id || ':' || a.supplier_id IN ({group_placeholders}) "
+                    "ORDER BY a.tnved,a.id",
+                    group_args,
+                )
+                for atk in d["atks"]:
+                    atk["disaggregation"] = one(
+                        db,
+                        "SELECT state,error,external_id FROM operations WHERE op_key=?",
+                        ("disaggregate:" + atk["id"],),
+                    )
+                d["exports"] = rows(
+                    db,
+                    "SELECT DISTINCT f.id,f.name,f.kind,f.version,f.created "
+                    f"FROM artifacts f WHERE f.group_id IN ({group_placeholders}) "
+                    "ORDER BY f.created DESC",
+                    group_args,
+                )
+            else:
+                d["atks"] = []
+                d["exports"] = []
             correction = one(db, "SELECT snapshot FROM document_corrections WHERE doc_id=?", (doc_id,))
             d["has_correction"] = bool(correction)
             d["correction_lines"] = json.loads(correction["snapshot"])["lines"] if correction and admin and d["status"] == "correction" else []
@@ -1332,10 +1349,86 @@ class Service:
     def _line_key(item):
         return (item["pn"], item["gtin"], item["quantity"], item["tnved"])
 
-    def rename_document(self, doc_id, number, revision, actor):
+    def _check_number(self, number):
         number = number.strip()
         if not number or len(number) > 120:
             raise ValueError("Укажите номер накладной до 120 символов")
+        return number
+
+    def _ensure_unique_number(self, db, doc_id, number):
+        # There is no uniqueness constraint on documents.number in the schema,
+        # so the rename guard enforces it explicitly to prevent the OBM and
+        # administrator flows from colliding with an existing invoice number.
+        if one(
+            db, "SELECT id FROM documents WHERE number=? AND id!=?", (number, doc_id)
+        ):
+            raise Conflict("Накладная с таким номером уже существует")
+
+    def _document_lineage_ids(self, db, doc_id):
+        """Return this invoice and every ancestor, stopping safely on cycles."""
+        lineage = []
+        seen = set()
+        current = doc_id
+        while current and current not in seen:
+            seen.add(current)
+            lineage.append(current)
+            source = one(
+                db, "SELECT parent_id FROM documents WHERE id=?", (current,)
+            )
+            if not source:
+                break
+            current = source["parent_id"]
+        return lineage
+
+    def _document_related_groups(self, db, doc_id):
+        """Supplier groups whose ATK state or stop state can affect this invoice.
+
+        Include the invoice's own batch and every ancestor batch: supplements
+        may be nested, and their codes ultimately join the original invoice's
+        ATK. Also include groups whose ATK already contains this invoice's
+        codes, or whose pending ADDING/REMOVING transformation references them.
+        The latter matters because a code can be transformed into an unrelated
+        same-supplier ATK, not only the ATK of its parent invoice.
+        """
+        lineage = self._document_lineage_ids(db, doc_id)
+        placeholders = ",".join("?" for _ in lineage)
+        groups = {
+            r["batch_id"] + ":" + r["supplier_id"]
+            for r in rows(
+                db,
+                "SELECT batch_id,supplier_id FROM batch_docs "
+                f"WHERE doc_id IN ({placeholders})",
+                tuple(lineage),
+            )
+        }
+        groups.update(
+            r["batch_id"] + ":" + r["supplier_id"]
+            for r in rows(
+                db,
+                "SELECT DISTINCT a.batch_id,a.supplier_id "
+                "FROM atks a JOIN codes c ON c.atk_id=a.id "
+                "WHERE c.doc_id=?",
+                (doc_id,),
+            )
+        )
+        groups.update(
+            r["batch_id"] + ":" + r["supplier_id"]
+            for r in rows(
+                db,
+                "SELECT DISTINCT a.batch_id,a.supplier_id "
+                "FROM transformations t "
+                "JOIN atks a ON a.id=t.atk_id "
+                "JOIN json_each(t.code_ids) j "
+                "JOIN codes c ON c.id=j.value "
+                "WHERE c.doc_id=? "
+                "AND t.state IN ('approval','approved','processing')",
+                (doc_id,),
+            )
+        )
+        return groups
+
+    def rename_document(self, doc_id, number, revision, actor):
+        number = self._check_number(number)
         with self.store.transaction() as db:
             d = self.document(db, doc_id, actor, True)
             if d["revision"] != revision:
@@ -1345,20 +1438,105 @@ class Service:
             if self.document_stopped(db, doc_id):
                 raise Conflict("Накладная остановлена")
             batch = one(db, "SELECT * FROM batch_docs WHERE doc_id=?", (doc_id,))
+            related_groups = []
             if d["status"] == "done":
                 if not batch:
                     raise Conflict("Не найдена партия накладной")
-                group = batch["batch_id"] + ":" + batch["supplier_id"]
-                self.require_operation_active(db, {"group_id": group})
-                for a in rows(db, "SELECT id FROM atks WHERE batch_id=? AND supplier_id=?", (batch["batch_id"], batch["supplier_id"])):
-                    self.require_atk_not_introducing(db, a["id"])
-                if one(db, "SELECT id FROM operations WHERE group_id=? AND state NOT IN ('done','rejected','cancelled')", (group,)):
-                    raise Conflict("Дождитесь завершения операций группы")
+                related_groups = sorted(self._document_related_groups(db, doc_id))
+                for group in related_groups:
+                    self.require_operation_active(db, {"group_id": group})
+                    batch_id, supplier_id = group.split(":")
+                    atks = rows(
+                        db,
+                        "SELECT id,state FROM atks WHERE batch_id=? AND supplier_id=?",
+                        (batch_id, supplier_id),
+                    )
+                    for atk in atks:
+                        if atk["state"] != "done":
+                            raise Conflict(
+                                "Дождитесь завершения всех связанных АТК перед изменением номера"
+                            )
+                        self.require_atk_not_introducing(db, atk["id"])
+                    if one(
+                        db,
+                        "SELECT id FROM operations WHERE group_id=? "
+                        "AND state NOT IN ('done','rejected','cancelled')",
+                        (group,),
+                    ):
+                        raise Conflict("Дождитесь завершения операций группы")
+            if number == d["number"]:
+                return {"ok": True}
+            self._ensure_unique_number(db, doc_id, number)
             db.execute("UPDATE documents SET number=?,revision=revision+1,updated=? WHERE id=?", (number, now(), doc_id))
             if d["status"] == "done":
-                self.exports(db, batch["batch_id"], batch["supplier_id"])
+                for group in related_groups:
+                    batch_id, supplier_id = group.split(":")
+                    self.exports(db, batch_id, supplier_id)
             audit(db, actor, "Изменён номер накладной", doc_id, {"before": d["number"], "after": number})
         return {"ok": True}
+
+    def manager_rename_document(self, doc_id, number, revision, actor):
+        """Self-service rename for a brand-manager on their own invoice.
+
+        Allowed only while ATK formation has not begun for the invoice's
+        supplier group. The gate is not derived from the status name alone:
+        even for a "reported" invoice it refuses the change if an ATK already
+        exists for the group or an ATK operation is in any non-terminal state
+        (queued, signed, dispatched, unknown, blocked, ...). Both the status
+        check and the ATK probe run inside a single BEGIN IMMEDIATE
+        transaction together with the number write, so a concurrent worker
+        tick that starts ATK formation can never interleave: every ATK row /
+        ATK operation is created atomically with the status moving to
+        "aggregating", and either the service sees it and refuses, or the
+        service commits first and the ATK is built with the new number.
+        """
+        number = self._check_number(number)
+        with self.store.transaction() as db:
+            # admin=False enforces owner == actor (ownership check on the server).
+            d = self.document(db, doc_id, actor)
+            if d["revision"] != revision:
+                raise Conflict("Накладная изменилась. Обновите страницу")
+            if d["status"] not in ("draft", "ready", "transferred", "reporting", "reported"):
+                raise Conflict("Номер можно изменить только до начала формирования АТК")
+            if self.document_stopped(db, doc_id):
+                raise Conflict("Накладная остановлена")
+            # A stopped ancestor must also freeze this supplement, even if
+            # that ancestor has no batch group of its own. The related-group
+            # set additionally covers every ancestor batch and any ATK group
+            # containing this invoice's codes (including pending transforms).
+            lineage_ids = self._document_lineage_ids(db, doc_id)
+            for ancestor_id in lineage_ids[1:]:
+                if self.document_stopped(db, ancestor_id):
+                    raise Conflict(
+                        "Исходная накладная остановлена. Изменить номер нельзя"
+                    )
+            # Keep the ATK/status probes and the number write in this same
+            # BEGIN IMMEDIATE transaction. A worker tick cannot interleave.
+            for group in sorted(self._document_related_groups(db, doc_id)):
+                if self.group_stopped(db, group):
+                    raise Conflict(
+                        "Обработка общей группы остановлена. Изменить номер нельзя"
+                    )
+                batch_id, supplier_id = group.split(":")
+                if one(
+                    db,
+                    "SELECT id FROM atks WHERE batch_id=? AND supplier_id=?",
+                    (batch_id, supplier_id),
+                ) or one(
+                    db,
+                    "SELECT id FROM operations WHERE group_id=? AND kind='atk' "
+                    "AND state NOT IN ('done','rejected','cancelled')",
+                    (group,),
+                ):
+                    raise Conflict("Формирование АТК уже начато. Изменить номер нельзя")
+            if number == d["number"]:
+                return {"ok": True, "revision": d["revision"]}
+            self._ensure_unique_number(db, doc_id, number)
+            db.execute("UPDATE documents SET number=?,revision=revision+1,updated=? WHERE id=?", (number, now(), doc_id))
+            stored = one(db, "SELECT revision FROM documents WHERE id=?", (doc_id,))
+            new_revision = (stored or {}).get("revision") or d["revision"] + 1
+            audit(db, actor, "Изменён номер накладной", doc_id, {"before": d["number"], "after": number})
+        return {"ok": True, "revision": new_revision}
 
     def cargo_rework(self, doc_id, number, actor):
         """Disaggregate the entire batch/supplier group; never undo application."""

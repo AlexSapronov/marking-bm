@@ -440,6 +440,17 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
     def rename_document(doc_id: str, body: RenameDocument, s=Depends(admin)):
         return service.rename_document(doc_id, body.number, body.revision, s["username"])
 
+    # Self-service rename for a brand-manager on their own invoice, allowed
+    # only before ATK formation begins (server-side ownership + status/ATK
+    # gate inside service.manager_rename_document). Logistics and supervisors
+    # are rejected by the manager dependency; other-owner documents by the
+    # ownership check. Administrators keep the full /admin/.../rename power.
+    @app.post("/api/documents/{doc_id}/rename")
+    def manager_rename_document(doc_id: str, body: RenameDocument, s=Depends(manager)):
+        return service.manager_rename_document(
+            doc_id, body.number, body.revision, s["username"]
+        )
+
     @app.post("/api/admin/documents/{doc_id}/cargo-rework")
     def cargo_rework(doc_id: str, body: CargoRework, s=Depends(admin)):
         return service.cargo_rework(doc_id, body.number, s["username"])
