@@ -42,6 +42,7 @@ const states = {
   queued: "Ожидает отправки",
   dispatching: "Отправляется",
   submitted: "Обрабатывается в ЧЗ",
+  superseded: "Заменена повторной отправкой",
   unknown: "Неизвестный результат",
   blocked: "Требует проверки",
   approval: "На согласовании",
@@ -1038,6 +1039,7 @@ function operationStatusGuidance(o) {
   if (o.stopped) return "Дальнейшая обработка остановлена. Проверьте историю накладной.";
   if (o.state === "done") return "Завершено. Дополнительных действий не требуется.";
   if (o.state === "cancelled") return "Операция отменена или остановлена.";
+  if (o.state === "superseded") return "Создана новая операция после ручной сверки; исходный UUID сохранён.";
   if (o.state === "preflight_blocked") return "Исправьте причину проверки, затем повторите проверку перед отправкой.";
   if (["rejected", "partial"].includes(o.state)) return "Изучите причину и результат в ЧЗ/СУЗ перед повторной отправкой.";
   if (o.state === "unknown") return o.external_id ?
@@ -1060,6 +1062,11 @@ function renderOperationRow(o) {
   }
   if (!o.stopped && ((o.external_id && ["unknown", "blocked", "submitted"].includes(o.state)) || o.state === "preflight_blocked")) {
     buttons.push(`<button data-action="check-op" data-id="${e(o.id)}">${o.state === "preflight_blocked" ? "Повторить предпроверку" : "Запросить проверку статуса"}</button>`);
+  }
+  if (user.admin && !o.stopped && o.kind === "atk" && o.external_id &&
+      ["submitted", "checking", "blocked", "unknown"].includes(o.state) &&
+      (o.error || "").startsWith("ЧЗ: HTTP 404.")) {
+    buttons.push(`<button data-action="retry-verified-atk" data-id="${e(o.id)}">Повторить АТК после сверки</button>`);
   }
   if (user.admin && !o.stopped && o.kind === "atk" && o.state === "preflight_blocked" && !o.external_id) {
     buttons.push(`<button class="danger" data-action="force-atk" data-id="${e(o.id)}">Сформировать АТК принудительно</button>`);
@@ -1725,6 +1732,43 @@ async function action(name, id, b) {
           $("#modal").close();
           await adminPage();
           toast("Проверенный заказ возвращён в очередь. Отправка дождётся действующего токена СУЗ.", "success");
+        } catch (err) {
+          toast(err.message);
+        } finally {
+          submit.disabled = false;
+        }
+      };
+      break;
+    }
+
+    case "retry-verified-atk": {
+      const review = await api("/admin/operations/" + encodeURIComponent(id) + "/atk-review");
+      modal(`<h2>Повторить создание АТК после сверки?</h2>
+        <p>Накладные: <b>${e(review.documents.join(", ") || "—")}</b>. ТН ВЭД: <b>${e(review.tnved)}</b>; КМ: <b>${fmt(review.count)}</b>.</p>
+        <p>Исходный документ ЧЗ: <span class="mono">${e(review.external_id)}</span></p>
+        <p class="notice">HTTP 404 при чтении статуса НЕ доказывает, что запрос на создание АТК не выполнен. Сначала убедитесь в ЛК ЧЗ, что исходный документ не обработан, АТК не сформирован и эти КМ не входят в другой агрегат. Повтор может создать дубликат, если первый запрос ещё обрабатывается.</p>
+        <form id="verified-atk-retry-form">
+          <label class="check-label"><input type="checkbox" name="confirmed_absent" required>
+            Подтверждаю: проверил исходный UUID и состав КМ в ЛК ЧЗ, АТК отсутствует</label>
+          <label>Результат сверки в ЧЗ<input name="reason" required minlength="10" maxlength="500" placeholder="Что проверено в ЛК ЧЗ и почему необходим повтор"></label>
+          <div class="actions">
+            <button class="danger" type="submit">Создать повторное задание АТК</button>
+            <button type="button" data-action="close">Отмена</button>
+          </div>
+        </form>`);
+      $("#verified-atk-retry-form").onsubmit = async ev => {
+        ev.preventDefault();
+        const form = ev.currentTarget;
+        const submit = form.querySelector('button[type="submit"]');
+        submit.disabled = true;
+        try {
+          const reason = form.elements.namedItem("reason").value.trim();
+          if (reason.length < 10) throw new Error("Опишите результат сверки, минимум 10 символов");
+          await api("/admin/operations/" + encodeURIComponent(id) + "/retry-verified-atk",
+            {confirmed_absent: true, external_id: review.external_id, reason});
+          $("#modal").close();
+          await adminPage();
+          toast("Новое задание АТК ожидает подписи; старый UUID сохранён в истории", "success");
         } catch (err) {
           toast(err.message);
         } finally {

@@ -1491,6 +1491,109 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
             audit(db, s["username"], "Повторная проверка состояния", op_id)
         return {"ok": True}
 
+
+    def atk_retry_candidate(db, op_id):
+        op = one(db, "SELECT * FROM operations WHERE id=?", (op_id,))
+        if (not op or op["kind"] != "atk" or not op["external_id"]
+                or op["state"] not in ("submitted", "checking", "blocked", "unknown")
+                or not (op["error"] or "").startswith("ЧЗ: HTTP 404.")):
+            raise Conflict("Повтор АТК недоступен: нет подтверждённой ошибки HTTP 404 при проверке статуса")
+        service.require_operation_active(db, op)
+        atk = one(db, "SELECT * FROM atks WHERE op_id=?", (op_id,))
+        if not atk or atk["state"] != "processing" or atk["code"]:
+            raise Conflict("АТК уже сформирован или исходная операция больше не является текущей")
+        return op, atk
+
+    @app.get("/api/admin/operations/{op_id}/atk-review")
+    def atk_retry_review(op_id: str, s=Depends(admin)):
+        with store.read() as db:
+            op, atk = atk_retry_candidate(db, op_id)
+            products = json.loads(op["payload"]).get("products_list", [])
+            documents = rows(
+                db, "SELECT d.number FROM documents d JOIN batch_docs b ON b.doc_id=d.id "
+                "WHERE b.batch_id=? AND b.supplier_id=? ORDER BY d.number,d.id",
+                (atk["batch_id"], atk["supplier_id"]),
+            )
+            return {
+                "id": op["id"], "external_id": op["external_id"],
+                "tnved": atk["tnved"], "count": len(products),
+                "documents": [d["number"] for d in documents],
+                "error": op["error"],
+            }
+
+    class VerifiedAtkRetry(BaseModel):
+        confirmed_absent: Literal[True]
+        external_id: str
+        reason: str = Field(min_length=10, max_length=500)
+
+    @app.post("/api/admin/operations/{op_id}/retry-verified-atk")
+    def retry_verified_atk(op_id: str, body: VerifiedAtkRetry, s=Depends(admin)):
+        # A 404 from /doc/{uuid}/info is NOT evidence that CREATE failed.
+        # Require an explicit LK check and a fresh independent CIS lookup.
+        if len(body.reason.strip()) < 10:
+            raise Conflict("Опишите, где и как проверено отсутствие АТК (не менее 10 символов)")
+        with store.read() as db:
+            op, atk = atk_retry_candidate(db, op_id)
+            if body.external_id != op["external_id"]:
+                raise Conflict("Внешний UUID изменился. Повторите проверку")
+            products = json.loads(op["payload"]).get("products_list", [])
+            cises = [p.get("ki") for p in products if isinstance(p, dict)]
+            if not cises or any(not isinstance(c, str) or not c for c in cises) or len(cises) != len(set(cises)):
+                raise Conflict("Некорректный состав КМ в исходном задании")
+        registry = service.gateway.info(cises)
+        if any(
+            registry[c].get("status") != "APPLIED"
+            or registry[c].get("ownerInn") != service.config()["inn"]
+            or registry[c].get("parent") not in (None, "")
+            for c in cises
+        ):
+            raise Conflict(
+                "ЧЗ уже показывает агрегирование или неподходящее состояние КМ. "
+                "Повтор запрещён: сначала сверьте реальный АТК в ЛК."
+            )
+        with store.transaction() as db:
+            current, current_atk = atk_retry_candidate(db, op_id)
+            if (current["external_id"] != body.external_id
+                    or current["sha256"] != op["sha256"]
+                    or current["payload"] != op["payload"]
+                    or current_atk["id"] != atk["id"]):
+                raise Conflict("Операция изменилась за время сверки. Повторите проверку")
+            new_id = service.queue(
+                db, "atk", current["op_key"] + ":verified-retry:" + uid(),
+                json.loads(current["payload"]),
+                doc_id=current["doc_id"], group_id=current["group_id"],
+            )
+            force = one(
+                db, "SELECT * FROM atk_force_authorizations WHERE op_id=? AND payload_sha=?",
+                (op_id, current["sha256"]),
+            )
+            if force:
+                db.execute(
+                    "INSERT INTO atk_force_authorizations VALUES(?,?,?,?,?)",
+                    (new_id, force["payload_sha"], force["actor"], force["reason"], now()),
+                )
+            stamp = now()
+            if db.execute(
+                "UPDATE operations SET state='superseded',updated=? "
+                "WHERE id=? AND state IN ('submitted','checking','blocked','unknown') "
+                "AND external_id=?",
+                (stamp, op_id, body.external_id),
+            ).rowcount != 1:
+                raise Conflict("Операция изменилась во время отправки")
+            if db.execute(
+                "UPDATE atks SET op_id=? WHERE id=? AND op_id=? AND state='processing' AND code IS NULL",
+                (new_id, atk["id"], op_id),
+            ).rowcount != 1:
+                raise Conflict("Текущий АТК изменился. Повторите сверку")
+            db.execute("DELETE FROM operation_attention WHERE op_id=?", (op_id,))
+            audit(
+                db, s["username"], "Проверенный повтор АТК после HTTP 404", op_id,
+                {"old_external_id": body.external_id, "new_operation": new_id,
+                 "atk_id": atk["id"], "count": len(cises),
+                 "confirmed_absent": True, "reason": body.reason.strip()},
+            )
+        return {"id": new_id, "previous_id": op_id, "state": "signing"}
+
     @app.get("/api/admin/operations/{op_id}/blocks")
     def lost_blocks(op_id: str, s=Depends(admin)):
         op = store.one("SELECT * FROM operations WHERE id=?", (op_id,))

@@ -149,16 +149,16 @@ class Worker:
                         if (
                             isinstance(e, RemoteError)
                             and e.status_code == 404
-                            and op["kind"] == "introduce"
+                            and op["kind"] in ("atk", "transform", "disaggregate", "introduce")
                             and current["state"] in ("submitted", "checking")
                         ):
                             # The create endpoint has already confirmed a document ID.
                             # An early 404 on the read-only status endpoint does not
                             # prove rejection. Keep polling without resubmitting.
                             message = (
-                                "ЧЗ пока не возвращает статус документа (HTTP 404). "
+                                "ЧЗ: HTTP 404. Пока не возвращается статус документа. "
                                 "Документ отправлен; проверка повторится автоматически. "
-                                "Если статус долго не появляется, проверьте документ и доступ в ЛК ЧЗ."
+                                "HTTP 404 не доказывает отсутствие операции: проверьте её в ЛК ЧЗ."
                             )
                         db.execute(
                             "UPDATE operations SET state=?,error=?,updated=? WHERE id=?",
