@@ -1438,19 +1438,34 @@ class Service:
             if self.document_stopped(db, doc_id):
                 raise Conflict("Накладная остановлена")
             batch = one(db, "SELECT * FROM batch_docs WHERE doc_id=?", (doc_id,))
+            related_groups = []
             if d["status"] == "done":
                 if not batch:
                     raise Conflict("Не найдена партия накладной")
-                group = batch["batch_id"] + ":" + batch["supplier_id"]
-                self.require_operation_active(db, {"group_id": group})
-                for a in rows(db, "SELECT id FROM atks WHERE batch_id=? AND supplier_id=?", (batch["batch_id"], batch["supplier_id"])):
-                    self.require_atk_not_introducing(db, a["id"])
-                if one(db, "SELECT id FROM operations WHERE group_id=? AND state NOT IN ('done','rejected','cancelled')", (group,)):
-                    raise Conflict("Дождитесь завершения операций группы")
+                related_groups = sorted(self._document_related_groups(db, doc_id))
+                for group in related_groups:
+                    self.require_operation_active(db, {"group_id": group})
+                    batch_id, supplier_id = group.split(":")
+                    atks = rows(
+                        db,
+                        "SELECT id FROM atks WHERE batch_id=? AND supplier_id=?",
+                        (batch_id, supplier_id),
+                    )
+                    for atk in atks:
+                        self.require_atk_not_introducing(db, atk["id"])
+                    if one(
+                        db,
+                        "SELECT id FROM operations WHERE group_id=? "
+                        "AND state NOT IN ('done','rejected','cancelled')",
+                        (group,),
+                    ):
+                        raise Conflict("Дождитесь завершения операций группы")
             self._ensure_unique_number(db, doc_id, number)
             db.execute("UPDATE documents SET number=?,revision=revision+1,updated=? WHERE id=?", (number, now(), doc_id))
             if d["status"] == "done":
-                self.exports(db, batch["batch_id"], batch["supplier_id"])
+                for group in related_groups:
+                    batch_id, supplier_id = group.split(":")
+                    self.exports(db, batch_id, supplier_id)
             audit(db, actor, "Изменён номер накладной", doc_id, {"before": d["number"], "after": number})
         return {"ok": True}
 
