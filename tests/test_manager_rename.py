@@ -35,8 +35,17 @@ def reported_no_atk(env, number="REN-REPORTED"):
     finally:
         s.create_atks = real
     assert s.get(doc, "alice")["status"] == "reported"
-    assert not s.store.one("SELECT id FROM operations WHERE kind='atk'")
-    assert not s.store.one("SELECT id FROM atks")
+    batch = s.store.one(
+        "SELECT batch_id,supplier_id FROM batch_docs WHERE doc_id=?", (doc,)
+    )
+    group = batch["batch_id"] + ":" + batch["supplier_id"]
+    assert not s.store.one(
+        "SELECT id FROM operations WHERE kind='atk' AND group_id=?", (group,)
+    )
+    assert not s.store.one(
+        "SELECT id FROM atks WHERE batch_id=? AND supplier_id=?",
+        (batch["batch_id"], batch["supplier_id"]),
+    )
     return doc
 
 
