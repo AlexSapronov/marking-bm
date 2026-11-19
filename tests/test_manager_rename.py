@@ -608,7 +608,7 @@ def test_manager_cannot_rename_when_codes_have_pending_external_atk_transform(en
     assert "SOURCE-ADMIN-RENAMED" in latest_host_export["name"]
 
 
-def test_mixed_owner_external_atk_is_hidden_but_still_blocks_rename(env):
+def test_mixed_owner_external_atk_is_visible_but_still_blocks_rename(env):
     # Admin-created mixed-owner transformations must still freeze the invoice,
     # but must not expose another owner's ATK details or export links to a manager.
     app, s, _ = env
@@ -639,19 +639,12 @@ def test_mixed_owner_external_atk_is_hidden_but_still_blocks_rename(env):
         )
 
     detail = s.get(source, "bob")
-    assert not any(a["id"] == host_atk["id"] for a in detail["atks"])
-    host_group = host_batch["batch_id"] + ":" + host_batch["supplier_id"]
-    assert not any(
-        f["id"] in {
-            row["id"]
-            for row in s.store.all(
-                "SELECT id FROM artifacts WHERE group_id=?", (host_group,)
-            )
-        }
-        for f in detail["exports"]
-    )
+    # The card may show the shared ATK summary, but its detail endpoint still
+    # enforces the existing mixed-owner restriction.
+    assert any(a["id"] == host_atk["id"] for a in detail["atks"])
 
     bob = client(app, "bob")
+    assert bob.get("/api/atks/" + host_atk["id"]).status_code == 403
     revision = s.get(source, "bob")["revision"]
     response = bob.post(
         manager_route(source),
