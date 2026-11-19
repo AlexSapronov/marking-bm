@@ -394,13 +394,10 @@ class Service:
             d["stopped"] = bool(d["stop"])
             lineage_ids = self._document_lineage_ids(db, doc_id)
             related_groups = sorted(self._document_related_groups(db, doc_id))
-            visible_groups = sorted(
-                self._document_visible_groups(db, related_groups, actor, admin)
-            )
             d["group_stop"] = next(
                 (
                     held
-                    for group in visible_groups
+                    for group in related_groups
                     if (held := self.group_stopped(db, group))
                 ),
                 None,
@@ -467,9 +464,9 @@ class Service:
                 "SELECT actor,action,detail,created FROM audit WHERE entity=? ORDER BY id DESC LIMIT 100",
                 (doc_id,),
             )
-            if visible_groups:
-                group_placeholders = ",".join("?" for _ in visible_groups)
-                group_args = tuple(visible_groups)
+            if related_groups:
+                group_placeholders = ",".join("?" for _ in related_groups)
+                group_args = tuple(related_groups)
                 d["atks"] = rows(
                     db,
                     "SELECT DISTINCT a.* FROM atks a "
@@ -1429,34 +1426,6 @@ class Service:
             )
         )
         return groups
-
-    def _document_visible_groups(self, db, groups, actor, admin=False):
-        """Filter group-level details through the existing ATK ownership boundary."""
-        visible = []
-        for group in sorted(groups):
-            atks = rows(
-                db,
-                "SELECT id FROM atks WHERE batch_id || ':' || supplier_id=?",
-                (group,),
-            )
-            if atks:
-                try:
-                    for atk in atks:
-                        self.atk_access(db, atk["id"], actor, admin)
-                except PermissionError:
-                    continue
-            elif not admin:
-                owners = rows(
-                    db,
-                    "SELECT DISTINCT d.owner FROM batch_docs b "
-                    "JOIN documents d ON d.id=b.doc_id "
-                    "WHERE b.batch_id || ':' || b.supplier_id=?",
-                    (group,),
-                )
-                if not owners or any(owner["owner"] != actor for owner in owners):
-                    continue
-            visible.append(group)
-        return visible
 
     def rename_document(self, doc_id, number, revision, actor):
         number = self._check_number(number)
