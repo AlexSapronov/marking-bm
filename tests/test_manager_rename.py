@@ -243,7 +243,7 @@ def test_admin_keeps_full_power_after_atk(env):
     # The regenerated exports use the admin-supplied number.
     assert "ADMIN-POST-ATK" in s.store.one(
         "SELECT name FROM artifacts WHERE kind='atk' ORDER BY version DESC LIMIT 1"
-    )
+    )["name"]
     after_rename_revision = s.get(doc, "alice")["revision"]
     audit_count = s.store.one(
         "SELECT COUNT(*) n FROM audit WHERE action='Изменён номер накладной'"
