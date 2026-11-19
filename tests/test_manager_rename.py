@@ -545,6 +545,22 @@ def test_manager_cannot_rename_when_codes_have_pending_external_atk_transform(en
     }
     assert host_export_ids.intersection({f["id"] for f in detail["exports"]})
 
+    # The administrator can still rename a completed invoice, but must rebuild
+    # exports for the external ATK group that now contains its codes as well.
+    admin = client(app, "administrator", True)
+    admin_revision = current_revision(s, source)
+    response = admin.post(
+        "/api/admin/documents/" + source + "/rename",
+        json={"number": "SOURCE-ADMIN-RENAMED", "revision": admin_revision},
+    )
+    assert response.status_code == 200, response.text
+    latest_host_export = s.store.one(
+        "SELECT name FROM artifacts WHERE group_id=? AND kind='atk' "
+        "ORDER BY version DESC LIMIT 1",
+        (host_group,),
+    )
+    assert "SOURCE-ADMIN-RENAMED" in latest_host_export["name"]
+
 
 def test_manager_rename_returns_persisted_revision(env):
     # The API must return the revision that was persisted by the rename, not
