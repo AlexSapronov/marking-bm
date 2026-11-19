@@ -1332,10 +1332,23 @@ class Service:
     def _line_key(item):
         return (item["pn"], item["gtin"], item["quantity"], item["tnved"])
 
-    def rename_document(self, doc_id, number, revision, actor):
+    def _check_number(self, number):
         number = number.strip()
         if not number or len(number) > 120:
             raise ValueError("Укажите номер накладной до 120 символов")
+        return number
+
+    def _ensure_unique_number(self, db, doc_id, number):
+        # There is no uniqueness constraint on documents.number in the schema,
+        # so the rename guard enforces it explicitly to prevent the OBM and
+        # administrator flows from colliding with an existing invoice number.
+        if one(
+            db, "SELECT id FROM documents WHERE number=? AND id!=?", (number, doc_id)
+        ):
+            raise Conflict("Накладная с таким номером уже существует")
+
+    def rename_document(self, doc_id, number, revision, actor):
+        number = self._check_number(number)
         with self.store.transaction() as db:
             d = self.document(db, doc_id, actor, True)
             if d["revision"] != revision:
@@ -1354,11 +1367,56 @@ class Service:
                     self.require_atk_not_introducing(db, a["id"])
                 if one(db, "SELECT id FROM operations WHERE group_id=? AND state NOT IN ('done','rejected','cancelled')", (group,)):
                     raise Conflict("Дождитесь завершения операций группы")
+            self._ensure_unique_number(db, doc_id, number)
             db.execute("UPDATE documents SET number=?,revision=revision+1,updated=? WHERE id=?", (number, now(), doc_id))
             if d["status"] == "done":
                 self.exports(db, batch["batch_id"], batch["supplier_id"])
             audit(db, actor, "Изменён номер накладной", doc_id, {"before": d["number"], "after": number})
         return {"ok": True}
+
+    def manager_rename_document(self, doc_id, number, revision, actor):
+        """Self-service rename for a brand-manager on their own invoice.
+
+        Allowed only while ATK formation has not begun for the invoice's
+        supplier group. The gate is not derived from the status name alone:
+        even for a "reported" invoice it refuses the change if an ATK already
+        exists for the group or an ATK operation is in any non-terminal state
+        (queued, signed, dispatched, unknown, blocked, ...). Both the status
+        check and the ATK probe run inside a single BEGIN IMMEDIATE
+        transaction together with the number write, so a concurrent worker
+        tick that starts ATK formation can never interleave: every ATK row /
+        ATK operation is created atomically with the status moving to
+        "aggregating", and either the service sees it and refuses, or the
+        service commits first and the ATK is built with the new number.
+        """
+        number = self._check_number(number)
+        with self.store.transaction() as db:
+            # admin=False enforces owner == actor (ownership check on the server).
+            d = self.document(db, doc_id, actor)
+            if d["revision"] != revision:
+                raise Conflict("Накладная изменилась. Обновите страницу")
+            if d["status"] not in ("draft", "ready", "transferred", "reporting", "reported"):
+                raise Conflict("Номер можно изменить только до начала формирования АТК")
+            if self.document_stopped(db, doc_id):
+                raise Conflict("Накладная остановлена")
+            batch = one(db, "SELECT * FROM batch_docs WHERE doc_id=?", (doc_id,))
+            if batch:
+                group = batch["batch_id"] + ":" + batch["supplier_id"]
+                if one(
+                    db,
+                    "SELECT id FROM atks WHERE batch_id=? AND supplier_id=?",
+                    (batch["batch_id"], batch["supplier_id"]),
+                ) or one(
+                    db,
+                    "SELECT id FROM operations WHERE group_id=? AND kind='atk' "
+                    "AND state NOT IN ('done','rejected','cancelled')",
+                    (group,),
+                ):
+                    raise Conflict("Формирование АТК уже начато. Изменить номер нельзя")
+            self._ensure_unique_number(db, doc_id, number)
+            db.execute("UPDATE documents SET number=?,revision=revision+1,updated=? WHERE id=?", (number, now(), doc_id))
+            audit(db, actor, "Изменён номер накладной", doc_id, {"before": d["number"], "after": number})
+        return {"ok": True, "revision": revision}
 
     def cargo_rework(self, doc_id, number, actor):
         """Disaggregate the entire batch/supplier group; never undo application."""
