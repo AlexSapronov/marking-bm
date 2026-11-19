@@ -1491,6 +1491,8 @@ class Service:
                         (group,),
                     ):
                         raise Conflict("Дождитесь завершения операций группы")
+            if number == d["number"]:
+                return {"ok": True}
             self._ensure_unique_number(db, doc_id, number)
             db.execute("UPDATE documents SET number=?,revision=revision+1,updated=? WHERE id=?", (number, now(), doc_id))
             if d["status"] == "done":
@@ -1554,6 +1556,8 @@ class Service:
                     (group,),
                 ):
                     raise Conflict("Формирование АТК уже начато. Изменить номер нельзя")
+            if number == d["number"]:
+                return {"ok": True, "revision": d["revision"]}
             self._ensure_unique_number(db, doc_id, number)
             db.execute("UPDATE documents SET number=?,revision=revision+1,updated=? WHERE id=?", (number, now(), doc_id))
             stored = one(db, "SELECT revision FROM documents WHERE id=?", (doc_id,))
