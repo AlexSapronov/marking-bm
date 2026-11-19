@@ -536,8 +536,14 @@ def test_manager_cannot_rename_when_codes_have_pending_external_atk_transform(en
     )["atk_id"] == host_atk["id"]
     detail = s.get(source, "alice")
     assert any(a["id"] == host_atk["id"] for a in detail["atks"])
-    assert any(f["group_id"] == host_batch["batch_id"] + ":" + host_batch["supplier_id"]
-               for f in s.store.all("SELECT group_id FROM artifacts WHERE group_id IS NOT NULL"))
+    host_group = host_batch["batch_id"] + ":" + host_batch["supplier_id"]
+    host_export_ids = {
+        row["id"]
+        for row in s.store.all(
+            "SELECT id FROM artifacts WHERE group_id=?", (host_group,)
+        )
+    }
+    assert host_export_ids.intersection({f["id"] for f in detail["exports"]})
 
 
 def test_manager_rename_returns_persisted_revision(env):
