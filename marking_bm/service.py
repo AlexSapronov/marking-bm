@@ -1448,10 +1448,14 @@ class Service:
                     batch_id, supplier_id = group.split(":")
                     atks = rows(
                         db,
-                        "SELECT id FROM atks WHERE batch_id=? AND supplier_id=?",
+                        "SELECT id,state FROM atks WHERE batch_id=? AND supplier_id=?",
                         (batch_id, supplier_id),
                     )
                     for atk in atks:
+                        if atk["state"] != "done":
+                            raise Conflict(
+                                "Дождитесь завершения всех связанных АТК перед изменением номера"
+                            )
                         self.require_atk_not_introducing(db, atk["id"])
                     if one(
                         db,
