@@ -384,6 +384,162 @@ def test_manager_cannot_rename_when_group_stopped(env):
     assert s.get(second, "alice")["number"] == "G2"
 
 
+def test_manager_cannot_rename_when_intermediate_ancestor_group_stopped(env):
+    # A grandchild supplement must inherit the stop state of its immediate
+    # parent group, not only the oldest/root invoice group.
+    app, s, _ = env
+    root = reported_no_atk(env, number="ROOT-REPORTED")
+    middle = s.create("alice", "MIDDLE-SUPPLEMENT", "ignored", parent_id=root)
+    s.save_lines(
+        middle, "alice", [["PN-A", GTIN, 7, 2, TN]], current_revision(s, middle)
+    )
+
+    # Keep the root invoice at reported without an ATK while the intermediate
+    # supplement is processed, so only the intermediate group is stopped.
+    real_create_atks = s.create_atks
+    s.create_atks = lambda db: None
+    try:
+        s.order(middle, "alice")
+        advance(app)
+        s.transferred(middle, "alice", 1)
+        s.batch("alice", [middle], "2026-01-01")
+        advance(app)
+    finally:
+        s.create_atks = real_create_atks
+
+    assert s.get(middle, "alice")["status"] == "reported"
+    middle_batch = s.store.one(
+        "SELECT batch_id FROM batch_docs WHERE doc_id=?", (middle,)
+    )["batch_id"]
+    assert not s.store.one("SELECT id FROM atks WHERE batch_id=?", (middle_batch,))
+
+    child = s.create("alice", "CHILD-SUPPLEMENT", "ignored", parent_id=middle)
+    s.stop_document(middle, "MIDDLE-SUPPLEMENT", "alice")
+
+    detail = s.get(child, "alice")
+    assert detail["group_stop"]
+    assert detail["group_stop"]["number"] == "MIDDLE-SUPPLEMENT"
+
+    c = client(app)
+    revision = current_revision(s, child)
+    r = c.post(
+        manager_route(child),
+        json={"number": "CHILD-RENAMED", "revision": revision},
+    )
+    assert r.status_code == 409, r.text
+    assert s.get(child, "alice")["number"] == "CHILD-SUPPLEMENT"
+
+
+def test_nested_supplement_shows_root_atk_and_exports(env):
+    # Detail views for a grandchild supplement must include the root invoice's
+    # ATK and exports, not only the immediate parent's empty supplement batch.
+    app, s, _ = env
+    root = add_doc(s, number="ROOT-WITH-ATK")
+    s.order(root, "alice")
+    advance(app)
+    s.transferred(root, "alice", 1)
+    s.batch("alice", [root], "2026-01-01")
+    advance(app)
+
+    root_batch = s.store.one(
+        "SELECT batch_id,supplier_id FROM batch_docs WHERE doc_id=?", (root,)
+    )
+    root_group = root_batch["batch_id"] + ":" + root_batch["supplier_id"]
+    root_atk = s.store.one(
+        "SELECT id FROM atks WHERE batch_id=? AND supplier_id=?",
+        (root_batch["batch_id"], root_batch["supplier_id"]),
+    )
+    root_export = s.store.one(
+        "SELECT id FROM artifacts WHERE group_id=? AND kind='atk'",
+        (root_group,),
+    )
+    assert root_atk and root_export
+
+    middle = s.create("alice", "MIDDLE-SUPPLEMENT", "ignored", parent_id=root)
+    s.save_lines(
+        middle, "alice", [["PN-A", GTIN, 7, 2, TN]], current_revision(s, middle)
+    )
+    s.order(middle, "alice")
+    advance(app)
+    s.transferred(middle, "alice", 1)
+    s.batch("alice", [middle], "2026-01-01")
+    advance(app)
+    assert s.get(middle, "alice")["status"] == "reported"
+
+    child = s.create("alice", "CHILD-SUPPLEMENT", "ignored", parent_id=middle)
+    detail = s.get(child, "alice")
+    assert any(a["id"] == root_atk["id"] for a in detail["atks"])
+    assert any(f["id"] == root_export["id"] for f in detail["exports"])
+
+
+def test_manager_cannot_rename_when_codes_have_pending_external_atk_transform(env):
+    # Codes can be added to a same-supplier ATK outside their parent chain.
+    # A pending ADDING request must therefore contribute its ATK group to the
+    # rename guard before the worker applies the new code assignment.
+    app, s, _ = env
+    host = add_doc(s, number="HOST-ATK")
+    s.order(host, "alice")
+    advance(app)
+    s.transferred(host, "alice", 1)
+    s.batch("alice", [host], "2026-01-01")
+    advance(app)
+
+    host_batch = s.store.one(
+        "SELECT batch_id,supplier_id FROM batch_docs WHERE doc_id=?", (host,)
+    )
+    host_atk = s.store.one(
+        "SELECT * FROM atks WHERE batch_id=? AND supplier_id=?",
+        (host_batch["batch_id"], host_batch["supplier_id"]),
+    )
+    assert host_atk and host_atk["state"] == "done"
+
+    source = reported_no_atk(env, number="SOURCE-REPORTED")
+    source_code = s.store.one("SELECT id FROM codes WHERE doc_id=?", (source,))
+    candidates = {c["id"] for c in s.candidate_codes(host_atk["id"], "alice")}
+    assert source_code["id"] in candidates
+
+    request_id = s.transform(
+        host_atk["id"], "ADDING", [source_code["id"]], "alice"
+    )
+    s.review(
+        request_id,
+        True,
+        "КМ включается в АТК другой группы",
+        "alice",
+    )
+
+    detail = s.get(source, "alice")
+    assert any(a["id"] == host_atk["id"] for a in detail["atks"])
+    revision = current_revision(s, source)
+    c = client(app)
+    r = c.post(
+        manager_route(source),
+        json={"number": "SOURCE-RENAMED", "revision": revision},
+    )
+    assert r.status_code == 409, r.text
+    assert s.get(source, "alice")["number"] == "SOURCE-REPORTED"
+
+    # Complete the ADDING transformation while suppressing unrelated ATK
+    # creation for the reported source batch.
+    real_create_atks = s.create_atks
+    s.create_atks = lambda db: None
+    try:
+        advance(app)
+    finally:
+        s.create_atks = real_create_atks
+
+    assert s.store.one(
+        "SELECT state FROM transformations WHERE id=?", (request_id,)
+    )["state"] == "done"
+    assert s.store.one(
+        "SELECT atk_id FROM codes WHERE id=?", (source_code["id"],)
+    )["atk_id"] == host_atk["id"]
+    detail = s.get(source, "alice")
+    assert any(a["id"] == host_atk["id"] for a in detail["atks"])
+    assert any(f["group_id"] == host_batch["batch_id"] + ":" + host_batch["supplier_id"]
+               for f in s.store.all("SELECT group_id FROM artifacts WHERE group_id IS NOT NULL"))
+
+
 def test_manager_rename_returns_persisted_revision(env):
     # The API must return the revision that was persisted by the rename, not
     # the value supplied in the request.
