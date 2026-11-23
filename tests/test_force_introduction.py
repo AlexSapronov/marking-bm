@@ -102,8 +102,13 @@ def test_force_permission_requires_matching_payload_hash(env):
     app, service, remote, _, admin, op = blocked_introduction(env)
     url = f"/api/admin/operations/{op['id']}/force-introduce"
     assert admin.post(url, json={"confirm": True, "reason": "Сверено с ЛК"}).status_code == 200
+    # The signed operation SHA is immutable in the DB. Simulate a stale
+    # authorization record instead: the override must no longer match.
     with service.store.transaction() as db:
-        db.execute("UPDATE operations SET sha256=? WHERE id=?", ("0" * 64, op["id"]))
+        db.execute(
+            "UPDATE introduction_force_authorizations SET payload_sha=? WHERE op_id=?",
+            ("0" * 64, op["id"]),
+        )
     advance(app, 2)
     pending = service.store.one("SELECT * FROM operations WHERE id=?", (op["id"],))
     assert pending["state"] == "preflight_blocked" and "ТН ВЭД" in pending["error"]
