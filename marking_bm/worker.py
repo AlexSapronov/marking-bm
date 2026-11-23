@@ -283,7 +283,11 @@ class Worker:
                        for c, item in zip(codes, product["children"])):
                     raise ValueError("У каждого КМ должен быть явно указан ТН ВЭД строки накладной")
                 info = self.g.verify(codes, "APPLIED")
-                if any(info[c["cis"]].get("tnVedEaes") != c["tnved"] for c in codes):
+                forced_tnved = bool(self.db.one(
+                    "SELECT op_id FROM introduction_force_authorizations WHERE op_id=? AND payload_sha=?",
+                    (op["id"], op["sha256"]),
+                ))
+                if not forced_tnved and any(info[c["cis"]].get("tnVedEaes") != c["tnved"] for c in codes):
                     raise ValueError("ГИС МТ не подтвердила полный ТН ВЭД каждого КМ")
                 if any(ci.get("parent") != product["atk"] or ci.get("emissionType") != "FOREIGN" or
                        ci.get("statusEx") not in (None, "EMPTY", "FTS_RESPOND_NOT_OK", "FTS_CONTROL") for ci in info.values()):
