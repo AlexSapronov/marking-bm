@@ -1474,6 +1474,38 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
                   op_id, {"reason": body.reason.strip(), "payload_sha": op["sha256"]})
         return {"ok": True}
 
+    class ForceIntroduction(BaseModel):
+        confirm: Literal[True]
+        reason: str = Field(min_length=1, max_length=1000)
+
+    @app.post("/api/admin/operations/{op_id}/force-introduce")
+    def force_introduce(op_id: str, body: ForceIntroduction, s=Depends(admin)):
+        if not body.reason.strip():
+            raise Conflict("Укажите причину принудительного ввода в оборот")
+        with store.transaction() as db:
+            op = one(db, "SELECT * FROM operations WHERE id=?", (op_id,))
+            if (not op or op["kind"] != "introduce" or
+                    op["state"] != "preflight_blocked" or op["external_id"] or
+                    not op["signature"]):
+                raise Conflict("Режим доступен только для подписанного ввода в оборот до первой отправки")
+            # Force only the exact TN VED preflight failure, not status, owner,
+            # aggregation, payload or other safety checks.
+            if op["error"] != "ГИС МТ не подтвердила полный ТН ВЭД каждого КМ":
+                raise Conflict("Принудительный ввод разрешён только при расхождении ТН ВЭД с ГИС МТ")
+            service.require_operation_active(db, op)
+            db.execute(
+                "INSERT OR REPLACE INTO introduction_force_authorizations VALUES(?,?,?,?,?)",
+                (op_id, op["sha256"], s["username"], body.reason.strip(), now()),
+            )
+            db.execute(
+                "UPDATE operations SET state='queued',error=NULL,updated=? WHERE id=?",
+                (now(), op_id),
+            )
+            audit(db, s["username"],
+                  "Принудительный ввод в оборот: разрешено расхождение ТН ВЭД",
+                  op_id, {"reason": body.reason.strip(), "payload_sha": op["sha256"]})
+        return {"ok": True}
+
     @app.post("/api/admin/operations/{op_id}/check")
     def check(op_id: str, s=Depends(admin)):
         op = store.one("SELECT * FROM operations WHERE id=?", (op_id,))
