@@ -1071,6 +1071,10 @@ function renderOperationRow(o) {
   if (user.admin && !o.stopped && o.kind === "atk" && o.state === "preflight_blocked" && !o.external_id) {
     buttons.push(`<button class="danger" data-action="force-atk" data-id="${e(o.id)}">Сформировать АТК принудительно</button>`);
   }
+  if (user.admin && !o.stopped && o.kind === "introduce" && o.state === "preflight_blocked" && !o.external_id &&
+      o.error === "ГИС МТ не подтвердила полный ТН ВЭД каждого КМ") {
+    buttons.push(`<button class="danger" data-action="force-introduce" data-id="${e(o.id)}">Ввести в оборот принудительно</button>`);
+  }
   if (!o.stopped && o.state === "unknown" && o.kind === "fetch") {
     buttons.push(`<button data-action="recover-block" data-id="${e(o.id)}">Восстановить блок</button>`);
   }
@@ -1812,6 +1816,15 @@ async function action(name, id, b) {
       await api("/admin/operations/" + id + "/force-atk", {confirm: true, reason: reason.trim()});
       await adminPage();
       toast("АТК поставлен в очередь с разрешённым расхождением ТН ВЭД", "success");
+      break;
+    }
+    case "force-introduce": {
+      const reason = prompt("Принудительный ввод в оборот: будет проигнорировано только несовпадение ТН ВЭД с данными КМ в ЧЗ. Проверки статуса, владельца, состава АТК и итогового результата останутся. Укажите причину:");
+      if (!reason || !reason.trim()) break;
+      if (!confirm("Отправить подписанный документ ввода в оборот без проверки совпадения ТН ВЭД с ЧЗ?")) break;
+      await api("/admin/operations/" + encodeURIComponent(id) + "/force-introduce", {confirm: true, reason: reason.trim()});
+      await adminPage();
+      toast("Ввод в оборот поставлен в очередь с разрешённым расхождением ТН ВЭД", "success");
       break;
     }
     case "check-op":
