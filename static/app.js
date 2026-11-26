@@ -1647,20 +1647,12 @@ async function action(name, id, b) {
       toast("КМ проверены в ЧЗ. Сформирован новый полный ZIP без повторного заказа", "success");
       break;
     }
-    case "order": {
+    case "order":
       if (documentDirty) throw new Error("Сначала проверьте и сохраните состав");
-      const requiredQuantity = (doc.lines || []).reduce(
-        (sum, line) => sum + Math.max(0, Number(line.labels) || 0), 0,
-      );
-      const orderQuantity = Math.max(0, requiredQuantity - (doc.codes || []).length);
-      const largeOrderWarning = orderQuantity > 1000
-        ? `<p class="notice"><b>Внимание!</b> Вы пытаетесь заказать <b>${fmt(orderQuantity)} КМ</b>. Вы уверены, что количество КМ к заказу верное?</p>`
-        : "";
       modal(
-        `<h2>Заказать коды маркировки?</h2><p>Будут использованы свободные КМ из общего пула. В СУЗ отправится заказ только на недостающее количество. Новые КМ оплачиваются по эмиссии.</p><p class="notice">Заказ использует сохранённый состав. Проверьте, что все изменения сохранены.</p>${largeOrderWarning}<div class="actions"><button class="primary" data-action="confirm-order">Заказать КМ</button><button data-action="close">Отмена</button></div>`,
+        `<h2>Заказать коды маркировки?</h2><p>Будут использованы свободные КМ из общего пула. В СУЗ отправится заказ только на недостающее количество. Новые КМ оплачиваются по эмиссии.</p><p class="notice">Заказ использует сохранённый состав. Проверьте, что все изменения сохранены.</p><div class="actions"><button class="primary" data-action="confirm-order">Заказать КМ</button><button data-action="close">Отмена</button></div>`,
       );
       break;
-    }
     case "confirm-order":
       doc = await api("/documents/" + doc.id + "/order", {});
       $("#modal").close();
