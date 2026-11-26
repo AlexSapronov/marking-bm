@@ -1649,9 +1649,10 @@ async function action(name, id, b) {
     }
     case "order": {
       if (documentDirty) throw new Error("Сначала проверьте и сохраните состав");
-      const orderQuantity = (doc.lines || []).reduce(
+      const requiredQuantity = (doc.lines || []).reduce(
         (sum, line) => sum + Math.max(0, Number(line.labels) || 0), 0,
       );
+      const orderQuantity = Math.max(0, requiredQuantity - (doc.codes || []).length);
       const largeOrderWarning = orderQuantity > 1000
         ? `<p class="notice"><b>Внимание!</b> Вы пытаетесь заказать <b>${fmt(orderQuantity)} КМ</b>. Вы уверены, что количество КМ к заказу верное?</p>`
         : "";
