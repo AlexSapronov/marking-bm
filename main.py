@@ -861,21 +861,22 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         return service.logistics_complete(doc_id, s["username"])
 
     @app.get("/api/logistics/documents/{doc_id}/introduction")
-    def introduction_preview(doc_id: str, s=Depends(logistics)):
-        return service.introduction_preview(doc_id)
+    def introduction_preview(doc_id: str, retry_id: str | None = None, s=Depends(logistics)):
+        return service.introduction_preview(doc_id, retry_id)
 
     class IntroductionBody(BaseModel):
         declaration_number: str = Field(min_length=1, max_length=30)
         declaration_date: str = Field(min_length=10, max_length=10)
         countries: dict[str, str]
         snapshot: str = Field(min_length=64, max_length=64)
+        retry_id: str | None = None
 
     @app.post("/api/logistics/documents/{doc_id}/introduce")
     def introduce(doc_id: str, body: IntroductionBody, s=Depends(logistics)):
         if not s["admin"] and s["role"] == "supervisor":
             raise HTTPException(403, "Руководителю доступны только просмотр и скачивание файлов")
         return service.introduce(doc_id, s["username"], body.declaration_number,
-                                 body.declaration_date, body.countries, body.snapshot)
+                                 body.declaration_date, body.countries, body.snapshot, body.retry_id)
 
     class LogisticsDownload(BaseModel):
         atks: list[str] = Field(min_length=1, max_length=200)
@@ -1512,6 +1513,8 @@ def create_app(settings=None, gateway_factory=Gateway, run_worker=True):
         if op:
             with store.read() as db:
                 service.require_operation_active(db, op)
+        if op and op["kind"] == "introduce" and op["state"] == "cancelled":
+            raise Conflict("Операция заменена или отменена; проверка недоступна")
         if op and op["kind"] == "report" and op["state"] in ("rejected", "partial"):
             raise Conflict("СУЗ обработала отчёт с ошибками. Используйте безопасную повторную отправку после сверки КМ")
         if op and op["state"] == "preflight_blocked":

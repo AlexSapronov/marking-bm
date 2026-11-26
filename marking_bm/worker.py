@@ -275,6 +275,8 @@ class Worker:
             return
         if op["kind"] == "introduce":
             payload = json.loads(op["payload"])
+            retry = op["op_key"].startswith("introduce:retry:")
+            allowed_status_ex = (None, "EMPTY", "FTS_RESPOND_NOT_OK") if retry else (None, "EMPTY", "FTS_RESPOND_NOT_OK", "FTS_CONTROL")
             for product in payload["products_list"]:
                 codes = [self.db.one("SELECT * FROM codes WHERE cis=?", (c["cis"],)) for c in product["children"]]
                 if any(c is None for c in codes):
@@ -290,10 +292,11 @@ class Worker:
                 if not forced_tnved and any(info[c["cis"]].get("tnVedEaes") != c["tnved"] for c in codes):
                     raise ValueError("ГИС МТ не подтвердила полный ТН ВЭД каждого КМ")
                 if any(ci.get("parent") != product["atk"] or ci.get("emissionType") != "FOREIGN" or
-                       ci.get("statusEx") not in (None, "EMPTY", "FTS_RESPOND_NOT_OK", "FTS_CONTROL") for ci in info.values()):
+                       ci.get("statusEx") not in allowed_status_ex for ci in info.values()):
                     raise ValueError("Состав или состояние КМ в ГИС МТ изменилось перед вводом в оборот")
                 aggregate = self.g.info([product["atk"]])[product["atk"]]
-                if aggregate.get("ownerInn") != self.s.config()["inn"] or aggregate.get("status") != "APPLIED":
+                if (aggregate.get("ownerInn") != self.s.config()["inn"] or aggregate.get("status") != "APPLIED"
+                        or retry and aggregate.get("statusEx") not in allowed_status_ex):
                     raise ValueError("ГИС МТ не подтвердила состояние АТК перед вводом в оборот")
             return
         if op["kind"] not in ("report", "atk", "transform"):

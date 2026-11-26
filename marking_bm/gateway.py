@@ -298,6 +298,32 @@ class Gateway:
             raise RemoteError("ЧЗ не подтвердил ID операции", True)
         return {"id": self.mutation_id(r[key]), "complete": False}
 
+    def verify_introduction_retry(self, op):
+        """Confirm terminal rejection and that the entire original set is still eligible."""
+        payload = json.loads(op["payload"])
+        products = payload["products_list"]
+        cises = [c["cis"] for a in products for c in a["children"]]
+        terminal = None
+        if op["external_id"]:
+            ext = op["external_id"]
+            r = self.request("GET", self.settings.true_url + f"/api/v4/true-api/doc/{ext}/info",
+                             params={"pg": "radio", "body": "true", "content": "true"})
+            if not isinstance(r, list) or len(r) != 1 or r[0].get("number") != ext:
+                raise ValueError("ЧЗ не подтвердил исходный документ; повтор запрещён")
+            terminal = r[0].get("status")
+            if terminal not in ("CHECKED_NOT_OK", "PARSE_ERROR", "CHECKED_OK"):
+                raise ValueError("ЧЗ не подтвердил завершение обработки исходного документа")
+        info = self.info(cises + [a["atk"] for a in products])
+        inn = self.config()["inn"]
+        if any(ci.get("status") != "APPLIED" or ci.get("ownerInn") != inn
+               or ci.get("statusEx") not in (None, "EMPTY", "FTS_RESPOND_NOT_OK") for ci in info.values()):
+            raise ValueError("Не все КМ и АТК готовы к повторному вводу. Возможен ввод через ЛК ЧЗ или ожидание ФТС; требуется сверка")
+        if any(info[c["cis"]].get("parent") != a["atk"] or info[c["cis"]].get("emissionType") != "FOREIGN"
+               for a in products for c in a["children"]):
+            raise ValueError("Состав АТК в ЧЗ изменился; повтор запрещён")
+        if terminal == "CHECKED_OK" and not any(info[cis].get("statusEx") == "FTS_RESPOND_NOT_OK" for cis in cises):
+            raise ValueError("Документ принят, отрицательное решение ФТС не подтверждено; повтор запрещён")
+
     def poll(self, op):
         ext = op["external_id"]
         kind = op["kind"]
