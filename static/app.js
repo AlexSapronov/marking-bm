@@ -1654,10 +1654,21 @@ async function action(name, id, b) {
       );
       const orderQuantity = Math.max(0, requiredQuantity - (doc.codes || []).length);
       const largeOrderWarning = orderQuantity > 1000
-        ? `<p class="notice"><b>Внимание!</b> Вы пытаетесь заказать <b>${fmt(orderQuantity)} КМ</b>. Вы уверены, что количество КМ к заказу верное?</p>`
+        ? `<section class="order-quantity-warning" role="alert" aria-live="assertive">
+            <div class="order-quantity-warning__icon" aria-hidden="true">!</div>
+            <div class="order-quantity-warning__body">
+              <strong class="order-quantity-warning__title">ВНИМАНИЕ! БОЛЬШОЙ ЗАКАЗ КМ</strong>
+              <div class="order-quantity-warning__amount">${fmt(orderQuantity)} КМ</div>
+              <p>Вы собираетесь заказать указанное количество кодов маркировки. Убедитесь, что количество рассчитано верно.</p>
+              <p class="order-quantity-warning__question">Продолжить и отправить заказ?</p>
+            </div>
+          </section>`
         : "";
+      const confirmOrderLabel = orderQuantity > 1000
+        ? `Подтвердить заказ ${fmt(orderQuantity)} КМ`
+        : "Заказать КМ";
       modal(
-        `<h2>Заказать коды маркировки?</h2><p>Будут использованы свободные КМ из общего пула. В СУЗ отправится заказ только на недостающее количество. Новые КМ оплачиваются по эмиссии.</p><p class="notice">Заказ использует сохранённый состав. Проверьте, что все изменения сохранены.</p>${largeOrderWarning}<div class="actions"><button class="primary" data-action="confirm-order">Заказать КМ</button><button data-action="close">Отмена</button></div>`,
+        `<h2>Заказать коды маркировки?</h2><p>Будут использованы свободные КМ из общего пула. В СУЗ отправится заказ только на недостающее количество. Новые КМ оплачиваются по эмиссии.</p><p class="notice">Заказ использует сохранённый состав. Проверьте, что все изменения сохранены.</p>${largeOrderWarning}<div class="actions"><button class="primary" data-action="confirm-order">${confirmOrderLabel}</button><button data-action="close">Отмена</button></div>`,
       );
       break;
     }
