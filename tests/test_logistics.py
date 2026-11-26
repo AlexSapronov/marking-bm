@@ -570,3 +570,85 @@ def test_disaggregated_atks_hidden_after_confirmation_but_history_retained(env):
     current = logist.get("/api/logistics/atks").json()
     assert len(current) == 2
     assert old["id"] not in {a["id"] for a in current}
+
+
+
+def failed_fts_introduction(env, terminal="CHECKED_NOT_OK"):
+    import json
+    from conftest import sign_all
+    app, s, remote = env
+    ids, logist, admin = prepare_atks(env)
+    url = "/api/logistics/documents/" + ids[0]
+    body = introduction_body(logist, ids[0])
+    response = logist.post(url + "/introduce", json=body)
+    assert response.status_code == 200, response.text
+    old_id = response.json()["id"]
+    sign_all(s)
+    app.state.worker.dispatch(s.store.one("SELECT * FROM operations WHERE id=?", (old_id,)))
+    old = s.store.one("SELECT * FROM operations WHERE id=?", (old_id,))
+    for a in json.loads(old["payload"])["products_list"]:
+        for c in a["children"]:
+            remote.codes[c["cis"]]["status"] = "APPLIED"
+            if terminal == "CHECKED_OK":
+                remote.codes[c["cis"]]["statusEx"] = "FTS_RESPOND_NOT_OK"
+    remote.documents[old["external_id"]]["status"] = terminal
+    app.state.worker.tick()
+    old = s.store.one("SELECT * FROM operations WHERE id=?", (old_id,))
+    assert old["state"] == "blocked"
+    return app, s, remote, logist, admin, url, old
+
+
+@pytest.mark.parametrize("terminal", ["CHECKED_NOT_OK", "CHECKED_OK"])
+def test_correct_failed_fts_introduction(env, terminal):
+    import json
+    app, s, remote, logist, admin, url, old = failed_fts_introduction(env, terminal)
+    preview = logist.get(url + "/introduction", params={"retry_id": old["id"]})
+    assert preview.status_code == 200, preview.text
+    scope = preview.json()
+    assert scope["previous"]["declaration_number"] == "10000000/011026/0000001"
+    assert all(line["country"] == "156" for line in scope["lines"])
+    body = {"retry_id": old["id"], "snapshot": scope["snapshot"],
+            "declaration_number": "10000000/021026/0000002", "declaration_date": "2026-10-02",
+            "countries": {line["id"]: "276" for line in scope["lines"]}}
+    counts = {table: s.store.one("SELECT COUNT(*) n FROM " + table)["n"] for table in ("codes", "atks")}
+    result = logist.post(url + "/introduce", json=body)
+    assert result.status_code == 200, result.text
+    new = s.store.one("SELECT * FROM operations WHERE id=?", (result.json()["id"],))
+    previous = s.store.one("SELECT * FROM operations WHERE id=?", (old["id"],))
+    assert previous["state"] == "cancelled"
+    assert all(previous[k] == old[k] for k in ("payload", "sha256", "signature", "external_id", "error"))
+    assert new["state"] == "signing" and not new["signature"] and not new["external_id"]
+    assert json.loads(new["payload"])["declaration_number"] == body["declaration_number"]
+    assert all(c["production_country_code"] == "276" for a in json.loads(new["payload"])["products_list"] for c in a["children"])
+    assert logist.post(url + "/introduce", json=body).status_code == 409
+    assert admin.post("/api/admin/operations/" + old["id"] + "/check", json={}).status_code == 409
+    for table, count in counts.items():
+        assert s.store.one("SELECT COUNT(*) n FROM " + table)["n"] == count
+    # Mock customs success for the corrected submission.
+    for ci in remote.codes.values():
+        ci["statusEx"] = None
+    advance(app)
+    assert s.store.one("SELECT state FROM operations WHERE id=?", (new["id"],))["state"] == "done"
+
+
+@pytest.mark.parametrize("unsafe", ["already_introduced", "pending", "fts_control", "accepted_without_rejection"])
+def test_correction_refuses_unsafe_retry(env, unsafe):
+    import json
+    app, s, remote, logist, _, url, old = failed_fts_introduction(env)
+    scope = logist.get(url + "/introduction", params={"retry_id": old["id"]}).json()
+    if unsafe == "pending":
+        remote.documents[old["external_id"]]["status"] = "IN_PROGRESS"
+    elif unsafe == "accepted_without_rejection":
+        remote.documents[old["external_id"]]["status"] = "CHECKED_OK"
+    else:
+        cis = json.loads(old["payload"])["products_list"][0]["children"][0]["cis"]
+        if unsafe == "already_introduced":
+            remote.codes[cis]["status"] = "INTRODUCED"
+        else:
+            remote.codes[cis]["statusEx"] = "FTS_CONTROL"
+    body = {"retry_id": old["id"], "snapshot": scope["snapshot"],
+            "declaration_number": "10000000/011026/0000002", "declaration_date": "2026-10-01",
+            "countries": {line["id"]: "156" for line in scope["lines"]}}
+    response = logist.post(url + "/introduce", json=body)
+    assert response.status_code in (409, 422), response.text
+    assert len(s.store.all("SELECT id FROM operations WHERE kind='introduce'")) == 1

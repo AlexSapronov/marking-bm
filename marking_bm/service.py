@@ -2672,7 +2672,7 @@ class Service:
                 result.append(item)
         return result
 
-    def _logistics_summary(self, db, a):
+    def _logistics_summary(self, db, a, retry_id=None):
         canonical = self.canonical_supplier(db, a["supplier_id"])
         supplier = one(db, "SELECT name FROM suppliers WHERE id=?", (canonical,))
         docs = rows(
@@ -2747,8 +2747,8 @@ class Service:
             "WHERE t.atk_id=x.id AND t.state IN ('approval','approved','processing'))) LIMIT 1",
             (a["batch_id"], a["supplier_id"]),
         )
-        introduction = one(db, "SELECT o.state,o.error,o.updated FROM introduction_atks i JOIN operations o ON o.id=i.op_id WHERE i.atk_id=?", (a["id"],))
-        if introduction and not held:
+        introduction = one(db, "SELECT o.id,o.state,o.error,o.updated FROM introduction_atks i JOIN operations o ON o.id=i.op_id WHERE i.atk_id=?", (a["id"],))
+        if introduction and introduction["id"] != retry_id and not held:
             op = introduction
             error = introduction["error"]
             state = "attention" if error else "done" if introduction["state"] == "done" else "processing"
@@ -2774,7 +2774,7 @@ class Service:
                     **d,
                     "stopped": bool(self.document_stopped(db, d["id"])),
                     "introduction": one(db, "SELECT o.id,o.state,o.error,o.external_id FROM introduction_documents i JOIN operations o ON o.id=i.op_id WHERE i.doc_id=?", (d["id"],)),
-                    "can_complete": not one(db, "SELECT op_id FROM introduction_documents WHERE doc_id=?", (d["id"],)) and d["status"] == "done"
+                    "can_complete": not one(db, "SELECT op_id FROM introduction_documents WHERE doc_id=? AND op_id IS NOT ?", (d["id"], retry_id)) and d["status"] == "done"
                     and state == "done"
                     and not group_pending
                     and op["state"] == "done"
@@ -2794,13 +2794,13 @@ class Service:
     def logistics_complete(self, doc_id, actor):
         raise Conflict("Для завершения накладной выполните ввод в оборот «Импорт с ФТС»")
 
-    def introduction_scope(self, db, doc_id):
+    def introduction_scope(self, db, doc_id, retry_id=None):
         if not one(db, "SELECT id FROM documents WHERE id=?", (doc_id,)):
             raise PermissionError("Накладная недоступна")
         # Whole ATKs must be sent as declared to FTS. Include all connected
         # invoices and sibling ATKs, including supplements from other batches.
         doc_ids, selected = {doc_id}, {}
-        summaries = [(a, self._logistics_summary(db, a)) for a in rows(db, "SELECT * FROM atks WHERE state!='disaggregated'")]
+        summaries = [(a, self._logistics_summary(db, a, retry_id)) for a in rows(db, "SELECT * FROM atks WHERE state!='disaggregated'")]
         while True:
             previous = (len(doc_ids), len(selected))
             for a, summary in summaries:
@@ -2837,17 +2837,55 @@ class Service:
         for c in codes:
             key = (c["doc_id"], c["pn"], c["gtin"], c["quantity"], c["tnved"])
             lines.setdefault(key, {"id": c["id"], "doc_id": c["doc_id"], "pn": c["pn"], "gtin": c["gtin"], "quantity": c["quantity"], "tnved": c["tnved"]})
+        if retry_id and (
+            doc_ids != {d["doc_id"] for d in rows(db, "SELECT doc_id FROM introduction_documents WHERE op_id=?", (retry_id,))}
+            or set(selected) != {a["atk_id"] for a in rows(db, "SELECT atk_id FROM introduction_atks WHERE op_id=?", (retry_id,))}
+        ):
+            raise Conflict("Состав исходной операции изменился. Требуется сверка")
         snapshot = {"documents": documents, "atks": sorted(atks, key=lambda a: a["id"]),
                     "codes": [{k: c[k] for k in ("id", "cis", "doc_id", "pn", "gtin", "atk_id", "tnved")} for c in sorted(codes, key=lambda c: c["id"])]}
+        if retry_id:
+            snapshot["retry_id"] = retry_id
         return {"documents": documents, "atks": atks, "lines": list(lines.values()),
                 "snapshot": sha256(dumps(snapshot).encode()).hexdigest()}, codes
 
-    def introduction_preview(self, doc_id):
+    def introduction_retry_scope(self, db, doc_id, retry_id):
+        op = one(db, "SELECT o.* FROM introduction_documents i JOIN operations o ON o.id=i.op_id WHERE i.doc_id=? AND o.id=?", (doc_id, retry_id))
+        if not op or op["kind"] != "introduce" or op["state"] not in ("blocked", "preflight_blocked", "rejected"):
+            raise Conflict("Исправление доступно только для текущей остановленной или отклонённой операции")
+        if not op["external_id"] and not (op["state"] == "preflight_blocked" or
+                (op["error"] or "").startswith(("ЧЗ: HTTP 400.", "ЧЗ: HTTP 422."))):
+            raise Conflict("Нет подтверждения безопасного повтора. Сверьте операцию в ЛК ЧЗ")
+        self.require_operation_active(db, op)
+        scope, codes = self.introduction_scope(db, doc_id, retry_id)
+        payload = json.loads(op["payload"])
+        original = {c["cis"]: (a["atk"], c["tn_ved"], c["production_country_code"])
+                    for a in payload["products_list"] for c in a["children"]}
+        atks = {a["id"]: a["code"] for a in scope["atks"]}
+        if (payload["trade_participant_inn"] != self.config()["inn"] or
+                set(original) != {c["cis"] for c in codes} or
+                len(original) != sum(len(a["children"]) for a in payload["products_list"]) or
+                any(original[c["cis"]][:2] != (atks[c["atk_id"]], c["tnved"]) for c in codes)):
+            raise Conflict("Исходные КМ, АТК или ИНН изменились. Требуется сверка")
+        by_key = defaultdict(set)
+        for c in codes:
+            by_key[(c["doc_id"], c["pn"], c["gtin"], c["quantity"], c["tnved"])].add(original[c["cis"]][2])
+        scope["previous"] = {"id": op["id"], "error": op["error"], "external_id": op["external_id"],
+                             "declaration_number": payload["declaration_number"], "declaration_date": payload["declaration_date"]}
+        for line in scope["lines"]:
+            values = by_key[(line["doc_id"], line["pn"], line["gtin"], line["quantity"], line["tnved"])]
+            line["country"] = next(iter(values)) if len(values) == 1 else ""
+        return scope, codes, op
+
+    def introduction_preview(self, doc_id, retry_id=None):
         with self.store.read() as db:
-            scope, _ = self.introduction_scope(db, doc_id)
+            if retry_id:
+                scope, _, _ = self.introduction_retry_scope(db, doc_id, retry_id)
+            else:
+                scope, _ = self.introduction_scope(db, doc_id)
             return scope
 
-    def introduce(self, doc_id, actor, number, declaration_date, countries, snapshot):
+    def introduce(self, doc_id, actor, number, declaration_date, countries, snapshot, retry_id=None):
         number = number.strip()
         try:
             dt = date.fromisoformat(declaration_date)
@@ -2857,8 +2895,20 @@ class Service:
                 or number.split("/")[1] != dt.strftime("%d%m%y")
                 or not date(2000, 1, 1) <= dt <= date.today()):
             raise ValueError("Проверьте номер ДТ (XXXXXXXX/ДДММГГ/XXXXXXX) и дату регистрации")
+        previous = None
+        if retry_id:
+            with self.store.read() as db:
+                scope, _, previous = self.introduction_retry_scope(db, doc_id, retry_id)
+            if snapshot != scope["snapshot"]:
+                raise Conflict("Состав изменился. Откройте форму исправления заново")
+            self.gateway.verify_introduction_retry(previous)
         with self.store.transaction() as db:
-            scope, codes = self.introduction_scope(db, doc_id)
+            if retry_id:
+                scope, codes, current = self.introduction_retry_scope(db, doc_id, retry_id)
+                if any(current[k] != previous[k] for k in ("state", "external_id", "updated", "error", "sha256")):
+                    raise Conflict("Операция изменилась. Повторите сверку")
+            else:
+                scope, codes = self.introduction_scope(db, doc_id)
             if snapshot != scope["snapshot"]:
                 raise Conflict("Состав изменился. Откройте форму ввода в оборот заново")
             if set(countries) != {line["id"] for line in scope["lines"]}:
@@ -2873,7 +2923,15 @@ class Service:
                            for c in codes if c["atk_id"] == a["id"]]} for a in scope["atks"]]}
             if not payload["trade_participant_inn"]:
                 raise ValueError("Настройте ИНН организации перед отправкой")
-            op = self.queue(db, "introduce", "introduce:" + uid(), payload, doc_id)
+            op = self.queue(db, "introduce", ("introduce:retry:" if retry_id else "introduce:") + uid(), payload, doc_id)
+            if retry_id:
+                # Preserve the signed original and its error, but retire it from all queues.
+                db.execute("UPDATE operations SET state='cancelled',updated=? WHERE id=?", (now(), retry_id))
+                db.execute("DELETE FROM introduction_documents WHERE op_id=?", (retry_id,))
+                db.execute("DELETE FROM introduction_atks WHERE op_id=?", (retry_id,))
+                audit(db, actor, "Исправление отклонённого ввода в оборот", doc_id,
+                      {"previous_operation": retry_id, "new_operation": op, "previous_external_id": previous["external_id"],
+                       "previous_error": previous["error"], "previous_payload_sha": previous["sha256"]})
             for d in scope["documents"]:
                 db.execute("INSERT INTO introduction_documents VALUES(?,?)", (d["id"], op))
                 audit(db, actor, "Подготовлен ввод в оборот. Импорт с ФТС", d["id"],
