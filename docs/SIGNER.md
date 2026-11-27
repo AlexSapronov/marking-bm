@@ -47,8 +47,7 @@ powershell.exe -NoProfile -File .\Start-Signer.ps1 -Server "https://SERVER" -Thu
 ```powershell
 powershell.exe -NoProfile -File .\Start-Signer.ps1 `
   -Server "https://MARKING-BM" `
-  -AdditionalServer "https://GIS-TRUEAPI" `
-  -AdditionalServer "https://KM-SPLIT" `
+  -AdditionalServer @("https://GIS-TRUEAPI", "https://KM-SPLIT") `
   -Thumbprint "THUMBPRINT"
 ```
 
