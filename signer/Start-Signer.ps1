@@ -88,7 +88,7 @@ foreach ($entry in $servers) {
     $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
     try { $connectionToken = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
-    $targets += [pscustomobject]@{ Server = $base; Headers = @{ Authorization = 'Bearer ' + $connectionToken } }
+    $targets += [pscustomobject]@{ Server = $base; Headers = @{ Authorization = 'Bearer ' + $connectionToken; 'X-Requested-With' = 'km-split' } }
     $connectionToken = $null
     $secret = $null
 }
