@@ -40,6 +40,26 @@ powershell.exe -NoProfile -File .\Start-Signer.ps1 -Server "https://SERVER" -Thu
 
 Для длительной работы уберите `-Once`; процесс опрашивает сервер каждые 5 секунд, пока PowerShell запущен. Вкладка браузера не нужна. ПК должен оставаться включённым, пользовательская сессия и Рутокен должны быть доступны.
 
+## Один процесс для нескольких сервисов
+
+Один и тот же Windows-подписант может одновременно обслуживать Marking-BM, GIS True API и KM Split. Передайте базовые URL всех серверов при запуске:
+
+```powershell
+powershell.exe -NoProfile -File .\Start-Signer.ps1 `
+  -Server "https://MARKING-BM" `
+  -AdditionalServer "https://GIS-TRUEAPI" `
+  -AdditionalServer "https://KM-SPLIT" `
+  -Thumbprint "THUMBPRINT"
+```
+
+После проверки сертификата скрипт запросит отдельный токен подключения для каждого адреса. Токены не должны совпадать и не передаются в командной строке. Введите значения из настроек соответствующих сервисов:
+
+- Marking-BM: `BM_SIGNER_TOKEN` и `BM_SIGNER_THUMBPRINT`.
+- GIS True API: `GIS_SIGNER_TOKEN` и `GIS_SIGNER_THUMBPRINT`.
+- KM Split: `SPLIT_SIGNER_TOKEN` и `SPLIT_SIGNER_THUMBPRINT`; внутренний вызов из GIS дополнительно защищён `SPLIT_INTERNAL_TOKEN` / `KM_SPLIT_INTERNAL_TOKEN`.
+
+Каждый сервер получает собственные heartbeat, очередь и результат подписи. Сертификат и локальный CryptoPro остаются общими. Если один сервер недоступен, агент продолжает опрашивать остальные. Для теста конкретного endpoint используйте `-Once`; токены будут запрошены для всех переданных адресов.
+
 ## Протокол и безопасность
 
 - HTTPS, выделенный bearer-токен, независимо от сессий сотрудников. Токен запрашивается скрыто после проверки наличия сертификата и в `-Diagnose` не нужен.
